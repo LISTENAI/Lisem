@@ -1,0 +1,142 @@
+name: Native toolchains
+description: Install the native compiler and dependencies for a build phase
+inputs:
+  phase:
+    required: true
+    description: CI phase
+  arch:
+    default: ''
+    description: MSVC architecture
+  msystem:
+    default: ''
+    description: MSYS2 environment
+  prefix:
+    default: ''
+    description: MSYS2 package prefix
+  directory:
+    default: ''
+    description: MSYS2 binary directory
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+      if: inputs.phase == 'rust' || inputs.phase == 'tests'
+      with:
+        toolchain: 1.95.0
+    - name: Install Linux dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      env:
+        BUILD_PHASE: ${{ inputs.phase }}
+      run: |
+        for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+          if [ -f "$source" ]; then
+            sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+          fi
+        done
+        apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+        probe_tools=()
+        if [ "$BUILD_PHASE" = native ] && [ "$(uname -m)" = x86_64 ]; then
+          probe_tools=(gcc-riscv64-unknown-elf)
+        fi
+        sudo apt-get "${apt_options[@]}" update
+        sudo apt-get "${apt_options[@]}" install -y --no-install-recommends ccache clang lld cmake ninja-build meson pkg-config \
+          libglib2.0-dev libpixman-1-dev libpulse-dev patchelf libvulkan-dev \
+          libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+          libssl-dev libdbus-1-dev libsecret-1-dev libx11-xcb-dev libxcb1-dev \
+          libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
+          libxcb-xinput-dev libxcb-cursor-dev libasound2-dev "${probe_tools[@]}"
+    - name: Install macOS dependencies
+      if: runner.os == 'macOS' && (inputs.phase == 'native' || inputs.phase == 'package')
+      shell: bash
+      run: brew install ccache glib pixman pkgconf ninja meson
+    - name: Identify Windows toolchain cache
+      if: runner.os == 'Windows' && inputs.phase != 'rust'
+      id: windows-cache
+      shell: pwsh
+      env:
+        RECIPE: ${{ hashFiles('.github/actions/setup/action.yml') }}
+        TOOLCHAIN: ${{ inputs.msystem }}
+        FLAVOR: ${{ inputs.phase == 'tests' && 'tests' || 'native' }}
+      run: |
+        "LISEM_CI_PYTHON=$((Get-Command python).Source)" >> $env:GITHUB_ENV
+        $period = Get-Date -AsUTC -Format 'yyyy-MM'
+        "key=msys2-installed-$env:TOOLCHAIN-$env:FLAVOR-$period-$env:RECIPE" >> $env:GITHUB_OUTPUT
+        "package-key=msys2-package-$env:TOOLCHAIN-$period-$env:RECIPE" >> $env:GITHUB_OUTPUT
+        $root = "${{ runner.temp }}/lisem-toolchain/msys64"
+        @"
+        package-paths<<END_PATHS
+        $root/etc
+        $root/usr/bin
+        $root/usr/lib/git-core
+        $root/${{ inputs.directory }}/bin
+        $root/${{ inputs.directory }}/share/licenses
+        $root/${{ inputs.directory }}/share/doc
+        $root/var/lib/pacman/local
+        END_PATHS
+        "@ >> $env:GITHUB_OUTPUT
+    - name: Restore Windows toolchain
+      if: runner.os == 'Windows' && (inputs.phase == 'native' || inputs.phase == 'tests')
+      id: windows-toolchain
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/lisem-toolchain/msys64
+        key: ${{ steps.windows-cache.outputs.key }}
+    - name: Restore Windows packaging tools
+      if: runner.os == 'Windows' && (inputs.phase == 'native' || inputs.phase == 'package')
+      id: windows-package
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ steps.windows-cache.outputs.package-paths }}
+        key: ${{ steps.windows-cache.outputs.package-key }}
+        lookup-only: ${{ inputs.phase == 'native' }}
+    - name: Install Windows dependencies
+      if: runner.os == 'Windows' && inputs.phase != 'rust' && (inputs.phase == 'package' && steps.windows-package.outputs.cache-hit != 'true' || inputs.phase != 'package' && steps.windows-toolchain.outputs.cache-hit != 'true')
+      id: msys2
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+      with:
+        msystem: ${{ inputs.msystem }}
+        location: ${{ runner.temp }}/lisem-toolchain
+        update: true
+        cache: false
+        install: >-
+          git patch tar
+          ${{ inputs.phase != 'tests' && format('{0}-ccache {0}-clang {0}-glib2 {0}-pixman {0}-portaudio {0}-python {0}-meson {0}-ninja {0}-pkgconf', inputs.prefix) || '' }}
+    - name: Save Windows toolchain
+      if: runner.os == 'Windows' && (inputs.phase == 'native' || inputs.phase == 'tests') && steps.windows-toolchain.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ runner.temp }}/lisem-toolchain/msys64
+        key: ${{ steps.windows-cache.outputs.key }}
+    - name: Save Windows packaging tools
+      if: runner.os == 'Windows' && (inputs.phase == 'native' || inputs.phase == 'package') && steps.windows-package.outputs.cache-hit != 'true'
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+      with:
+        path: ${{ steps.windows-cache.outputs.package-paths }}
+        key: ${{ steps.windows-cache.outputs.package-key }}
+    - name: Configure Windows toolchains
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        MSYS2_LOCATION: ${{ inputs.phase != 'rust' && format('{0}/lisem-toolchain/msys64', runner.temp) || '' }}
+        MSYSTEM: ${{ inputs.msystem }}
+        MSYS2_DIRECTORY: ${{ inputs.directory }}
+        BUILD_ARCH: ${{ inputs.arch }}
+      run: |
+        $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+        $vs = & $vswhere -latest -products '*' -property installationPath
+        if (!$vs) { throw 'Visual Studio not found' }
+        $command = "`"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=$env:BUILD_ARCH -host_arch=$env:BUILD_ARCH >nul && set"
+        $variables = & cmd.exe /d /s /c $command
+        if ($LASTEXITCODE -ne 0) { throw 'MSVC environment setup failed' }
+        foreach ($line in $variables) {
+          if ($line -match '^(Path|INCLUDE|LIB|LIBPATH|(?:VC|VS|WindowsSDK|UniversalCRT|UCRT|Framework|NETFX|DevEnv|ExtensionSdk)[A-Za-z0-9_]*)=(.*)$') {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+        }
+        if ($env:MSYS2_LOCATION) {
+          if (!(Test-Path "$env:MSYS2_LOCATION\usr\bin\bash.exe")) { throw 'MSYS2 toolchain is missing' }
+          "MSYSTEM=$env:MSYSTEM" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "$env:MSYS2_LOCATION\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "$env:MSYS2_LOCATION\$env:MSYS2_DIRECTORY\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        }

@@ -42,10 +42,13 @@ def debugger(elf, reference, directory, compiler, runner_flags=()):
             text = reply.decode(); transcript.append([request, text]); return text
         try:
             deadline = time.monotonic() + 10
-            while not path.exists():
-                assert process.poll() is None and time.monotonic() < deadline
-                time.sleep(.01)
-            sock.connect(str(path))
+            while True:
+                try:
+                    sock.connect(str(path))
+                    break
+                except (FileNotFoundError, ConnectionRefusedError):
+                    assert process.poll() is None and time.monotonic() < deadline
+                    time.sleep(.01)
             packet('qSupported')
             packet('?')
             packet('qC')

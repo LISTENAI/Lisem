@@ -1,0 +1,172 @@
+name: Native platform
+on:
+  workflow_call:
+    inputs:
+      runner:
+        required: true
+        type: string
+      target:
+        required: true
+        type: string
+      arch:
+        type: string
+        default: ''
+      msystem:
+        type: string
+        default: ''
+      prefix:
+        type: string
+        default: ''
+      directory:
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  build:
+    name: Build ${{ matrix.phase }}
+    strategy:
+      fail-fast: false
+      matrix:
+        phase: [native, rust]
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 45
+    env:
+      CC: clang
+      CARGO_TARGET_DIR: ${{ github.workspace }}/artifacts/desktop-build
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_COMPILERCHECK: content
+      CCACHE_MAXSIZE: 500M
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          phase: ${{ matrix.phase }}
+          arch: ${{ inputs.arch }}
+          msystem: ${{ inputs.msystem }}
+          prefix: ${{ inputs.prefix }}
+          directory: ${{ inputs.directory }}
+      - name: Cache Rust dependencies
+        if: matrix.phase == 'rust'
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: '. -> artifacts/desktop-build'
+          key: ${{ inputs.target }}-release-${{ env.ImageVersion }}-${{ hashFiles('tools/desktop.py') }}
+          cache-bin: false
+      - name: Cache native compilation
+        if: matrix.phase == 'native'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .cache/ccache
+          key: native-${{ inputs.target }}-${{ env.ImageVersion }}-${{ hashFiles('qemu/**', 'native/**', 'patches/**', 'tools/build_*.py', '.github/actions/setup/action.yml') }}
+          restore-keys: |
+            native-${{ inputs.target }}-${{ env.ImageVersion }}-
+      - name: Cache pinned source archives
+        if: matrix.phase == 'native'
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: .tools/downloads
+          key: sources-${{ hashFiles('tools/build_qemu.py', 'tools/build_network.py') }}
+      - name: Build component
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+          PHASE: ${{ matrix.phase }}
+        run: python3 tools/ci.py --target "$TARGET" --phase "$PHASE"
+      - name: Build component (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+          PHASE: ${{ matrix.phase }}
+        run: python tools/ci.py --target $env:TARGET --phase $env:PHASE
+      - name: Native cache statistics
+        if: always() && matrix.phase == 'native'
+        run: ccache --show-stats
+      - name: Upload component
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: component-${{ inputs.target }}-${{ matrix.phase }}
+          path: artifacts/components/${{ matrix.phase }}/*
+          if-no-files-found: error
+          compression-level: 1
+          retention-days: 1
+  tests:
+    name: Debug and Python tests
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/artifacts/desktop-build
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          phase: tests
+          arch: ${{ inputs.arch }}
+          msystem: ${{ inputs.msystem }}
+          prefix: ${{ inputs.prefix }}
+          directory: ${{ inputs.directory }}
+      - name: Cache test dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: '. -> artifacts/desktop-build'
+          key: ${{ inputs.target }}-core-cli-debug-${{ env.ImageVersion }}
+          cache-bin: false
+      - name: Test
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: python3 tools/ci.py --target "$TARGET" --phase tests
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: python tools/ci.py --target $env:TARGET --phase tests
+  package:
+    name: Package and integration tests
+    needs: [build]
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 15
+    env:
+      CC: clang
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+        with:
+          phase: package
+          arch: ${{ inputs.arch }}
+          msystem: ${{ inputs.msystem }}
+          prefix: ${{ inputs.prefix }}
+          directory: ${{ inputs.directory }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: component-${{ inputs.target }}-native
+          path: artifacts/components/native
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: component-${{ inputs.target }}-rust
+          path: artifacts/components/rust
+      - name: Package and verify
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: python3 tools/ci.py --target "$TARGET" --phase package
+      - name: Package and verify (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: '& $env:LISEM_CI_PYTHON tools/ci.py --target $env:TARGET --phase package'
+      - name: Upload candidate package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Lisem-${{ inputs.target }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

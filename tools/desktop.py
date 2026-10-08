@@ -16,9 +16,48 @@ else:
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def rust_environment(target):
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target))
+    if os.name == 'nt':
+        # MSYS2 also ships a Unix `link.exe`; Rust targets the MSVC ABI.
+        toolchain = os.environ.get('VCToolsInstallDir')
+        arch = os.environ.get('VSCMD_ARG_TGT_ARCH')
+        host = os.environ.get('VSCMD_ARG_HOST_ARCH')
+        if not toolchain or arch not in ('arm64', 'x64') or host not in ('arm64', 'x64'):
+            raise RuntimeError('Run from a native Visual Studio developer environment')
+        msvc = Path(toolchain) / 'bin' / ('Host' + host) / arch
+        env['PATH'] = str(msvc) + os.pathsep + env['PATH']
+        env.pop('CC', None)
+    prefixes = [(Path.home(), '/build'), (ROOT, '/build/lisem')]
+    for name in ('CARGO_HOME', 'RUSTUP_HOME'):
+        if env.get(name):
+            prefixes.append((Path(env[name]), '/build/' + name.lower()))
+    flags = []
+    for path, replacement in prefixes:
+        # MSYS Python and native Rust can spell the same path differently.
+        spellings = {str(path), path.as_posix()}
+        if os.name == 'nt':
+            spellings |= {value.replace('/', '\\') for value in spellings}
+        flags.extend('--remap-path-prefix=' + value + '=' + replacement
+                     for value in sorted(spellings))
+    if sys.platform == 'darwin':
+        flags += ['-C', 'link-arg=-Wl,-headerpad_max_install_names']
+    env['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
+    return env
+
+
+def build_rust(target):
+    env = rust_environment(target)
+    subprocess.run(['cargo', '+1.95.0', 'build', '--release', '--locked', '--manifest-path',
+                    str(ROOT / 'Cargo.toml'), '-p', 'lisem-desktop', '-p', 'lisem-cli'],
+                   env=env, check=True, timeout=1800)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--build-only', action='store_true')
+    parser.add_argument('--component', choices=('rust', 'package'),
+                        help='Build only a CI component; do not launch the application')
     parser.add_argument('--data-dir', type=Path, help='Use a separate device library')
     parser.add_argument('--no-build', action='store_true', help='Open the existing local app')
     args = parser.parse_args()
@@ -26,41 +65,22 @@ def main():
         parser.error('Python 3.10+ is required')
     target = ROOT / 'artifacts/desktop-build'
     bundle = ROOT / 'artifacts/desktop' / ('Lisem.app' if sys.platform == 'darwin' else 'Lisem')
+    if args.component == 'rust':
+        build_rust(target)
+        return
+    if args.component == 'package':
+        if not current_build() or not current_audio_build():
+            parser.error('Native components do not match this checkout')
+        package(bundle, target / 'release')
+        print(bundle)
+        return
     if not args.no_build:
         if not current_build():
             subprocess.run([sys.executable, str(ROOT / 'tools/build_qemu.py')], check=True, timeout=2400)
         if not current_audio_build():
             build_audio()
         subprocess.run([sys.executable, str(ROOT / 'tools/build_network.py')], check=True, timeout=600)
-        env = dict(os.environ, CARGO_TARGET_DIR=str(target))
-        if os.name == 'nt':
-            # MSYS2 also ships a Unix `link.exe`; Rust targets the MSVC ABI.
-            toolchain = os.environ.get('VCToolsInstallDir')
-            arch = os.environ.get('VSCMD_ARG_TGT_ARCH')
-            host = os.environ.get('VSCMD_ARG_HOST_ARCH')
-            if not toolchain or arch not in ('arm64', 'x64') or host not in ('arm64', 'x64'):
-                parser.error('Run from a native Visual Studio developer environment')
-            msvc = Path(toolchain) / 'bin' / ('Host' + host) / arch
-            env['PATH'] = str(msvc) + os.pathsep + env['PATH']
-            env.pop('CC', None)
-        prefixes = [(Path.home(), '/build'), (ROOT, '/build/lisem')]
-        for name in ('CARGO_HOME', 'RUSTUP_HOME'):
-            if env.get(name):
-                prefixes.append((Path(env[name]), '/build/' + name.lower()))
-        flags = []
-        for path, replacement in prefixes:
-            # MSYS Python and native Rust can spell the same path differently.
-            spellings = {str(path), path.as_posix()}
-            if os.name == 'nt':
-                spellings |= {value.replace('/', '\\') for value in spellings}
-            flags.extend('--remap-path-prefix=' + value + '=' + replacement
-                         for value in sorted(spellings))
-        if sys.platform == 'darwin':
-            flags += ['-C', 'link-arg=-Wl,-headerpad_max_install_names']
-        env['CARGO_ENCODED_RUSTFLAGS'] = '\x1f'.join(flags)
-        subprocess.run(['cargo', '+1.95.0', 'build', '--release', '--locked', '--manifest-path',
-                        str(ROOT / 'Cargo.toml'), '-p', 'lisem-desktop', '-p', 'lisem-cli'],
-                       env=env, check=True, timeout=1800)
+        build_rust(target)
         package(bundle, target / 'release')
     if not bundle.exists():
         parser.error('Desktop app is missing; run without --no-build')

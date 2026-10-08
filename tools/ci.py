@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,9 +21,18 @@ def run(name, command, timeout=1800, env=None):
     directory.mkdir(parents=True, exist_ok=True)
     print(name, flush=True)
     path = directory / (name + '.log')
-    with path.open('wb') as log:
-        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                timeout=timeout, env=env)
+    started = time.monotonic()
+    try:
+        with path.open('wb') as log:
+            result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                    timeout=timeout, env=env)
+    finally:
+        elapsed = time.monotonic() - started
+        print(f'{name}: {elapsed:.2f}s', flush=True)
+        summary = os.environ.get('GITHUB_STEP_SUMMARY')
+        if summary:
+            with open(summary, 'a', encoding='utf-8') as stream:
+                stream.write(f'| {name} | {elapsed:.2f} s |\n')
     if result.returncode:
         content = path.read_text(errors='replace')
         # Emit only bounded identifiers and numeric statuses, never raw logs.
@@ -37,29 +47,118 @@ def run(name, command, timeout=1800, env=None):
         result.check_returncode()
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--target', required=True)
-    args = parser.parse_args()
-    system = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
-    arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'amd64': 'x86_64',
-            'x86_64': 'x86_64'}[platform.machine().lower()]
-    assert args.target == f'{system}-{arch}', 'Native runner does not match package target'
-    python = sys.executable
+def component_paths(component):
+    suffix = '.exe' if os.name == 'nt' else ''
+    if component == 'rust':
+        return [f'artifacts/desktop-build/release/{name}{suffix}'
+                for name in ('lisem', 'lisem-desktop')]
+    library = ('arcs_slirp.dll' if os.name == 'nt' else
+               'libarcs_slirp.' + ('dylib' if sys.platform == 'darwin' else 'so'))
+    return [f'.tools/qemu-build/qemu-system-riscv32{suffix}',
+            '.tools/qemu-build/arcs-build.json',
+            f'.tools/audio/lisa-audio{suffix}', '.tools/audio/build.json',
+            f'.tools/network/{library}',
+            '.tools/qemu-10.1.0/COPYING', '.tools/qemu-10.1.0/COPYING.LIB',
+            '.tools/network-source/COPYRIGHT', '.tools/network-source/LICENSE']
+
+
+def commit_id():
+    return subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
+
+
+def export_component(component, target):
+    output = ROOT / 'artifacts/components' / component
+    output.mkdir(parents=True, exist_ok=True)
+    paths = component_paths(component)
+    with tarfile.open(output / 'files.tar', 'w') as archive:
+        for name in paths:
+            archive.add(ROOT / name, arcname=name)
+    manifest = {'commit': commit_id(), 'target': target, 'component': component,
+                'files': {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                          for name in paths}}
+    (output / 'manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+
+
+def import_component(component, target):
+    source = ROOT / 'artifacts/components' / component
+    manifest = json.loads((source / 'manifest.json').read_text())
+    paths = component_paths(component)
+    if (manifest.get('commit') != commit_id() or manifest.get('target') != target
+            or manifest.get('component') != component or set(manifest['files']) != set(paths)):
+        raise ValueError('Component does not match this commit, platform or file set')
+    with tarfile.open(source / 'files.tar') as archive:
+        members = archive.getmembers()
+        if len(members) != len(paths) or {m.name for m in members} != set(paths):
+            raise ValueError('Unexpected component archive members')
+        for member in members:
+            if not member.isfile():
+                raise ValueError('Component must contain only regular files')
+            data = archive.extractfile(member).read()
+            if hashlib.sha256(data).hexdigest() != manifest['files'][member.name]:
+                raise ValueError('Component checksum mismatch')
+            destination = ROOT / member.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(data)
+            destination.chmod(member.mode & 0o777)
+
+
+def unit_tests(python):
     run('python-tests', [python, '-m', 'unittest', 'discover', '-s', 'tests', '-p', 'test_*.py'])
-    run('build', [python, 'tools/desktop.py', '--build-only'], timeout=4200)
     env = os.environ.copy()
     env.pop('CC', None)
     if os.name == 'nt':
         msvc = Path(os.environ['VCToolsInstallDir']) / 'bin' / ('Host' + env['VSCMD_ARG_HOST_ARCH']) / env['VSCMD_ARG_TGT_ARCH']
         env['PATH'] = str(msvc) + os.pathsep + env['PATH']
-    run('rust-tests', ['cargo', '+1.95.0', 'test', '--locked', '--workspace'], env=env)
+    run('rust-tests', ['cargo', '+1.95.0', 'test', '--locked', '--workspace', '--exclude', 'lisem-desktop'], env=env)
+
+
+def native_build(python, system, arch):
+    env = os.environ.copy()
+    if env.get('CI'):
+        env['CC'] = 'ccache ' + env.get('CC', 'clang')
+    run('qemu-build', [python, 'tools/build_qemu.py'], timeout=2400, env=env)
+    run('audio-build', [python, 'tools/build_audio.py'])
+    run('network-build', [python, 'tools/build_network.py'])
     if system == 'linux' and arch == 'x86_64':
         run('qemu-tests', ['make', 'check-qemu', 'PYTHON=' + python])
     if system != 'darwin':
         run('audio-endpoint', [python, 'tests/run_host_audio_endpoint.py'])
     else:
         run('jit-state', [python, 'tests/run_qemu_jit_state.py'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--target', required=True)
+    parser.add_argument('--phase', choices=('all', 'tests', 'native', 'rust', 'package'), default='all')
+    args = parser.parse_args()
+    system = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
+    arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'amd64': 'x86_64',
+            'x86_64': 'x86_64'}[platform.machine().lower()]
+    assert args.target == f'{system}-{arch}', 'Native runner does not match package target'
+    python = sys.executable
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if summary:
+        with open(summary, 'a', encoding='utf-8') as stream:
+            stream.write(f'### {args.target}: {args.phase}\n\n| Phase | Time |\n| --- | ---: |\n')
+    if args.phase in ('all', 'tests'):
+        unit_tests(python)
+        if args.phase == 'tests':
+            return
+    if args.phase in ('all', 'native'):
+        native_build(python, system, arch)
+        if args.phase == 'native':
+            export_component('native', args.target)
+            return
+    if args.phase in ('all', 'rust'):
+        run('rust-build', [python, 'tools/desktop.py', '--component', 'rust'], timeout=3600)
+        if args.phase == 'rust':
+            export_component('rust', args.target)
+            return
+    if args.phase == 'package':
+        import_component('native', args.target)
+        import_component('rust', args.target)
+    run('package', [python, 'tools/desktop.py', '--component', 'package'])
     run('package-smoke', [python, 'tests/run_package_smoke.py'])
     run('desktop-lifecycle', [python, 'tests/run_desktop_lifecycle.py'])
     run('mcp-smoke', [python, 'tests/run_mcp.py'])
@@ -80,7 +179,7 @@ def main():
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
     (output / 'build.json').write_text(json.dumps({
         'commit': commit, 'target': args.target, 'archive': archive.name, 'sha256': digest,
-        'scope': 'Native package, Rust/Python tests, relocated CLI and ROM UART; no application firmware or acoustic test',
+        'scope': 'Native package, relocated CLI, ROM UART and MCP; release requires the complete workflow to succeed',
     }, indent=2) + '\n')
     print(archive, flush=True)
 

@@ -95,7 +95,10 @@
   原生组件的既有许可或 LUNA／ROM 二进制许可。分发包须带齐许可声明。
 
 - 正式产品包由 `.github/workflows/build.yml` 构建并测试；维护
-  `tools/ci.py` 与移出目录的包验证，测试未通过不得上传为可交付产物。
+  `tools/ci.py` 与移出目录的包验证。每个平台分别并行构建原生组件、Rust
+  release 和 debug 测试，打包等待两个构建完成；artifact 是候选产物，只有
+  整次工作流及 `All checks passed` 成功才能用于发布。新增发布 job 必须依赖
+  总检查，不能以某个上传成功或某个矩阵分支成功代替。
 - README 和维护文档使用中文；代码标识、诊断和提交信息使用英文。
 - 提交前核对 author/committer；公司项目使用维护者的公司身份，不修改
   全局配置。英文 Conventional Commits，正文按 75 字符换行，附实际
