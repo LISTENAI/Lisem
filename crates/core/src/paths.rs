@@ -1,4 +1,4 @@
-//! Shared host paths. Branding changes must not strand existing instances.
+//! Shared host resource and data paths.
 use anyhow::{Context, Result, bail};
 use std::path::PathBuf;
 
@@ -6,7 +6,7 @@ pub fn runtime_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
     if let Some(path) = explicit.or_else(|| std::env::var_os("LISEM_ROOT").map(PathBuf::from)) {
         return Ok(path.canonicalize()?);
     }
-    let executable = std::env::current_exe()?;
+    let executable = std::env::current_exe()?.canonicalize()?;
     if let Some(directory) = executable.parent() {
         let bundled = directory.join("runtime");
         if bundled.join("manifest.json").is_file() {
@@ -27,9 +27,7 @@ pub fn runtime_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
 }
 
 pub fn data_dir() -> Result<PathBuf> {
-    if let Some(value) =
-        std::env::var_os("LISEM_DATA_DIR").or_else(|| std::env::var_os("LISA_SIM_DATA_DIR"))
-    {
+    if let Some(value) = std::env::var_os("LISEM_DATA_DIR") {
         return Ok(value.into());
     }
     #[cfg(target_os = "macos")]
@@ -44,18 +42,10 @@ pub fn data_dir() -> Result<PathBuf> {
             PathBuf::from(std::env::var_os("HOME").context("HOME is missing")?).join(".local/share")
         }
     };
-    let (name, previous) = if cfg!(any(target_os = "macos", target_os = "windows")) {
-        ("Lisem", "LISA Sim")
+    let name = if cfg!(any(target_os = "macos", target_os = "windows")) {
+        "Lisem"
     } else {
-        ("lisem", "lisa-sim")
+        "lisem"
     };
-    let current = base.join(name);
-    let previous = base.join(previous);
-    Ok(
-        if !current.exists() && previous.join("devices.json").is_file() {
-            previous
-        } else {
-            current
-        },
-    )
+    Ok(base.join(name))
 }

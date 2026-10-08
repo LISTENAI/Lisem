@@ -71,6 +71,12 @@ def main():
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
         subprocess.run([str(binary), '--help'], env=env, cwd=directory,
                        check=True, timeout=15, stdout=subprocess.DEVNULL)
+        if os.name != 'nt':
+            link = directory / 'command' / 'lisem'
+            link.parent.mkdir()
+            link.symlink_to(binary)
+            subprocess.run([str(link), '--json', '--data-dir', str(directory / 'link-library'), 'list'],
+                           env=env, cwd=directory, check=True, timeout=15, stdout=subprocess.DEVNULL)
         service = NativeService(directory / 'library', binary, env=env, cwd=directory, capture=False)
         uart = None
         try:

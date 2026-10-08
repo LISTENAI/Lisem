@@ -64,9 +64,13 @@ Windows 的 TCP 端点不是 COM 串口，要求串口设备路径的 cskburn �
 
 ## 无头命令行
 
-macOS 包内的 `Contents/MacOS/lisem`，或 Windows/Linux 包根目录的
-`lisem.exe` / `lisem` 可直接用于无头操作，随包运行组件无需
-另行安装。以下用 `lisem` 表示该命令，`INSTANCE_ID` 取自创建结果：
+从 Lisem 菜单选择「安装命令行工具」，即可设置终端命令。macOS 创建
+`/usr/local/bin/lisem` 链接；Linux 创建 `~/.local/bin/lisem` 链接，若该目录
+尚未在 PATH 中，按界面提示加入。Windows 将应用目录加入当前用户 PATH，
+重新打开终端后生效。移动应用后重新安装命令可更新路径。
+
+也可直接运行包内 CLI：macOS 为 `Contents/MacOS/lisem`，Windows/Linux
+为包根目录的 `lisem.exe` / `lisem`。以下 `INSTANCE_ID` 取自创建结果：
 
 ```sh
 lisem create --board arcs-mini --name "Mini" --lpk firmware.lpk

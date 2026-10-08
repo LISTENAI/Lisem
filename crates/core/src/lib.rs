@@ -10,3 +10,5 @@ pub mod runtime;
 mod shared;
 pub mod storage;
 mod transport;
+
+pub mod install;

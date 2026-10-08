@@ -30,7 +30,7 @@ use std::{
     time::Duration,
 };
 
-actions!(lisa_sim, [Quit, ShowLibrary, CloseWindow]);
+actions!(lisa_sim, [Quit, ShowLibrary, CloseWindow, InstallCli]);
 
 #[derive(Clone)]
 enum Mode {
@@ -100,6 +100,32 @@ struct Desktop {
 }
 
 impl Desktop {
+    fn install_cli(&mut self, cx: &mut Context<Self>) {
+        self.notice = "正在安装命令行工具…".into();
+        cx.notify();
+        cx.spawn(async move |view, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { lisem_core::install::install() })
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                view.notice = match result {
+                    Ok(_) if cfg!(windows) => "已安装命令行工具，重新打开终端即可使用".into(),
+                    Ok(result) if result.path_ready => {
+                        format!("已安装命令行工具：{}", result.command.display())
+                    }
+                    Ok(result) => format!(
+                        "已安装 {}；请将 {} 加入终端 PATH",
+                        result.command.display(),
+                        result.command.parent().unwrap().display()
+                    ),
+                    Err(error) => format!("CLI 安装失败：{error:#}"),
+                };
+                cx.notify();
+            });
+        })
+        .detach();
+    }
     fn new(
         backend: Arc<Backend>,
         windows: WindowBook,
@@ -1116,72 +1142,85 @@ impl Desktop {
             .flex_col()
             .gap_4()
             .child(
-                TitleBar::new().h(px(52.)).bg(cx.theme().background).child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .pl_4()
-                        .pr_4()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_lg()
-                                .child(d.name.clone()),
-                        )
-                        .child(
-                            div()
-                                // Controls must not inherit the title bar's native drag hitbox.
-                                .occlude()
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(status_lights)
-                                .child(self.icon(
-                                    if sound { "speaker" } else { "mute" },
-                                    "声音",
-                                    Action::AudioMenu,
-                                    true,
-                                    pa_enabled,
-                                    cx,
-                                ))
-                                .child(self.icon(
-                                    "serial",
-                                    "串口",
-                                    Action::SerialMenu,
-                                    true,
-                                    false,
-                                    cx,
-                                ))
-                                .child(self.icon(
-                                    "power",
-                                    match self.lifecycle() {
-                                        "已上电" => "下电",
-                                        "已下电" => "上电",
-                                        state => state,
-                                    },
-                                    if on { Action::Stop } else { Action::Start },
-                                    idle && (!self.running() || on),
-                                    on,
-                                    cx,
-                                ))
-                                .child(self.icon(
-                                    "reset",
-                                    "复位",
-                                    Action::Reset,
-                                    idle && on,
-                                    false,
-                                    cx,
-                                ))
-                                .child(self.icon("more", "实例", Action::Details, true, false, cx)),
-                        ),
-                ),
+                TitleBar::new()
+                    .h(px(52.))
+                    .bg(cx.theme().background)
+                    .when(!cfg!(target_os = "macos"), |bar| {
+                        bar.child(application_menu())
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .pl_4()
+                            .pr_4()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_lg()
+                                    .child(d.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    // Controls must not inherit the title bar's native drag hitbox.
+                                    .occlude()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .gap_1()
+                                    .child(status_lights)
+                                    .child(self.icon(
+                                        if sound { "speaker" } else { "mute" },
+                                        "声音",
+                                        Action::AudioMenu,
+                                        true,
+                                        pa_enabled,
+                                        cx,
+                                    ))
+                                    .child(self.icon(
+                                        "serial",
+                                        "串口",
+                                        Action::SerialMenu,
+                                        true,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(self.icon(
+                                        "power",
+                                        match self.lifecycle() {
+                                            "已上电" => "下电",
+                                            "已下电" => "上电",
+                                            state => state,
+                                        },
+                                        if on { Action::Stop } else { Action::Start },
+                                        idle && (!self.running() || on),
+                                        on,
+                                        cx,
+                                    ))
+                                    .child(self.icon(
+                                        "reset",
+                                        "复位",
+                                        Action::Reset,
+                                        idle && on,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(self.icon(
+                                        "more",
+                                        "实例",
+                                        Action::Details,
+                                        true,
+                                        false,
+                                        cx,
+                                    )),
+                            ),
+                    ),
             )
             .child(
                 div()
@@ -1204,6 +1243,19 @@ impl Desktop {
             );
         content
     }
+}
+
+fn application_menu() -> impl IntoElement {
+    Button::new("application-menu")
+        .label("Lisem")
+        .ghost()
+        .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, |menu, _, _| {
+            menu.item(
+                PopupMenuItem::new("安装命令行工具")
+                    .on_click(|_, _, cx| cx.dispatch_action(&InstallCli)),
+            )
+            .item(PopupMenuItem::new("退出 Lisem").on_click(|_, _, cx| cx.dispatch_action(&Quit)))
+        })
 }
 
 fn caption(text: impl Into<SharedString>) -> Div {
@@ -1317,7 +1369,16 @@ impl Render for Desktop {
                     || self.settings
                     || self.creating
                     || self.device().is_none(),
-                |e| e.child(TitleBar::new().h(px(52.)).bg(cx.theme().background)),
+                |e| {
+                    e.child(
+                        TitleBar::new()
+                            .h(px(52.))
+                            .bg(cx.theme().background)
+                            .when(!cfg!(target_os = "macos"), |bar| {
+                                bar.child(application_menu())
+                            }),
+                    )
+                },
             )
             .child(layout)
             .child(
@@ -1490,7 +1551,11 @@ fn main() {
             Menu {
                 name: "Lisem".into(),
                 disabled: false,
-                items: vec![MenuItem::action("退出 Lisem", Quit)],
+                items: vec![
+                    MenuItem::action("安装命令行工具", InstallCli),
+                    MenuItem::separator(),
+                    MenuItem::action("退出 Lisem", Quit),
+                ],
             },
             Menu {
                 name: "窗口".into(),
@@ -1507,6 +1572,15 @@ fn main() {
             let (b, w) = (b.clone(), w.clone());
             cx.defer(move |cx| {
                 show_library(b, w, cx);
+            });
+        });
+        let b = ui_backend.clone();
+        let w = windows.clone();
+        cx.on_action(move |_: &InstallCli, cx| {
+            let (b, w) = (b.clone(), w.clone());
+            cx.defer(move |cx| {
+                let handle = show_library(b, w, cx);
+                let _ = handle.view.update(cx, |view, cx| view.install_cli(cx));
             });
         });
         let b = ui_backend.clone();
