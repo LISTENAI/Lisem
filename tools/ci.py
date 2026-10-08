@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import sys
 import tarfile
@@ -18,9 +19,22 @@ def run(name, command, timeout=1800, env=None):
     directory = ROOT / 'artifacts/ci'
     directory.mkdir(parents=True, exist_ok=True)
     print(name, flush=True)
-    with (directory / (name + '.log')).open('wb') as log:
-        subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                       check=True, timeout=timeout, env=env)
+    path = directory / (name + '.log')
+    with path.open('wb') as log:
+        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                timeout=timeout, env=env)
+    if result.returncode:
+        content = path.read_text(errors='replace')
+        # Emit only bounded identifiers and numeric statuses, never raw logs.
+        summary = {
+            'phase': name, 'returncode': result.returncode,
+            'test_failures': re.findall(r'^(?:ERROR|FAIL): ([A-Za-z0-9_.]+) \(([A-Za-z0-9_.]+)\)$', content, re.M)[:20],
+            'child_statuses': re.findall(r'returned non-zero exit status ([0-9]+)', content)[-10:],
+            'rust_errors': sorted(set(re.findall(r'error\[(E[0-9]{4})\]', content))),
+            'exception_types': sorted(set(re.findall(r'^([A-Za-z]+(?:Error|Exception)):', content, re.M))),
+        }
+        print(json.dumps(summary), flush=True)
+        result.check_returncode()
 
 
 def main():

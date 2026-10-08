@@ -17,4 +17,8 @@ else:
                         '-I' + str(ROOT / 'qemu/include'),
                         str(ROOT / 'tests/fixtures/qemu_jit_state.c'),
                         '-pthread', '-o', str(binary)], check=True, timeout=30)
-        subprocess.run([str(binary)], check=True, timeout=30)
+        result = subprocess.run([str(binary)], timeout=30)
+        if result.returncode == 77:
+            print('Darwin JIT write protection: unavailable on this host')
+        else:
+            result.check_returncode()

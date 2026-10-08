@@ -133,7 +133,7 @@ def prepare():
         windows_tar = ['--force-local', '--exclude=*/roms', '--exclude=*/tests/lcitool']
         try:
             subprocess.run([shutil.which('tar') or 'tar', *(windows_tar if os.name == 'nt' else []),
-                            '-xf', str(archive), '-C', str(SOURCE.parent)],
+                            '-xf', archive.as_posix(), '-C', SOURCE.parent.as_posix()],
                            check=True, timeout=180)
         except BaseException:
             # A partial extraction must never be mistaken for a source tree.
@@ -163,7 +163,7 @@ def prepare():
                         break
         if wanted:
             raise ValueError('Missing upstream patch inputs: ' + str(sorted(wanted)))
-        subprocess.run(['patch', '-p1', '-i', str(patch)], cwd=SOURCE, check=True, timeout=30)
+        subprocess.run(['patch', '-p1', '-i', patch.as_posix()], cwd=SOURCE, check=True, timeout=30)
         patch_stamp.write_text(json.dumps({'sha256': sha256(patch),
             'files': {name: sha256(SOURCE / name) for name in paths}}, indent=2) + '\n')
     for path in (ROOT / 'qemu').rglob('*'):

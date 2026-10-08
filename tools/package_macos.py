@@ -29,7 +29,17 @@ def rpaths(path):
 
 def minimum_system(path):
     lines = output('otool', '-l', str(path)).splitlines()
-    versions = [line.split()[1] for line in lines if line.strip().startswith('minos ')]
+    versions = []
+    command = None
+    for line in lines:
+        fields = line.strip().split()
+        if len(fields) != 2:
+            continue
+        if fields[0] == 'cmd':
+            command = fields[1]
+        elif ((command == 'LC_BUILD_VERSION' and fields[0] == 'minos')
+              or (command == 'LC_VERSION_MIN_MACOSX' and fields[0] == 'version')):
+            versions.append(fields[1])
     if not versions:
         raise RuntimeError(f'Minimum macOS version missing: {path.name}')
     return max(tuple(map(int, version.split('.'))) for version in versions)

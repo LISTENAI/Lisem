@@ -11,6 +11,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import storage_check as instance
+if os.name == 'nt':
+    raise unittest.SkipTest('POSIX firmware validation runner; Windows uses the native CLI')
 import qemu_run
 
 
