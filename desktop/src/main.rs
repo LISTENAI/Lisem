@@ -906,7 +906,7 @@ impl Desktop {
                             )
                             .on_change(cx.listener(|v, _, w, cx| v.act(Action::Network, w, cx))),
                     )
-                    .child(caption("热点 LISA-Sim，无密码；开启后通过电脑访问网络"))
+                    .child(caption("热点 Lisem，无密码；开启后通过电脑访问网络"))
                     .child(
                         Switch::new("output-sound")
                             .label("声音输出")
@@ -1369,6 +1369,7 @@ fn open_window(
                 traffic_light_position: Some(gpui::point(px(16.), px(18.))),
                 ..TitleBar::title_bar_options()
             }),
+            app_id: Some("com.listenai.emulator".into()),
             app_owns_titlebar_drag: true,
             ..Default::default()
         },

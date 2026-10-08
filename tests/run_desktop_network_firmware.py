@@ -9,7 +9,7 @@ import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from native_service import NativeService, NativeUart, DEFAULT_BINARY
-WIFI_AP = 'LISA-Sim'
+WIFI_AP = 'Lisem'
 
 
 def main():

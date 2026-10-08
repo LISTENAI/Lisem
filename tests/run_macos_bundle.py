@@ -82,7 +82,8 @@ def main():
                 service.dispatch('button', {'id': item['id'], 'button': 'function', 'pressed': False})
                 released = True
             if not connected and seconds >= 8 and b'ListenAI:/$' in received:
-                assert os.write(descriptor, b'wifi connect LISA-Sim\r') == 22
+                command = b'wifi connect Lisem\r'
+                assert os.write(descriptor, command) == len(command)
                 connected = True
             if state['finished']:
                 break

@@ -125,3 +125,17 @@ python3 tests/run_macos_bundle.py --lpk /path/to/firmware.lpk --output /tmp/lise
 兼容性验证，构建机上的第三方库可能提高最终应用的最低系统版本。
 不随应用分发业务固件、用户实例或平台凭据。ARCS 固定 ROM 属于已授权
 芯片资产，其哈希与用途见 `qemu/roms/arcs/manifest.json`。
+
+## 应用图标
+
+图标源文件位于 `desktop/assets/app/`，小尺寸使用单独的 `icon-small.svg`。
+安装 librsvg 后运行 `python3 tools/update_icons.py` 更新 PNG、ICO 与 ICNS，
+一并提交源文件和生成资源；常规构建无需图标转换工具。
+
+macOS 在应用资源中声明 ICNS，包含标准与 Retina 尺寸；Windows 在桌面 EXE
+嵌入多尺寸 ICO；Linux 使用应用 ID `com.listenai.emulator`、同名 desktop
+入口及 hicolor 图标。修改后验证小尺寸、浅色／深色背景和各系统应用菜单。
+
+设计参考：[Apple 应用图标](https://developer.apple.com/design/human-interface-guidelines/app-icons)、
+[Windows 应用图标](https://learn.microsoft.com/en-us/windows/apps/design/iconography/app-icon-design)、
+[freedesktop 图标规范](https://specifications.freedesktop.org/icon-theme-spec/latest/)。

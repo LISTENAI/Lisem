@@ -239,7 +239,7 @@ impl Backend {
             .env("ARCS_QEMU_AUDIO_OUTPUT", output.join("audio.wav"))
             .env("ARCS_QEMU_WIFI_CAPTURE", output.join("wifi-tx.pcap"))
             .env("ARCS_QEMU_BLE_CAPTURE", output.join("ble-tx.jsonl"))
-            .env("ARCS_QEMU_WIFI_AP", "LISA-Sim");
+            .env("ARCS_QEMU_WIFI_AP", "Lisem");
         if download {
             command.env("ARCS_QEMU_BOOT_RELEASE_NS", "50000000");
         }

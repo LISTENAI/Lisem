@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Lisem
+Comment=Run LISTENAI device firmware
+Comment[zh_CN]=在电脑上运行聆思设备固件
+Exec=lisem-desktop
+Icon=com.listenai.emulator
+Terminal=false
+Categories=Development;
+StartupWMClass=com.listenai.emulator

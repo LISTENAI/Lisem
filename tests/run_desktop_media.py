@@ -55,7 +55,7 @@ def with_service(args, device):
                 service.dispatch('button', {'id': item['id'], 'button': 'function', 'pressed': False}); released = True
             uart = output / 'uart0.bin'
             if released and not wifi and uart.exists() and b'ListenAI:/$' in uart.read_bytes():
-                service.dispatch('uart_write', {'id': item['id'], 'channel': 0, 'hex': b'wifi connect LISA-Sim\r\n'.hex()}); wifi = True
+                service.dispatch('uart_write', {'id': item['id'], 'channel': 0, 'hex': b'wifi connect Lisem\r\n'.hex()}); wifi = True
             if args.input and seconds >= 15 and not uploaded:
                 service.dispatch('audio', {'id': item['id'], 'path': str(args.input)}); uploaded = True
             path = output / 'live/framebuffer'

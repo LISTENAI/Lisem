@@ -118,6 +118,22 @@ def package(bundle, target):
             shutil.copy2(source, destination)
         for directory in ('boards', 'chips'):
             shutil.copytree(ROOT / directory, runtime / directory)
+        if not WINDOWS:
+            assets = ROOT / 'desktop/assets'
+            applications = staged / 'share/applications'
+            applications.mkdir(parents=True)
+            shutil.copy2(assets / 'com.listenai.emulator.desktop', applications)
+            icons = staged / 'share/icons/hicolor'
+            for size in (16, 24, 32, 48, 64, 128, 256, 512):
+                destination = icons / f'{size}x{size}/apps'
+                destination.mkdir(parents=True)
+                shutil.copy2(assets / f'app/icon-{size}.png',
+                             destination / 'com.listenai.emulator.png')
+            destination = icons / 'scalable/apps'
+            destination.mkdir(parents=True)
+            shutil.copy2(assets / 'app/icon.svg', destination / 'com.listenai.emulator.svg')
+            shutil.copy2(assets / 'install-desktop.sh', staged / 'install-desktop.sh')
+            (staged / 'install-desktop.sh').chmod(0o755)
         shutil.copytree(ROOT / 'LICENSES', staged / 'LICENSES')
         shutil.copy2(ROOT / 'LICENSE', staged / 'LICENSES' / 'Lisem.txt')
         for directory, names in [('.tools/qemu-10.1.0', ['COPYING', 'COPYING.LIB']),

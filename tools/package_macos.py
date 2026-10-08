@@ -125,6 +125,7 @@ def package(bundle, target):
             destination.chmod(0o755)
         for directory in ('boards', 'chips'):
             shutil.copytree(ROOT / directory, runtime / directory)
+        shutil.copy2(ROOT / 'desktop/assets/app/lisem.icns', resources / 'Lisem.icns')
         shutil.copytree(ROOT / 'LICENSES', resources / 'LICENSES')
         shutil.copy2(ROOT / 'LICENSE', resources / 'LICENSES' / 'Lisem.txt')
         for name in ('COPYING', 'COPYING.LIB'):
@@ -150,6 +151,7 @@ def package(bundle, target):
             'CFBundleDisplayName': 'Lisem', 'CFBundleExecutable': 'lisem-desktop',
             'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.1.0',
             'CFBundleVersion': '1', 'NSHighResolutionCapable': True,
+            'CFBundleIconFile': 'Lisem.icns',
             'LSMinimumSystemVersion': minimum,
             'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。'}))
         subprocess.run(['codesign', '--force', '--sign', '-', str(staged)], check=True, timeout=60)

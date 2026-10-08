@@ -13,12 +13,51 @@ import time
 from native_service import DEFAULT_BINARY, NativeService, NativeUart, ROOT
 
 
+def verify_icon(bundle):
+    if os.sys.platform == 'darwin':
+        import plistlib
+        contents = bundle / 'Contents'
+        info = plistlib.loads((contents / 'Info.plist').read_bytes())
+        icon = (contents / 'Resources' / info['CFBundleIconFile']).read_bytes()
+        assert icon[:4] == b'icns' and int.from_bytes(icon[4:8], 'big') == len(icon)
+    elif os.name == 'nt':
+        import ctypes
+        from ctypes import wintypes
+        shell = ctypes.WinDLL('shell32', use_last_error=True)
+        extract = shell.ExtractIconExW
+        extract.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
+                            ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON), wintypes.UINT]
+        extract.restype = wintypes.UINT
+        large, small = wintypes.HICON(), wintypes.HICON()
+        assert extract(str(bundle / 'lisem-desktop.exe'), 0,
+                       ctypes.byref(large), ctypes.byref(small), 1) == 1
+        destroy = ctypes.WinDLL('user32').DestroyIcon
+        destroy.argtypes = [wintypes.HICON]
+        destroy.restype = wintypes.BOOL
+        assert large.value and small.value, 'Executable must provide both icon sizes'
+        destroy(large)
+        destroy(small)
+    else:
+        import configparser
+        entry = configparser.ConfigParser(interpolation=None)
+        entry.read(bundle / 'share/applications/com.listenai.emulator.desktop')
+        icon = entry['Desktop Entry']['Icon']
+        assert icon == 'com.listenai.emulator'
+        assert entry['Desktop Entry']['StartupWMClass'] == icon
+        assert (bundle / entry['Desktop Entry']['Exec']).is_file()
+        for size in (16, 24, 32, 48, 64, 128, 256, 512):
+            png = (bundle / f'share/icons/hicolor/{size}x{size}/apps/{icon}.png').read_bytes()
+            assert png[:8] == b'\x89PNG\r\n\x1a\n'
+            assert struct.unpack_from('>II', png, 16) == (size, size)
+
+
 def main():
     source = DEFAULT_BINARY.parents[2] if os.sys.platform == 'darwin' else DEFAULT_BINARY.parent
     with tempfile.TemporaryDirectory(prefix='lisem-package-') as temporary:
         directory = Path(temporary)
         bundle = directory / source.name
         shutil.copytree(source, bundle)
+        verify_icon(bundle)
         binary = bundle / DEFAULT_BINARY.relative_to(source)
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('LISEM_', 'LISA_SIM_', 'DYLD_', 'ARCS_QEMU_'))

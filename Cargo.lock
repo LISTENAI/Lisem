@@ -3798,6 +3798,7 @@ dependencies = [
 name = "lisem-desktop"
 version = "0.1.0"
 dependencies = [
+ "embed-resource",
  "gpui-kit",
  "image",
  "lisem-core",
