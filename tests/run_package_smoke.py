@@ -23,7 +23,7 @@ def main():
         env = {key: value for key, value in os.environ.items()
                if not key.startswith(('LISEM_', 'LISA_SIM_', 'DYLD_', 'ARCS_QEMU_'))
                and key not in ('DISPLAY', 'WAYLAND_DISPLAY', 'LD_LIBRARY_PATH')}
-        env['PATH'] = str(Path(env['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
+        env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
         subprocess.run([str(binary), '--help'], env=env, cwd=directory,
                        check=True, timeout=15, stdout=subprocess.DEVNULL)
         service = NativeService(directory / 'library', binary, env=env, cwd=directory)
