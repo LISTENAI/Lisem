@@ -590,6 +590,7 @@ pub struct Runtime {
     session: Option<Session>,
     last_state: Value,
     last_frame: Option<Frame>,
+    last_uart: Vec<transport::Output>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -611,6 +612,7 @@ impl Runtime {
             session: None,
             last_state: Value::Null,
             last_frame: None,
+            last_uart: Vec::new(),
             ports,
             shutdown: false,
         })
@@ -629,6 +631,7 @@ impl Runtime {
         }
         if self.session.as_ref().is_some_and(|s| s.finished) {
             let mut session = self.session.take().unwrap();
+            self.last_uart = session.uart.iter().map(Uart::observer).collect();
             self.last_frame = session.frame();
             self.last_state = session.state.clone();
         }
@@ -691,7 +694,9 @@ impl Runtime {
             ensure!(
                 self.session
                     .as_ref()
-                    .is_some_and(|s| json!(s.output) == *run),
+                    .map(|s| json!(s.output))
+                    .unwrap_or_else(|| self.last_state["output"].clone())
+                    == *run,
                 "The request belongs to an earlier run"
             );
         }
@@ -715,6 +720,7 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    self.last_uart = session.uart.iter().map(Uart::observer).collect();
                     self.last_frame = session.frame();
                     self.last_state = session.state.clone();
                 }
@@ -793,6 +799,25 @@ impl Runtime {
                 session.state["input_busy"] = json!(true);
                 Ok(json!(true))
             }
+            "uart_read" => {
+                let channel = params["channel"].as_u64().context("Missing UART channel")?;
+                ensure!(channel < 3, "UART channel must be 0..2");
+                let source = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.uart[channel as usize].observer())
+                    .or_else(|| self.last_uart.get(channel as usize).cloned())
+                    .context("Instance has not run")?;
+                let cursor = params["cursor"].as_u64().unwrap_or(0);
+                let limit = params["limit"].as_u64().unwrap_or(4096).try_into()?;
+                let mut result = source.lock().unwrap().read(cursor, limit)?;
+                result["run"] = self
+                    .session
+                    .as_ref()
+                    .map(|s| json!(s.output))
+                    .unwrap_or_else(|| self.last_state["output"].clone());
+                Ok(result)
+            }
             "uart_write" => {
                 let channel = params["channel"].as_u64().context("Missing UART channel")?;
                 ensure!(channel < 3, "UART channel must be 0..2");
@@ -833,7 +858,7 @@ impl Runtime {
                     .unwrap_or(Value::Null))
             }
             "screenshot" => {
-                let path = Path::new(params["path"].as_str().context("Screenshot path missing")?);
+                let path = params["path"].as_str().map(Path::new);
                 let deadline = Instant::now() + Duration::from_secs(1);
                 loop {
                     let frame = if let Some(session) = &mut self.session {
@@ -842,8 +867,15 @@ impl Runtime {
                         self.last_frame.clone()
                     };
                     if let Some(frame) = frame {
-                        frame.save(path)?;
-                        break;
+                        if let Some(path) = path {
+                            frame.save(path)?;
+                            break;
+                        }
+                        use base64::Engine;
+                        return Ok(
+                            json!({"mime_type":"image/png", "width":frame.width, "height":frame.height,
+                            "data":base64::engine::general_purpose::STANDARD.encode(frame.png()?)}),
+                        );
                     }
                     ensure!(Instant::now() < deadline, "No display frame available");
                     thread::sleep(Duration::from_millis(5));

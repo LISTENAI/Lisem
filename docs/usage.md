@@ -81,6 +81,7 @@ lisem start INSTANCE_ID --seconds 120 --timeout 180
 lisem button INSTANCE_ID function press
 lisem button INSTANCE_ID function release
 lisem screenshot INSTANCE_ID screen.png
+lisem logs INSTANCE_ID 0
 lisem reset INSTANCE_ID
 lisem stop INSTANCE_ID
 lisem import INSTANCE_ID firmware.lpk
@@ -108,3 +109,5 @@ DISPLAY、麦克风或声音设备，适合文本终端和 CI。
 
 开发时 `make headless` 只构建 Rust CLI；从源码目录运行还需
 `make qemu-build`，启用网络另需 `python3 tools/build_network.py`。
+
+MCP 的接入方式见 [Coding agent 接入](agents.md)。

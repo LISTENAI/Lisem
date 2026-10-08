@@ -64,6 +64,11 @@
 
 ## 验证
 
+- MCP 使用 CLI 内的官方 SDK stdio 服务，与 GUI/CLI 共用核心。协议标准输出
+  不混入诊断；观察 UART 不消耗终端数据，游标溢出明确报告。运行控制保留
+  过期请求检查，断开只清理该连接拥有的运行。
+- `python3 tests/run_mcp.py`：打包后的 MCP 握手、工具、原 ROM、截图、
+  UART 旁路观察和所有权清理；`--lpk` 追加原固件启动验证。
 - `make test`：Python 验证工具及 Rust workspace 测试；`make check-qemu`：芯片与
   器件、CPU/时钟、控制接口及宿主传输回归。按改动先跑相关单项，再跑整套。
 - `python3 tests/run_host_audio_endpoint.py`：Windows/Linux PCM 与 AEC 时间映射、

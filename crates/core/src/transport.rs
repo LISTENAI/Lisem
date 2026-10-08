@@ -42,9 +42,39 @@ const UART_CAPACITY: usize = 1024 * 1024;
 pub struct OutputBuffer {
     bytes: VecDeque<u8>,
     closed: bool,
+    history: VecDeque<u8>,
+    position: u64,
     tail: Option<(TcpStream, Option<File>)>,
 }
 impl OutputBuffer {
+    fn observe(&mut self, bytes: &[u8]) {
+        self.position += bytes.len() as u64;
+        self.history.extend(bytes);
+        let excess = self.history.len().saturating_sub(65536);
+        self.history.drain(..excess);
+    }
+    pub fn read(&mut self, cursor: u64, limit: usize) -> Result<Value> {
+        ensure!(
+            (1..=16384).contains(&limit),
+            "UART read limit must be 1..16384"
+        );
+        self.drain_tail()?;
+        ensure!(cursor <= self.position, "UART cursor is beyond this run");
+        let oldest = self.position - self.history.len() as u64;
+        let start = cursor.max(oldest);
+        let bytes: Vec<u8> = self
+            .history
+            .iter()
+            .skip((start - oldest) as usize)
+            .take(limit)
+            .copied()
+            .collect();
+        Ok(
+            json!({"cursor":start + bytes.len() as u64,"oldest":oldest,"available":self.position,
+                  "lost":cursor < oldest,"hex":crate::storage::hex(&bytes),"text":String::from_utf8_lossy(&bytes)}),
+        )
+    }
+
     fn drain_tail(&mut self) -> Result<()> {
         if !self.closed {
             return Ok(());
@@ -63,6 +93,7 @@ impl OutputBuffer {
                 if let Some(log) = log {
                     log.write_all(&buffer[..n])?;
                 }
+                self.observe(&buffer[..n]);
                 self.bytes.extend(&buffer[..n]);
             }
             Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => self.tail = None,
@@ -75,7 +106,7 @@ impl OutputBuffer {
         self.closed && self.tail.is_none() && self.bytes.is_empty()
     }
 }
-type Output = Arc<Mutex<OutputBuffer>>;
+pub type Output = Arc<Mutex<OutputBuffer>>;
 
 pub struct Uart {
     pub stream: TcpStream,
@@ -102,6 +133,9 @@ impl Uart {
             })),
             retain: true,
         })
+    }
+    pub fn observer(&self) -> Output {
+        self.output.clone()
     }
     pub fn output(&mut self) -> Output {
         self.retain = true;
@@ -139,6 +173,7 @@ impl Uart {
                     if let Some(log) = &mut self.log {
                         log.write_all(&buffer[..n])?;
                     }
+                    output.observe(&buffer[..n]);
                     if self.retain {
                         output.bytes.extend(&buffer[..n]);
                     }
@@ -512,6 +547,30 @@ mod tests {
     }
 
     #[test]
+    fn observation_is_bounded_cursor_based_and_does_not_consume_terminal_data() {
+        let mut output = OutputBuffer::default();
+        let bytes: Vec<u8> = (0..70000).map(|v| v as u8).collect();
+        output.bytes.extend(&bytes);
+        for chunk in bytes.chunks(4096) {
+            output.observe(chunk);
+        }
+        assert_eq!(output.history.len(), 65536);
+        let first = output.read(0, 100).unwrap();
+        assert_eq!(first["oldest"], 4464);
+        assert_eq!(first["lost"], true);
+        assert_eq!(first["cursor"], 4564);
+        assert_eq!(
+            crate::storage::unhex(first["hex"].as_str().unwrap()).unwrap(),
+            bytes[4464..4564]
+        );
+        assert_eq!(first, output.read(0, 100).unwrap());
+        assert_eq!(output.bytes.len(), 70000);
+        assert_eq!(output.read(4564, 100).unwrap()["lost"], false);
+        assert!(output.read(70001, 10).is_err());
+        assert!(output.read(0, 16385).is_err());
+    }
+
+    #[test]
     fn retired_uart_drains_socket_tail_without_exceeding_memory_budget() {
         let listener = listener().unwrap();
         let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
@@ -572,11 +631,13 @@ mod tests {
             bytes: first.clone().into(),
             closed: true,
             tail: None,
+            ..Default::default()
         }));
         let b = Arc::new(Mutex::new(OutputBuffer {
             bytes: second.clone().into(),
             closed: true,
             tail: None,
+            ..Default::default()
         }));
         port.bind(a).unwrap();
         // Fill the terminal without reading, then seal the run. Unread output

@@ -182,6 +182,12 @@ impl Manager {
         let layout = self.catalog.layout(item["board"].as_str().unwrap())?;
         self.selected = Some(id.clone());
         match method {
+            "inspect" => {
+                let runtime = Client::connect(&path)
+                    .and_then(|c| c.call("status", json!({})))
+                    .unwrap_or(Value::Null);
+                Ok(json!({"device":item,"runtime":runtime}))
+            }
             "start" => {
                 let options = if let Some(options) = params.get("options") {
                     serde_json::from_value(options.clone())?
@@ -206,7 +212,7 @@ impl Manager {
                 self.status()
             }
             "stop" | "reset" | "reset_download" | "button" | "serial" | "uart_write"
-            | "screenshot" | "audio" => {
+            | "screenshot" | "audio" | "uart_read" => {
                 let value = self.worker(&id)?.call(method, params)?;
                 if ["reset", "reset_download"].contains(&method) {
                     self.runs.insert(id, value["session"]["output"].clone());

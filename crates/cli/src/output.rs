@@ -8,6 +8,7 @@ pub enum Output {
     Status,
     Run(String),
     Text,
+    Raw,
     Message(String),
 }
 impl Output {
@@ -33,11 +34,13 @@ impl Output {
             Action::Uart { channel, .. } => Self::Message(format!("UART {channel} disabled.")),
             Action::Send { channel, .. } => Self::Message(format!("Sent to UART {channel}.")),
             Action::Shutdown { id } => Self::Message(format!("Runtime closed: {id}.")),
-            Action::Runtime { .. } | Action::Bridge => unreachable!(),
+            Action::Logs { .. } => Self::Raw,
+            Action::Runtime { .. } | Action::Bridge | Action::Mcp => unreachable!(),
         }
     }
     pub fn render(&self, value: &Value) -> String {
         match self {
+            Self::Raw => unreachable!(),
             Self::Text => value.as_str().unwrap_or_default().to_owned(),
             Self::Message(message) => message.clone(),
             Self::Device => device(value),

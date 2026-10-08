@@ -61,6 +61,7 @@ def main():
     else:
         run('jit-state', [python, 'tests/run_qemu_jit_state.py'])
     run('package-smoke', [python, 'tests/run_package_smoke.py'])
+    run('mcp-smoke', [python, 'tests/run_mcp.py'])
     bundle = ROOT / 'artifacts/desktop' / ('Lisem.app' if system == 'darwin' else 'Lisem')
     output = ROOT / 'artifacts/packages'
     output.mkdir(parents=True, exist_ok=True)

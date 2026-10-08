@@ -1,3 +1,4 @@
+mod mcp;
 mod output;
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
@@ -34,6 +35,8 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Serve the Model Context Protocol over standard input/output.
+    Mcp,
     /// List device instances.
     List,
     /// Create an independent instance with a new OTP identity.
@@ -110,6 +113,16 @@ enum Action {
         #[arg(long)]
         hex: bool,
     },
+    /// Read a bounded UART history without consuming the terminal connection.
+    Logs {
+        id: String,
+        #[arg(default_value_t = 0)]
+        channel: u8,
+        #[arg(long, default_value_t = 0)]
+        cursor: u64,
+        #[arg(long, default_value_t = 4096)]
+        limit: usize,
+    },
     /// Power off and close this instance's host endpoints.
     Shutdown { id: String },
     #[command(name = "_runtime", hide = true)]
@@ -176,6 +189,10 @@ fn run() -> Result<i32> {
         return Ok(0);
     }
     let mut manager = Manager::new(&root, &data, &std::env::current_exe()?)?;
+    if matches!(args.command, Action::Mcp) {
+        mcp::serve(manager, stop)?;
+        return Ok(0);
+    }
     if matches!(args.command, Action::Bridge) {
         manager::bridge(manager)?;
         return Ok(0);
@@ -240,8 +257,9 @@ fn run() -> Result<i32> {
             "uart_write",
             json!({"id": id, "channel": channel, "hex": if hex { text } else { storage::hex(text.as_bytes()) }}),
         )?,
+        Action::Logs { id, channel, cursor, limit } => manager.call("uart_read", json!({"id":id,"channel":channel,"cursor":cursor,"limit":limit}))?,
         Action::Shutdown { id } => manager.call("shutdown", json!({"id": id}))?,
-        Action::Runtime { .. } | Action::Bridge => unreachable!(),
+        Action::Runtime { .. } | Action::Bridge | Action::Mcp => unreachable!(),
     };
     if let Some((id, timeout)) = foreground {
         let item = manager.catalog.device(&id)?;
@@ -276,6 +294,14 @@ fn run() -> Result<i32> {
         }
     }
     manager.disown();
+    if !args.json && matches!(presentation, output::Output::Raw) {
+        use std::io::Write;
+        if value["lost"] == true {
+            eprintln!("Earlier UART bytes are no longer in the memory buffer.");
+        }
+        std::io::stdout().write_all(&storage::unhex(value["hex"].as_str().unwrap_or(""))?)?;
+        return Ok(0);
+    }
     println!(
         "{}",
         if args.json {

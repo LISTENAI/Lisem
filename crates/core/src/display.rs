@@ -133,14 +133,19 @@ pub struct Frame {
 }
 impl Frame {
     pub fn save(&self, path: &Path) -> Result<()> {
+        std::fs::write(path, self.png()?)?;
+        Ok(())
+    }
+    pub fn png(&self) -> Result<Vec<u8>> {
         let mut rgba = self.bgra.clone();
         for pixel in rgba.chunks_exact_mut(4) {
             pixel.swap(0, 2);
         }
+        let mut png = std::io::Cursor::new(Vec::new());
         image::RgbaImage::from_raw(self.width, self.height, rgba)
             .context("Invalid frame geometry")?
-            .save_with_format(path, image::ImageFormat::Png)?;
-        Ok(())
+            .write_to(&mut png, image::ImageFormat::Png)?;
+        Ok(png.into_inner())
     }
 }
 

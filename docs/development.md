@@ -25,6 +25,9 @@ python3 tests/run_live_memory.py --lpk firmware.lpk --audio --microphone --netwo
 该测试使用独立临时实例，检查运行中没有自动录制文件、画面和 UART 可用、
 音频完整交付、退出清理及 OTP 保持；麦克风与网络选项需要宿主相应能力。
 
+MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
+验证原应用启动。GHA 对每个平台的最终包运行不依赖应用固件的 MCP 回归。
+
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、
