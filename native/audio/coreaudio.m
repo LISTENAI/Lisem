@@ -216,6 +216,7 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture_input;
+    p->live_input = capture_input && !recording_files;
     HostAudio s = {.stream = p};
     mach_timebase_info_data_t timebase;
     mach_timebase_info(&timebase);
@@ -315,7 +316,7 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     getrusage(RUSAGE_SELF, &usage);
     NSDictionary *stats = @{
         @"epoch_ns": @(p->epoch_ns), @"pacing_origin_ns": @(p->pacing_origin_ns),
-        @"input_origin": @(p->input_origin), @"complete": @(completed), @"interrupted": @(interrupted != 0), @"capture": @(capture_input), @"rate": @(LISA_AUDIO_RATE),
+        @"input_origin": @(lisa_audio_load(&p->input_origin)), @"complete": @(completed), @"interrupted": @(interrupted != 0), @"capture": @(capture_input), @"rate": @(LISA_AUDIO_RATE),
         @"reference_nonzero": @(s.reference_nonzero), @"reference_missing": @(s.reference_missing),
         @"reference_clock_errors": @(s.reference_clock_errors),
         @"host_error": @(lisa_audio_load(&p->host_error)), @"guest_error": @(lisa_audio_load(&p->guest_error)),
@@ -328,6 +329,9 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
         @"output_frames": @(lisa_audio_load(&s.output_frames)), @"output_underrun": @(lisa_audio_load(&p->output_underrun)),
         @"muted": @(__atomic_load_n(&s.muted, __ATOMIC_ACQUIRE)), @"mute_changes": @(s.mute_changes),
         @"output_cursor_ns": @(lisa_audio_load(&p->output_cursor_ns)), @"watermark_ns": @(lisa_audio_load(&p->watermark_ns)),
+        @"input_skipped_frames": @(lisa_audio_load(&p->input_skipped)),
+        @"input_dropped_frames": @(lisa_audio_load(&p->input_dropped)),
+        @"input_resyncs": @(lisa_audio_load(&p->input_resyncs)),
         @"max_input_backlog_frames": @(lisa_audio_load(&p->max_input_backlog)),
         @"max_output_backlog_frames": @(lisa_audio_load(&p->max_output_backlog)),
         @"wall_seconds": @(monotonic_seconds() - started),

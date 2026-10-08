@@ -58,6 +58,7 @@ void lisa_host_audio_epoch(LisaHostAudio *s, uint64_t ns)
     uint64_t written = lisa_audio_load(&p->input_write);
     p->epoch_ns = ns;
     p->input_origin = written > LISA_AUDIO_PREROLL ? written - LISA_AUDIO_PREROLL : 0;
+    lisa_audio_store(&p->input_cursor, p->input_origin);
     p->pacing_origin_ns = icount_clock_audio_epoch();
     lisa_audio_store(&p->epoch_ready, 1);
 }
@@ -75,7 +76,11 @@ void lisa_host_audio_report(LisaHostAudio *s, FILE *file)
     LisaAudioStream *p = s->stream;
     if (!p) { return; }
     fprintf(file, ",\"host_audio\":{\"rate\":%u,\"adc_missing\":%" PRIu64
+            ",\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64
+            ",\"input_resyncs\":%" PRIu64
             ",\"host_error\":%" PRIu64 ",\"guest_error\":%" PRIu64 "}",
             LISA_AUDIO_RATE, lisa_audio_load(&p->adc_missing),
+            lisa_audio_load(&p->input_skipped), lisa_audio_load(&p->input_dropped),
+            lisa_audio_load(&p->input_resyncs),
             lisa_audio_load(&p->host_error), lisa_audio_load(&p->guest_error));
 }

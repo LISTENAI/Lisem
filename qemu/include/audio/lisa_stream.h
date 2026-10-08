@@ -6,12 +6,13 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define LISA_AUDIO_MAGIC UINT64_C(0x4c49534150434d34)
+#define LISA_AUDIO_MAGIC UINT64_C(0x4c49534150434d35)
 #define LISA_AUDIO_RATE 16000
 #define LISA_AUDIO_PERIOD_NS 62500
 #define LISA_AUDIO_CAPACITY 262144
 #define LISA_AUDIO_MASK (LISA_AUDIO_CAPACITY - 1)
 #define LISA_AUDIO_PREROLL 4000
+#define LISA_AUDIO_INPUT_LIMIT (2 * LISA_AUDIO_PREROLL)
 
 enum { LISA_AUDIO_INIT, LISA_AUDIO_RUNNING, LISA_AUDIO_PAUSED, LISA_AUDIO_DONE };
 enum { LISA_AUDIO_OK, LISA_AUDIO_INPUT_FULL, LISA_AUDIO_OUTPUT_FULL,
@@ -32,6 +33,8 @@ typedef struct LisaAudioStream {
     uint64_t output_silence, output_underrun, output_cursor_ns;
     uint64_t max_input_backlog, max_output_backlog;
     uint64_t epoch_ready, epoch_ns, input_origin, pacing_origin_ns;
+    uint64_t live_input, input_skipped, input_dropped, input_resyncs;
+    uint64_t input_cursor, input_buffering, input_reference;
     int16_t input[LISA_AUDIO_CAPACITY], reference[LISA_AUDIO_CAPACITY];
     LisaAudioFrame output[LISA_AUDIO_CAPACITY];
 } LisaAudioStream;
@@ -65,6 +68,12 @@ static inline bool lisa_audio_capture_reference(LisaAudioStream *s, const int16_
     if (logged < floor) { floor = logged; }
     uint64_t retained = write > floor ? write - floor : 0;
     if (frames > LISA_AUDIO_CAPACITY || retained > LISA_AUDIO_CAPACITY - frames) {
+        /* The producer never overwrites slots still owned by the consumer.
+         * A stalled live consumer can resume; diagnostics remain lossless. */
+        if (s->live_input && frames <= LISA_AUDIO_CAPACITY) {
+            lisa_audio_store(&s->input_dropped, lisa_audio_load(&s->input_dropped) + frames);
+            return true;
+        }
         lisa_audio_store(&s->host_error, LISA_AUDIO_INPUT_FULL);
         return false;
     }
@@ -84,7 +93,8 @@ static inline bool lisa_audio_capture(LisaAudioStream *s, const int16_t *pcm, si
 
 static inline int16_t lisa_audio_adc_reference(LisaAudioStream *s, uint64_t ns)
 {
-    uint64_t frame = s->input_origin + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
+    if (s->live_input) { return (int16_t)s->input_reference; }
+    uint64_t frame = lisa_audio_load(&s->input_origin) + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
     uint64_t written = lisa_audio_load(&s->input_write);
     return frame < written && written - frame <= LISA_AUDIO_CAPACITY ?
            s->reference[frame & LISA_AUDIO_MASK] : 0;
@@ -92,14 +102,27 @@ static inline int16_t lisa_audio_adc_reference(LisaAudioStream *s, uint64_t ns)
 
 static inline int16_t lisa_audio_adc(LisaAudioStream *s, uint64_t ns)
 {
-    uint64_t frame = s->input_origin + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
+    uint64_t frame = s->live_input ? lisa_audio_load(&s->input_cursor) :
+        lisa_audio_load(&s->input_origin) + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
     uint64_t written = lisa_audio_load(&s->input_write);
     lisa_audio_store(&s->adc_samples, lisa_audio_load(&s->adc_samples) + 1);
-    if (frame >= written || written - frame > LISA_AUDIO_CAPACITY) {
+    if (frame >= written || written - frame > LISA_AUDIO_CAPACITY ||
+        (s->live_input && s->input_buffering && written - frame < LISA_AUDIO_PREROLL)) {
         lisa_audio_store(&s->adc_missing, lisa_audio_load(&s->adc_missing) + 1);
+        s->input_reference = 0;
+        if (s->live_input) { s->input_buffering = 1; }
         return 0;
     }
-    return s->input[frame & LISA_AUDIO_MASK];
+    int16_t value = s->input[frame & LISA_AUDIO_MASK];
+    if (s->live_input) {
+        /* Cache both channels before releasing this slot. Empty input inserts
+         * counted silence, never advances the cursor beyond captured data. */
+        s->input_reference = (uint16_t)s->reference[frame & LISA_AUDIO_MASK];
+        s->input_buffering = 0;
+        lisa_audio_store(&s->input_cursor, frame + 1);
+        lisa_audio_store(&s->input_floor, frame + 1);
+    }
+    return value;
 }
 
 static inline bool lisa_audio_dac(LisaAudioStream *s, uint64_t ns, int16_t value, bool enabled)
@@ -125,7 +148,20 @@ static inline void lisa_audio_advance(LisaAudioStream *s, uint64_t ns)
      * event at the same ns. Only the strictly earlier interval is complete. */
     uint64_t floor;
     if (lisa_audio_load(&s->epoch_ready)) {
-        floor = s->input_origin + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
+        floor = s->live_input ? lisa_audio_load(&s->input_cursor) :
+            lisa_audio_load(&s->input_origin) + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
+        uint64_t written = lisa_audio_load(&s->input_write);
+        if (s->live_input && lisa_audio_load(&s->state) == LISA_AUDIO_RUNNING &&
+            written > floor && written - floor > LISA_AUDIO_INPUT_LIMIT) {
+            /* Move only the live-input cursor. MIC and AEC reference move
+             * together; guest clocks, DMA events and DAC data are unchanged.
+             * This thread owns both ADC reads and publication of input_floor. */
+            uint64_t skipped = written - floor - LISA_AUDIO_PREROLL;
+            floor += skipped;
+            lisa_audio_store(&s->input_cursor, floor);
+            lisa_audio_store(&s->input_skipped, lisa_audio_load(&s->input_skipped) + skipped);
+            lisa_audio_store(&s->input_resyncs, lisa_audio_load(&s->input_resyncs) + 1);
+        }
     } else {
         uint64_t written = lisa_audio_load(&s->input_write);
         floor = written > LISA_AUDIO_PREROLL ? written - LISA_AUDIO_PREROLL : 0;

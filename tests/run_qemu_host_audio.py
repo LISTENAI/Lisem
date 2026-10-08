@@ -21,7 +21,7 @@ class Stream(ctypes.Structure):
     _fields_ = [(name, ctypes.c_uint64) for name in (
         'magic bytes rate capacity capture state host_error guest_error ready input_write input_floor input_logged '
         'output_write output_read output_logged watermark_ns adc_missing adc_samples dac_samples '
-        'output_silence output_underrun output_cursor_ns max_input_backlog max_output_backlog epoch_ready epoch_ns input_origin pacing_origin_ns').split()] + [
+        'output_silence output_underrun output_cursor_ns max_input_backlog max_output_backlog epoch_ready epoch_ns input_origin pacing_origin_ns live_input input_skipped input_dropped input_resyncs input_cursor input_buffering input_reference').split()] + [
         ('input', ctypes.c_int16 * CAPACITY), ('reference', ctypes.c_int16 * CAPACITY), ('output', Frame * CAPACITY)]
 
 
@@ -31,7 +31,7 @@ def endpoint(path):
     with path.open('r+b') as f:
         memory = mmap.mmap(f.fileno(), 0)
     s = Stream.from_buffer(memory)
-    s.magic, s.bytes, s.rate, s.capacity = 0x4c49534150434d34, ctypes.sizeof(Stream), 16000, CAPACITY
+    s.magic, s.bytes, s.rate, s.capacity = 0x4c49534150434d35, ctypes.sizeof(Stream), 16000, CAPACITY
     s.ready = s.capture = s.epoch_ready = 1
     for n in range(100):
         s.input[n] = (n * 777) % 65536 - 32768
@@ -102,6 +102,28 @@ def main():
         assert m.read(APC + 0x104) == (-2345 << 16) & 0xffffffff
         m.qmp_command('system_reset')
         assert s.epoch_ns == 262500 and s.input_origin == 100
+    finally:
+        m.close(); del s; memory.close()
+    # Live input recovery still passes through the real stereo ADC FIFO.
+    directory = OUTPUT / 'live-overload'; directory.mkdir()
+    memory, s = endpoint(directory / 'stream.bin')
+    s.live_input = 1
+    s.input_write = s.input_logged = 20000
+    for n in range(16000, 20000):
+        s.input[n] = 2345; s.reference[n] = -3456
+    m = Machine(directory / 'qemu', budget_ns=20000000, host_audio=directory / 'stream.bin', desktop=True)
+    try:
+        m.command('clock_step 10000000')
+        assert s.input_resyncs == 1 and s.input_write - s.input_floor <= 8000
+        configure(m, 16000, values=[])
+        m.write(CODEC + 0x2c, 3)
+        m.write(APC + 0x14, 0x02070007)
+        m.command('clock_step 62500')
+        assert m.read(APC + 0x104) == 2345 << 16
+        assert m.read(APC + 0x104) == (-3456 << 16) & 0xffffffff
+        snapshot = json.loads(m.qmp_command('qom-get', {'path': '/machine', 'property': 'x-lisa-snapshot'}))
+        assert snapshot['input_resyncs'] == 1 and snapshot['input_skipped_frames'] == s.input_skipped
+        assert not s.host_error and not s.guest_error
     finally:
         m.close(); del s; memory.close()
     # Unsupported rate and buffer pressure must fail rather than resample or drop.

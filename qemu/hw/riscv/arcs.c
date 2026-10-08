@@ -187,6 +187,15 @@ static G_NORETURN void audio_error(ArcsMachine *s, const char *message)
     report(s, "audio-error"); exit(1);
 }
 
+static G_NORETURN void audio_transport_error(ArcsMachine *s)
+{
+    LisaAudioStream *p = s->host_audio.stream;
+    g_autofree char *message = g_strdup_printf(
+        "host audio transport failed (host=%" PRIu64 ", guest=%" PRIu64 ")",
+        lisa_audio_load(&p->host_error), lisa_audio_load(&p->guest_error));
+    audio_error(s, message);
+}
+
 static void ble_input(void *opaque)
 {
     ArcsMachine *s = opaque;
@@ -287,7 +296,7 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
             audio_error(s, "host microphone requires 16 kHz ADC");
         }
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error)) {
-            audio_error(s, "host audio transport failed");
+            audio_transport_error(s);
         }
         lisa_host_audio_epoch(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         values[0] = lisa_audio_adc(p, now);
@@ -325,7 +334,7 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
          * remains unchanged; the board amplifier only gates host playback. */
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error) ||
             !lisa_audio_dac(p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), value, pa_enabled(s))) {
-            audio_error(s, "host audio transport failed");
+            audio_transport_error(s);
         }
     }
     if (s->pcm_output) {
@@ -773,12 +782,17 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     return g_strdup_printf("{\"backend\":\"qemu\",\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
+        "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
+        "\"input_resyncs\":%" PRIu64 ","
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
         ((ArcsN300State *)s->soc.cpu[1].env.arcs_state)->exceptions,
         s->desktop_samples, s->desktop_rate,
         s->pcm_position < s->pcm_length ? "true" : "false",
+        s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_skipped) : 0,
+        s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_dropped) : 0,
+        s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_resyncs) : 0,
         driven[0], levels[0], driven[1], levels[1]);
 }
 

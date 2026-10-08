@@ -242,6 +242,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
     if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture;
+    p->live_input = capture && !recording_files;
     HostAudio *s = calloc(1, sizeof(*s));
     if (!s) { return 1; }
     s->stream = p; s->capture = capture;
@@ -285,7 +286,11 @@ static int run(const char *directory, unsigned seconds, bool capture)
     }
     FILE *report = recording_files ? open_output(directory, "report.json", "wb") : stdout;
     if (report) {
-        fprintf(report, "{\"complete\":%s,\"capture\":%s,\"rate\":16000,\"host_error\":%llu,"
+        fprintf(report, "{\"input_skipped_frames\":%llu,\"input_dropped_frames\":%llu,"
+                "\"input_resyncs\":%llu,",
+                (unsigned long long)p->input_skipped, (unsigned long long)p->input_dropped,
+                (unsigned long long)p->input_resyncs);
+        fprintf(report, "\"complete\":%s,\"capture\":%s,\"rate\":16000,\"host_error\":%llu,"
                 "\"guest_error\":%llu,\"input_frames\":%llu,\"input_nonzero\":%llu,"
                 "\"input_callbacks\":%llu,\"output_callbacks\":%llu,\"reference_nonzero\":%llu,"
                 "\"reference_deferred\":%llu,\"max_pending_frames\":%llu,\"reference_missing\":%llu,"
@@ -308,7 +313,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
                 "\"output_cursor_ns\":%llu,\"watermark_ns\":%llu,\"muted\":%s,\"mute_changes\":%llu,"
                 "\"interrupted\":%s}\n",
                 (unsigned long long)p->epoch_ns, (unsigned long long)p->pacing_origin_ns,
-                (unsigned long long)p->input_origin, (unsigned long long)p->adc_samples,
+                (unsigned long long)lisa_audio_load(&p->input_origin), (unsigned long long)p->adc_samples,
                 (unsigned long long)p->dac_samples, (unsigned long long)p->output_read,
                 (unsigned long long)s->output_frames, (unsigned long long)p->output_cursor_ns,
                 (unsigned long long)p->watermark_ns, s->mute ? "true" : "false",

@@ -50,6 +50,8 @@
 - 显示走 QEMU DisplayChangeListener 和有界共享帧；慢界面只取最新帧，
   不阻塞 CPU。音频回调不调用 UI、Python、QEMU 或文件 I/O。原始 DAC
   样本、静音、时间戳及 PA 状态完整保留，积压和欠载必须可观测。
+  实时麦克风允许有计数的过载恢复：MIC/AEC 参考同步跳过旧输入，生产者不
+  覆盖未释放的槽；不改变虚拟时钟或 DAC 输出。诊断录制保持严格无损契约。
 - 宿主音频分别使用 macOS AudioQueue、Windows WASAPI 和 Linux PulseAudio
   协议。无头默认不打开音频，Linux CLI 不依赖 DISPLAY 或声音服务。
 - Mini MIC1 是 PA 后的 AEC 电参考，不能填零替代。宿主麦克风与参考按
