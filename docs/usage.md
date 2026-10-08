@@ -88,7 +88,7 @@ lisem shutdown INSTANCE_ID
 按键的按下与松开是两个独立动作，中间由调用方决定实际等待时间。
 `reset --download` 进入 ROM 烧录模式；`write --offset` 写入原始二进制。
 `send INSTANCE_ID 0 TEXT` 向 UART 发送 UTF-8 字节，`--hex` 发送二进制。
-`--json` 供脚本读取结果；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
+默认输出列表、状态和操作结果；`--json` 输出结构化数据，供脚本读取；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
 
 前台 `run` 有明确虚拟时间和宿主时间上限，Ctrl-C 停止本轮运行；失败返回
 非零退出码。后台 `start` 在 CLI 返回后继续运行，`stop` 保留 UART 端点，

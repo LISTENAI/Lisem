@@ -1,3 +1,4 @@
+mod output;
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use lisem_core::{
@@ -179,6 +180,7 @@ fn run() -> Result<i32> {
         manager::bridge(manager)?;
         return Ok(0);
     }
+    let presentation = output::Output::for_action(&args.command);
     let mut foreground = None;
     let value = match args.command {
         Action::List => json!(manager.catalog.devices()?),
@@ -257,7 +259,7 @@ fn run() -> Result<i32> {
                     if args.json {
                         serde_json::to_string(&state)?
                     } else {
-                        serde_json::to_string_pretty(&state)?
+                        presentation.render(&state)
                     }
                 );
                 ensure!(
@@ -279,7 +281,7 @@ fn run() -> Result<i32> {
         if args.json {
             serde_json::to_string(&value)?
         } else {
-            serde_json::to_string_pretty(&value)?
+            presentation.render(&value)
         }
     );
     Ok(0)
