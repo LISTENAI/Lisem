@@ -1,0 +1,8 @@
+.tools/
+artifacts/
+__pycache__/
+*.pyc
+.DS_Store
+
+desktop/target/
+/target/

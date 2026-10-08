@@ -1,0 +1,899 @@
+//! One instance's runtime. QEMU owns guest execution; this module owns its
+//! storage lease, raw transport, host adapters and bounded lifecycle.
+use crate::{
+    assets::{Assets, Backend},
+    catalog::Catalog,
+    display::Display,
+    storage::{self, Lease},
+    transport::{self, Qmp, SerialPort, Uart},
+};
+use anyhow::{Context, Result, bail, ensure};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+use uuid::Uuid;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Options {
+    pub seconds: u64,
+    pub timeout: u64,
+    pub network: bool,
+    pub host_audio: bool,
+    pub microphone: bool,
+    pub sound: bool,
+    pub download: bool,
+}
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            seconds: 300,
+            timeout: 800,
+            network: false,
+            host_audio: false,
+            microphone: false,
+            sound: true,
+            download: false,
+        }
+    }
+}
+
+struct Process {
+    child: Child,
+}
+impl Process {
+    fn guest(command: &mut Command, lease: &Lease) -> Result<Self> {
+        #[cfg(unix)]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+            let fd = lease.file.as_raw_fd();
+            // Inherit the same open-file description: a crashed controller
+            // cannot release storage while its QEMU child still writes Flash.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fcntl(fd, libc::F_SETFD, 0) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            Ok(Self {
+                child: command.spawn()?,
+            })
+        }
+        #[cfg(windows)]
+        {
+            // QEMU has no console input: its monitor and UARTs use sockets.
+            // The inherited standard handle retains the share-denying lease
+            // even if the controller exits before its child.
+            command.stdin(Stdio::from(lease.file.try_clone()?));
+            Ok(Self {
+                child: command.spawn()?,
+            })
+        }
+    }
+}
+impl Drop for Process {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+struct Audio {
+    process: Process,
+}
+impl Audio {
+    fn start(assets: &Assets, output: &Path, options: &Options) -> Result<Self> {
+        assets.verify_audio()?;
+        let directory = output.join("host-audio");
+        fs::create_dir(&directory)?;
+        let child = crate::process::command(assets.audio())
+            .arg(&directory)
+            .arg((options.timeout + 50).min(900).to_string())
+            .arg(if options.microphone {
+                "capture"
+            } else {
+                "playback"
+            })
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(File::create(directory.join("helper.log"))?)
+            .spawn()?;
+        let mut audio = Self {
+            process: Process { child },
+        };
+        let stdout = audio
+            .process
+            .child
+            .stdout
+            .take()
+            .context("Audio stdout missing")?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        thread::spawn(move || {
+            let mut line = String::new();
+            let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
+            let _ = tx.send(result);
+        });
+        let line = rx
+            .recv_timeout(Duration::from_secs(40))
+            .context("Host audio initialization timed out")??;
+        ensure!(
+            !line.is_empty(),
+            "Host audio initialization failed: {}",
+            fs::read_to_string(directory.join("helper.log"))
+                .unwrap_or_default()
+                .trim()
+        );
+        let ready: Value =
+            serde_json::from_str(&line).context("Invalid host audio initialization response")?;
+        ensure!(
+            ready == json!({"ready":true,"rate":16000,"channels":1}),
+            "Host audio initialization failed"
+        );
+        audio.mute(!options.sound)?;
+        Ok(audio)
+    }
+    fn mute(&mut self, muted: bool) -> Result<()> {
+        let input = self
+            .process
+            .child
+            .stdin
+            .as_mut()
+            .context("Audio control closed")?;
+        input.write_all(if muted { b"1" } else { b"0" })?;
+        input.flush()?;
+        Ok(())
+    }
+    fn finish(&mut self, drain: bool) -> Result<()> {
+        if !drain && let Some(input) = self.process.child.stdin.as_mut() {
+            let _ = input.write_all(b"q");
+            let _ = input.flush();
+        }
+        let deadline = Instant::now() + Duration::from_secs(if drain { 20 } else { 2 });
+        loop {
+            if let Some(status) = self.process.child.try_wait()? {
+                ensure!(status.success(), "Host audio exited with {status}");
+                return Ok(());
+            }
+            ensure!(Instant::now() < deadline, "Host audio shutdown timed out");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+pub struct Session {
+    process: Process,
+    qmp: Qmp,
+    uart: Vec<Uart>,
+    audio: Option<Audio>,
+    _lease: Lease,
+    pub output: PathBuf,
+    pub state: Value,
+    options: Options,
+    started: Instant,
+    capture_at: Instant,
+    finished: bool,
+    stopped: bool,
+    backend: Backend,
+}
+impl Session {
+    fn start(catalog: &Catalog, item: &Value, options: Options) -> Result<Self> {
+        ensure!(
+            (5..=600).contains(&options.seconds) && options.timeout > 0 && options.timeout <= 850,
+            "Invalid runtime time budget"
+        );
+        ensure!(
+            !options.microphone || options.host_audio,
+            "Microphone requires host audio"
+        );
+        let assets = Assets::new(&catalog.root)?;
+        assets.verify_qemu()?;
+        let backend = Backend::for_device(catalog, item)?;
+        let instance = Path::new(item["path"].as_str().context("Missing instance path")?);
+        let lease = storage::locked(
+            instance,
+            &catalog.layout(item["board"].as_str().context("Missing board")?)?,
+        )?;
+        let output = instance.join("runs").join(format!(
+            "run-{}-{}",
+            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(output.join("live"))?;
+        let mut command = crate::process::command(assets.qemu());
+        backend.configure(
+            &mut command,
+            instance,
+            &output,
+            options.seconds,
+            options.download,
+        );
+        command
+            .stdin(Stdio::null())
+            .stdout(File::create(output.join("qemu.log"))?)
+            .stderr(File::options().append(true).open(output.join("qemu.log"))?);
+        if options.network {
+            ensure!(
+                assets.network().is_file(),
+                "Host network backend is missing"
+            );
+            command
+                .env("ARCS_QEMU_NETWORK_LIBRARY", assets.network())
+                .env(
+                    "ARCS_QEMU_NETWORK_CAPTURE",
+                    output.join("host-network.pcap"),
+                )
+                .env("ARCS_QEMU_NETWORK_LOOPBACK", "0");
+        }
+        let audio = if options.host_audio {
+            Some(Audio::start(&assets, &output, &options)?)
+        } else {
+            None
+        };
+        if audio.is_some() {
+            command.env("ARCS_QEMU_HOST_AUDIO", output.join("host-audio/stream.bin"));
+        }
+        let qmp_listener = transport::listener()?;
+        command.args([
+            "-chardev",
+            &format!(
+                "socket,id=control,host=127.0.0.1,port={},nodelay=on",
+                qmp_listener.local_addr()?.port()
+            ),
+            "-mon",
+            "chardev=control,mode=control",
+        ]);
+        let listeners: Vec<_> = (0..3)
+            .map(|_| transport::listener())
+            .collect::<Result<_>>()?;
+        for (channel, listener) in listeners.iter().enumerate() {
+            command.args([
+                "-chardev",
+                &format!(
+                    "socket,id=uart{channel},host=127.0.0.1,port={},nodelay=on",
+                    listener.local_addr()?.port()
+                ),
+                "-serial",
+                &format!("chardev:uart{channel}"),
+            ]);
+        }
+        let process = Process::guest(&mut command, &lease)?;
+        let control = transport::accept(&qmp_listener)?;
+        let mut uart = Vec::new();
+        for (channel, listener) in listeners.iter().enumerate() {
+            let path = output.join(format!("uart{channel}.bin"));
+            uart.push(Uart::new(transport::accept(listener)?, &path)?);
+            fs::hard_link(
+                &path,
+                output.join("live").join(format!("uart{channel}.bin")),
+            )?;
+        }
+        let qmp = Qmp::new(control, &mut uart)?;
+        storage::write_json(
+            &output.join("run.json"),
+            &json!({"qemu_sha256":storage::sha256(&assets.qemu())?,"flash_sha256":storage::sha256(&instance.join("flash.bin"))?,"otp_sha256":storage::sha256(&instance.join("otp.bin"))?,"boot_source":"chip-rom","options":options}),
+        )?;
+        let mut session = Self {
+            process,
+            qmp,
+            uart,
+            audio,
+            _lease: lease,
+            output,
+            state: json!({}),
+            options,
+            started: Instant::now(),
+            capture_at: Instant::now(),
+            finished: false,
+            stopped: false,
+            backend,
+        };
+        session.capture()?;
+        session.qmp.call("cont", json!({}), &mut session.uart)?;
+        Ok(session)
+    }
+    fn capture(&mut self) -> Result<()> {
+        let snapshot = self.qmp.get("x-lisa-snapshot", &mut self.uart)?;
+        let fields: Value =
+            serde_json::from_str(snapshot.as_str().context("Invalid QEMU snapshot")?)?;
+        for (key, value) in fields.as_object().context("Invalid snapshot object")? {
+            self.state[key] = value.clone();
+        }
+        self.state["continuous_audio"] = json!(self.audio.is_some());
+        self.state["microphone"] = json!(self.options.microphone);
+        self.state["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
+        self.state["output"] = json!(self.output);
+        self.state["framebuffer"] = json!(self.output.join("live/framebuffer"));
+        storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+        self.capture_at = Instant::now() + Duration::from_millis(100);
+        Ok(())
+    }
+    fn tick(&mut self) -> Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        for port in &mut self.uart {
+            port.pump()?;
+        }
+        if let Some(status) = self.process.child.try_wait()? {
+            self.finished = true;
+            self.state["finished"] = json!(true);
+            self.state["returncode"] = json!(status.code().unwrap_or(-1));
+            if let Ok(report) = storage::read_json(&self.output.join("report.json")) {
+                self.state["seconds"] = json!(report["virtual_ns"].as_f64().unwrap_or(0.0) / 1e9);
+                self.state["ap_exceptions"] = report["cores"][0]["exceptions"].clone();
+                self.state["exceptions"] = report["cores"][1]["exceptions"].clone();
+                self.state["machine_status"] = report["status"].clone();
+                if ![Some("budget-complete"), Some("probe-pass")]
+                    .contains(&report["status"].as_str())
+                {
+                    let log = fs::read_to_string(self.output.join("qemu.log")).unwrap_or_default();
+                    self.state["error"] = json!(
+                        log.lines()
+                            .rev()
+                            .find(|s| s.contains("ARCS"))
+                            .unwrap_or("QEMU failed")
+                    );
+                }
+            } else if !self.stopped && self.state["error"].is_null() {
+                self.state["error"] = json!("QEMU exited without a readable report");
+            }
+            if !status.success() && !self.stopped && self.state["error"].is_null() {
+                self.state["error"] = json!(format!("QEMU exited with {status}"));
+            }
+            if let Some(audio) = &mut self.audio
+                && let Err(error) = audio.finish(!self.stopped)
+                && self.state["error"].is_null()
+            {
+                self.state["error"] = json!(error.to_string());
+            }
+            storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+        } else if let Some(audio) = &mut self.audio
+            && let Some(status) = audio.process.child.try_wait()?
+        {
+            self.state["error"] = json!(format!("Host audio exited unexpectedly with {status}"));
+            self.stop()?;
+        } else if self.started.elapsed().as_secs() >= self.options.timeout {
+            self.state["error"] = json!("Host time budget reached");
+            self.stop()?;
+        } else if Instant::now() >= self.capture_at
+            && let Err(error) = self.capture()
+        {
+            // QMP closes before the process handle becomes signalled on Windows.
+            // Let normal exit collect the report and drain the last DAC frames.
+            let deadline = Instant::now() + Duration::from_millis(100);
+            loop {
+                if self.process.child.try_wait()?.is_some() {
+                    return self.tick();
+                }
+                if Instant::now() >= deadline {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn stop(&mut self) -> Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        self.stopped = true;
+        let _ = self.qmp.call("quit", json!({}), &mut self.uart);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while self.process.child.try_wait()?.is_none() && Instant::now() < deadline {
+            for port in &mut self.uart {
+                let _ = port.pump();
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        if self.process.child.try_wait()?.is_none() {
+            self.process.child.kill()?;
+            self.process.child.wait()?;
+        }
+        self.tick()
+    }
+}
+impl Drop for Session {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+pub struct Runtime {
+    catalog: Catalog,
+    id: String,
+    session: Option<Session>,
+    last_state: Value,
+    ports: BTreeMap<u8, SerialPort>,
+    pub shutdown: bool,
+}
+impl Runtime {
+    pub fn new(catalog: Catalog, id: String) -> Result<Self> {
+        let item = catalog.device(&id)?;
+        let mut ports = BTreeMap::new();
+        if let Some(channels) = item["host"]["uart"].as_array() {
+            for channel in channels {
+                ports.insert(
+                    channel.as_u64().context("Invalid UART channel")? as u8,
+                    SerialPort::new()?,
+                );
+            }
+        }
+        Ok(Self {
+            catalog,
+            id,
+            session: None,
+            last_state: Value::Null,
+            ports,
+            shutdown: false,
+        })
+    }
+    pub fn tick(&mut self) -> Result<()> {
+        if let Some(session) = &mut self.session {
+            session.tick()?;
+        }
+        for (&channel, port) in &mut self.ports {
+            port.pump(
+                self.session
+                    .as_mut()
+                    .filter(|s| !s.finished)
+                    .map(|s| &mut s.uart[channel as usize]),
+            )?;
+        }
+        if self.session.as_ref().is_some_and(|s| s.finished) {
+            self.last_state = self.session.take().unwrap().state.clone();
+        }
+        Ok(())
+    }
+    pub fn status(&self) -> Result<Value> {
+        let item = self.catalog.device(&self.id)?;
+        let mut state = self
+            .session
+            .as_ref()
+            .map(|s| s.state.clone())
+            .unwrap_or_else(|| self.last_state.clone());
+        if state.is_object() {
+            state["device_id"] = json!(self.id);
+            state["finished"] = json!(self.session.is_none());
+            state["lifecycle"] = json!(if self.session.is_some() {
+                "on"
+            } else if state["error"].is_null() {
+                "off"
+            } else {
+                "failed"
+            });
+            state["guest_fault"] = json!(
+                state["exceptions"].as_u64().unwrap_or(0) > 0
+                    || state["ap_exceptions"].as_u64().unwrap_or(0) > 0
+            );
+            let mut indicators = json!({});
+            if let Some(list) = item["hardware"]["board"]["indicators"].as_array() {
+                for indicator in list {
+                    let name = indicator["id"].as_str().context("Indicator ID missing")?;
+                    let bank = indicator["bank"]
+                        .as_str()
+                        .context("Indicator bank missing")?;
+                    let pin = indicator["pin"].as_u64().context("Indicator pin missing")?;
+                    ensure!(pin < 32, "Invalid indicator pin");
+                    indicators[name] = if self.session.is_none() {
+                        json!(false)
+                    } else if state["pads"][bank]["driven"].as_u64().unwrap_or(0) & (1 << pin) != 0
+                    {
+                        json!(
+                            (state["pads"][bank]["levels"].as_u64().unwrap_or(0) & (1 << pin) != 0)
+                                != indicator["active_low"].as_bool().unwrap_or(false)
+                        )
+                    } else {
+                        Value::Null
+                    };
+                }
+            }
+            state["indicators"] = indicators;
+        }
+        let ports: BTreeMap<_, _> = self
+            .ports
+            .iter()
+            .map(|(n, p)| (n.to_string(), p.path.clone()))
+            .collect();
+        Ok(json!({"session":state,"serial":ports}))
+    }
+    pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
+        if let Some(run) = params.get("run").filter(|v| !v.is_null()) {
+            ensure!(
+                self.session
+                    .as_ref()
+                    .is_some_and(|s| json!(s.output) == *run),
+                "The request belongs to an earlier run"
+            );
+        }
+        match method {
+            "status" => self.status(),
+            "start" => {
+                ensure!(self.session.is_none(), "Instance is already running");
+                let options: Options = serde_json::from_value(params["options"].clone())?;
+                let session =
+                    Session::start(&self.catalog, &self.catalog.device(&self.id)?, options)?;
+                for (&channel, port) in &mut self.ports {
+                    port.bind(session.output.join(format!("uart{channel}.bin")));
+                }
+                self.session = Some(session);
+                self.status()
+            }
+            "stop" => {
+                if let Some(mut session) = self.session.take() {
+                    session.stop()?;
+                    self.last_state = session.state.clone();
+                }
+                self.tick()?;
+                self.status()
+            }
+            "reset" | "reset_download" => {
+                let mut options = self
+                    .session
+                    .as_ref()
+                    .context("Power on the instance before resetting")?
+                    .options
+                    .clone();
+                self.call("stop", &json!({}))?;
+                options.download = method == "reset_download";
+                self.call("start", &json!({"options":options}))
+            }
+            "button" => {
+                let session = self.session.as_mut().context("Instance is not running")?;
+                let property = session
+                    .backend
+                    .button(params["button"].as_str().context("Missing button")?)?;
+                let pressed = params["pressed"]
+                    .as_bool()
+                    .context("A button requires an explicit pressed state")?;
+                session
+                    .qmp
+                    .set(property, json!(pressed), &mut session.uart)?;
+                session.state["controls"]["buttons"][params["button"].as_str().unwrap()] =
+                    json!(pressed);
+                Ok(json!(true))
+            }
+            "mute" => {
+                if let Some(audio) = self.session.as_mut().and_then(|s| s.audio.as_mut()) {
+                    audio.mute(
+                        params["muted"]
+                            .as_bool()
+                            .context("Mute requires a boolean")?,
+                    )?;
+                }
+                Ok(json!(true))
+            }
+            "audio" => {
+                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(
+                    !session.options.microphone,
+                    "Microphone owns the ADC input for this run"
+                );
+                let source = Path::new(params["path"].as_str().context("WAV path missing")?);
+                ensure!(
+                    fs::metadata(source)?.len() <= 16000 * 2 * 60 + 4096,
+                    "Audio input exceeds 60 seconds"
+                );
+                let bytes = fs::read(source)?;
+                let pcm = wave_pcm(&bytes)?;
+                let target = session.output.join("live/input.pcm");
+                ensure!(
+                    session.state["input_busy"] != true,
+                    "Previous audio input is still being consumed"
+                );
+                storage::atomic_write(&target, &pcm)?;
+                session
+                    .qmp
+                    .set("x-lisa-audio-input", json!(target), &mut session.uart)?;
+                storage::atomic_write(
+                    &session
+                        .output
+                        .join("live")
+                        .join(format!("input-{}.wav", Uuid::new_v4().simple())),
+                    &bytes,
+                )?;
+                session.state["input_busy"] = json!(true);
+                Ok(json!(true))
+            }
+            "uart_write" => {
+                let channel = params["channel"].as_u64().context("Missing UART channel")?;
+                ensure!(channel < 3, "UART channel must be 0..2");
+                let bytes = storage::unhex(params["hex"].as_str().context("Missing UART bytes")?)?;
+                ensure!(bytes.len() <= 4096, "UART command exceeds 4096 bytes");
+                self.session
+                    .as_mut()
+                    .context("Instance is not running")?
+                    .uart[channel as usize]
+                    .send(&bytes)?;
+                Ok(json!(true))
+            }
+            "serial" => {
+                let channel = params["channel"].as_u64().unwrap_or(0);
+                ensure!(channel < 3, "UART channel must be 0..2");
+                let enabled = params["enabled"].as_bool().unwrap_or(true);
+                if enabled && !self.ports.contains_key(&(channel as u8)) {
+                    let mut port = SerialPort::new()?;
+                    if let Some(session) = &self.session {
+                        port.bind(session.output.join(format!("uart{channel}.bin")));
+                    }
+                    self.ports.insert(channel as u8, port);
+                } else if !enabled {
+                    self.ports.remove(&(channel as u8));
+                }
+                let item = self.catalog.device(&self.id)?;
+                self.catalog.update(
+                    Path::new(item["path"].as_str().unwrap()),
+                    &json!({"uart":self.ports.keys().collect::<Vec<_>>()}),
+                )?;
+                Ok(self
+                    .ports
+                    .get(&(channel as u8))
+                    .map(|p| json!(p.path))
+                    .unwrap_or(Value::Null))
+            }
+            "screenshot" => {
+                let output = self
+                    .session
+                    .as_ref()
+                    .map(|s| s.output.clone())
+                    .or_else(|| self.last_state["output"].as_str().map(PathBuf::from))
+                    .context("No captured display")?;
+                let path = Path::new(params["path"].as_str().context("Screenshot path missing")?);
+                let mut display = Display::open(&output.join("live/framebuffer"))?;
+                let deadline = Instant::now() + Duration::from_secs(1);
+                loop {
+                    if let Some(frame) = display.latest() {
+                        frame.save(path)?;
+                        break;
+                    }
+                    ensure!(Instant::now() < deadline, "No display frame available");
+                    thread::sleep(Duration::from_millis(5));
+                }
+                Ok(json!(path))
+            }
+            "shutdown" => {
+                self.call("stop", &json!({}))?;
+                self.shutdown = true;
+                Ok(json!(true))
+            }
+            _ => bail!("Unknown runtime method"),
+        }
+    }
+}
+
+fn wave_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
+    ensure!(
+        bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
+        "Invalid WAV input"
+    );
+    let size = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
+    ensure!(
+        size.checked_add(8).is_some_and(|n| n <= bytes.len()),
+        "Truncated WAV input"
+    );
+    let mut at = 12;
+    let mut format = false;
+    let mut pcm = None;
+    while at + 8 <= size + 8 {
+        let length = u32::from_le_bytes(bytes[at + 4..at + 8].try_into()?) as usize;
+        let end = (at + 8)
+            .checked_add(length)
+            .context("Invalid WAV chunk size")?;
+        ensure!(end <= size + 8, "Truncated WAV chunk");
+        if &bytes[at..at + 4] == b"fmt " {
+            ensure!(length >= 16, "Invalid WAV format");
+            let value = &bytes[at + 8..end];
+            ensure!(
+                u16::from_le_bytes(value[0..2].try_into()?) == 1
+                    && u16::from_le_bytes(value[2..4].try_into()?) == 1
+                    && u32::from_le_bytes(value[4..8].try_into()?) == 16000
+                    && u16::from_le_bytes(value[12..14].try_into()?) == 2
+                    && u16::from_le_bytes(value[14..16].try_into()?) == 16,
+                "Input must be mono PCM16 WAV at 16000 Hz"
+            );
+            format = true;
+        } else if &bytes[at..at + 4] == b"data" {
+            ensure!(
+                pcm.is_none() && length > 0 && length <= 16000 * 2 * 60 && length.is_multiple_of(2),
+                "Invalid WAV sample count"
+            );
+            pcm = Some(bytes[at + 8..end].to_vec());
+        }
+        at = end + (length & 1);
+    }
+    ensure!(format, "Missing WAV format");
+    pcm.context("Missing WAV samples")
+}
+
+/// Private local endpoint; random authentication is independent of firmware UID.
+pub struct Client {
+    endpoint: Value,
+}
+impl Client {
+    pub fn connect(instance: &Path) -> Result<Self> {
+        let endpoint = storage::read_json(&instance.join("runtime.json"))?;
+        ensure!(endpoint["version"] == 1, "Unsupported runtime protocol");
+        ensure!(
+            endpoint["instance_id"] == storage::read_json(&instance.join("device.json"))?["id"],
+            "Runtime endpoint belongs to another instance"
+        );
+        let this = Self { endpoint };
+        this.call("status", json!({}))?;
+        Ok(this)
+    }
+    pub fn call(&self, method: &str, params: Value) -> Result<Value> {
+        let port = self.endpoint["port"]
+            .as_u64()
+            .context("Runtime port missing")?;
+        ensure!(port > 0 && port <= 65535, "Invalid runtime port");
+        let mut stream = TcpStream::connect_timeout(
+            &([127, 0, 0, 1], port as u16).into(),
+            Duration::from_secs(1),
+        )?;
+        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
+        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        writeln!(
+            stream,
+            "{}",
+            json!({"token":self.endpoint["token"],"method":method,"params":params})
+        )?;
+        let mut response = String::new();
+        BufReader::new(stream)
+            .take(4 * 1024 * 1024)
+            .read_line(&mut response)?;
+        let reply: Value = serde_json::from_str(&response)?;
+        if let Some(error) = reply["error"].as_str() {
+            bail!("{error}");
+        }
+        Ok(reply["result"].clone())
+    }
+}
+
+pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> {
+    let item = catalog.device(&id)?;
+    let path = PathBuf::from(item["path"].as_str().context("Missing instance path")?);
+    let _lease = Lease::acquire(&path.join("runtime.lock"))?;
+    let listener = transport::listener()?;
+    let token = Uuid::new_v4().simple().to_string();
+    let endpoint = path.join("runtime.json");
+    let mut runtime = Runtime::new(catalog, id.clone())?;
+    storage::write_json(
+        &endpoint,
+        &json!({"version":1,"instance_id":id,"port":listener.local_addr()?.port(),"token":token,"pid":std::process::id()}),
+    )?;
+    struct Connection {
+        stream: TcpStream,
+        input: Vec<u8>,
+        output: Vec<u8>,
+        offset: usize,
+        deadline: Instant,
+    }
+    let mut connections: Vec<Connection> = Vec::new();
+    while !runtime.shutdown && !stop.load(Ordering::Acquire) {
+        if let Err(error) = runtime.tick()
+            && let Some(session) = &mut runtime.session
+        {
+            session.state["error"] = json!(error.to_string());
+            let _ = session.stop();
+        }
+        if connections.len() < 32 {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream.set_nonblocking(true)?;
+                    connections.push(Connection {
+                        stream,
+                        input: Vec::new(),
+                        output: Vec::new(),
+                        offset: 0,
+                        deadline: Instant::now() + Duration::from_secs(5),
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        connections.retain_mut(|connection| {
+            let result = (|| -> Result<bool> {
+                ensure!(
+                    Instant::now() < connection.deadline,
+                    "Control connection timed out"
+                );
+                if connection.output.is_empty() {
+                    let mut bytes = [0; 8192];
+                    match connection.stream.read(&mut bytes) {
+                        Ok(0) => return Ok(false),
+                        Ok(n) => connection.input.extend_from_slice(&bytes[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(true),
+                        Err(e) => return Err(e.into()),
+                    }
+                    ensure!(connection.input.len() <= 65536, "Control request too large");
+                    if let Some(end) = connection.input.iter().position(|&b| b == b'\n') {
+                        let request: Value = serde_json::from_slice(&connection.input[..end])?;
+                        ensure!(
+                            request["token"].as_str() == Some(&token),
+                            "Invalid runtime token"
+                        );
+                        let result = runtime.call(
+                            request["method"].as_str().context("Missing method")?,
+                            &request["params"],
+                        );
+                        let reply = match result {
+                            Ok(value) => json!({"result":value}),
+                            Err(error) => json!({"error":error.to_string()}),
+                        };
+                        connection.output = serde_json::to_vec(&reply)?;
+                        connection.output.push(b'\n');
+                        connection.deadline = Instant::now() + Duration::from_secs(5);
+                    }
+                }
+                if !connection.output.is_empty() {
+                    match connection
+                        .stream
+                        .write(&connection.output[connection.offset..])
+                    {
+                        Ok(n) => connection.offset += n,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                    return Ok(connection.offset < connection.output.len());
+                }
+                Ok(true)
+            })();
+            result.unwrap_or(false)
+        });
+        thread::sleep(Duration::from_millis(2));
+    }
+    runtime.call("stop", &json!({}))?;
+    let _ = fs::remove_file(endpoint);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wave(rate: u32, samples: &[u8]) -> Vec<u8> {
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend((36 + samples.len() as u32).to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16_u32.to_le_bytes());
+        bytes.extend(1_u16.to_le_bytes());
+        bytes.extend(1_u16.to_le_bytes());
+        bytes.extend(rate.to_le_bytes());
+        bytes.extend((rate * 2).to_le_bytes());
+        bytes.extend(2_u16.to_le_bytes());
+        bytes.extend(16_u16.to_le_bytes());
+        bytes.extend(b"data");
+        bytes.extend((samples.len() as u32).to_le_bytes());
+        bytes.extend(samples);
+        bytes
+    }
+
+    #[test]
+    fn wav_input_preserves_samples_and_rejects_invalid_geometry() {
+        let samples = [0, 128, 255, 127, 1, 0, 255, 255];
+        let valid = wave(16000, &samples);
+        assert_eq!(wave_pcm(&valid).unwrap(), samples);
+        assert!(wave_pcm(&valid[..valid.len() - 1]).is_err());
+        assert!(wave_pcm(&wave(48000, &samples)).is_err());
+        assert!(wave_pcm(&wave(16000, &[])).is_err());
+        assert!(wave_pcm(&wave(16000, &[1, 2, 3])).is_err());
+        assert!(wave_pcm(&wave(16000, &vec![0; 16000 * 2 * 61])).is_err());
+    }
+}

@@ -1,0 +1,23 @@
+LISTENAI Binary Component License
+
+Copyright (c) 2026 LISTENAI. All rights reserved.
+
+This license applies to the precompiled LUNA libraries and ARCS AP/CP ROM
+binaries distributed with Lisem.
+
+Permission is granted, free of charge, to use, reproduce and redistribute
+these components in binary form, including as part of Lisem, modified
+versions of Lisem, and commercial products. This copyright notice and this
+license must accompany all copies and redistributions of the components.
+
+This permission does not grant access to or a right to distribute the
+components' proprietary source code. Third-party material retains its own
+copyright and license terms; this license does not replace those terms.
+No rights to LISTENAI trademarks are granted.
+
+THE COMPONENTS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE COMPONENTS OR THEIR USE.

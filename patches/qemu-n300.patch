@@ -1,0 +1,662 @@
+--- a/accel/tcg/translate-all.c
++++ b/accel/tcg/translate-all.c
+@@ -545,7 +545,12 @@
+     if (tb) {
+         /* We can use retranslation to find the PC.  */
+         cpu_restore_state_from_tb(cpu, tb, retaddr);
++        /* Darwin places TB metadata in MAP_JIT memory too. Watchpoint
++         * helpers enter with write protection enabled; the exclusive
++         * store in jmp_lock can otherwise spin indefinitely. */
++        qemu_thread_jit_write();
+         tb_phys_invalidate(tb, -1);
++        qemu_thread_jit_execute();
+     } else {
+         /* The exception probably happened in a helper.  The CPU state should
+            have been saved before calling it. Fetch the PC from there.  */
+--- a/include/system/memory.h
++++ b/include/system/memory.h
+@@ -313,6 +313,13 @@
+                                     uint64_t data,
+                                     unsigned size,
+                                     MemTxAttrs attrs);
++
++    /* Optional, pure declaration for an aligned DWORD data read. If true,
++     * read() must not read clocks, change state, raise interrupts, access
++     * other memory or depend on the executing CPU. It may read device state
++     * maintained by separately scheduled events. Single-thread icount only;
++     * normal dispatch, access validation and BQL still apply. */
++    bool (*icount_read_safe)(void *opaque, hwaddr addr);
+ 
+     enum device_endian endianness;
+     /* Guest-visible constraints: */
+--- a/accel/tcg/cputlb.c
++++ b/accel/tcg/cputlb.c
+@@ -1272,7 +1272,7 @@
+ 
+ static MemoryRegionSection *
+ io_prepare(hwaddr *out_offset, CPUState *cpu, hwaddr xlat,
+-           MemTxAttrs attrs, vaddr addr, uintptr_t retaddr)
++           MemTxAttrs attrs, vaddr addr, uintptr_t retaddr, unsigned read_size)
+ {
+     MemoryRegionSection *section;
+     hwaddr mr_offset;
+@@ -1281,7 +1281,16 @@
+     mr_offset = (xlat & TARGET_PAGE_MASK) + addr;
+     cpu->mem_io_pc = retaddr;
+     if (!cpu->neg.can_do_io) {
+-        cpu_io_recompile(cpu, retaddr);
++        MemoryRegion *mr = section->mr;
++        bool safe = read_size == 4 && !(addr & 3) && !(mr_offset & 3) &&
++            (cpu->tcg_cflags & CF_USE_ICOUNT) &&
++            !(cpu->tcg_cflags & CF_PARALLEL) && !cpu->singlestep_enabled &&
++            QTAILQ_EMPTY(&cpu->breakpoints) && QTAILQ_EMPTY(&cpu->watchpoints) &&
++            !mr->flush_coalesced_mmio && mr->ops && mr->ops->icount_read_safe &&
++            mr->ops->icount_read_safe(mr->opaque, mr_offset);
++        if (!safe) {
++            cpu_io_recompile(cpu, retaddr);
++        }
+     }
+ 
+     *out_offset = mr_offset;
+@@ -1990,7 +1999,8 @@
+     tcg_debug_assert(size > 0 && size <= 8);
+ 
+     attrs = full->attrs;
+-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
++    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra,
++                         type == MMU_DATA_LOAD ? size : 0);
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
+@@ -2011,7 +2021,7 @@
+     tcg_debug_assert(size > 8 && size <= 16);
+ 
+     attrs = full->attrs;
+-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
++    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
+@@ -2531,7 +2541,7 @@
+     tcg_debug_assert(size > 0 && size <= 8);
+ 
+     attrs = full->attrs;
+-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
++    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
+@@ -2551,7 +2561,7 @@
+     tcg_debug_assert(size > 8 && size <= 16);
+ 
+     attrs = full->attrs;
+-    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra);
++    section = io_prepare(&mr_offset, cpu, full->xlat_section, attrs, addr, ra, 0);
+     mr = section->mr;
+ 
+     BQL_LOCK_GUARD();
+--- a/include/hw/core/cpu.h
++++ b/include/hw/core/cpu.h
+@@ -499,6 +499,17 @@
+     int singlestep_enabled;
+     int64_t icount_budget;
+     int64_t icount_extra;
++    /* Lifetime accounted TCG instructions, excluding idle time warps.
++     * Same semantics as qemu_icount; not hardware retired instructions.
++     * CPU reset must not clear it independently of the aggregate count. */
++    int64_t icount_executed;
++    /* Opt-in fixed-frequency serial TCG experiment; zero Hz keeps legacy. */
++    int64_t icount_time_ns, icount_slice_end;
++    uint64_t icount_phase;
++    int64_t icount_cycle_epoch;
++    uint64_t icount_cycles, icount_cycle_phase;
++    uint32_t icount_hz;
++    uint32_t icount_max_skew_ns;
+     uint64_t random_seed;
+     sigjmp_buf jmp_env;
+ 
+--- a/target/riscv/cpu.h
++++ b/target/riscv/cpu.h
+@@ -279,6 +279,8 @@
+     target_ulong geilen;
+     uint64_t resetvec;
+ 
++    void *arcs_state; /* Non-null only for the ARCS functional machine. */
++    bool arcs_dsp;
+     target_ulong mhartid;
+     /*
+      * For RV32 this is 32-bit mstatus and 32-bit mstatush.
+--- a/target/riscv/cpu.c
++++ b/target/riscv/cpu.c
+@@ -670,6 +670,12 @@
+ {
+     RISCVCPU *cpu = RISCV_CPU(cs);
+     CPURISCVState *env = &cpu->env;
++    if (env->arcs_state && (env->mtvec & 3) == 3) {
++        /* ECLIC has its own per-source enables. Standard mie is unused;
++         * global mstatus.MIE controls delivery, not WFI wakeup.
++         */
++        return (env->mip & MIP_MEIP) != 0;
++    }
+     /*
+      * Definition of the WFI instruction requires it to ignore the privilege
+      * mode and delegation registers, but respect individual enables
+--- a/target/riscv/cpu_helper.c
++++ b/target/riscv/cpu_helper.c
+@@ -21,6 +21,7 @@
+ #include "qemu/log.h"
+ #include "qemu/main-loop.h"
+ #include "cpu.h"
++#include "arcs_n300.h"
+ #include "internals.h"
+ #include "pmu.h"
+ #include "exec/cputlb.h"
+@@ -546,6 +547,9 @@
+ 
+ bool riscv_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
+ {
++    if (RISCV_CPU(cs)->env.arcs_state) {
++        return arcs_n300_interrupt(cs);
++    }
+     uint32_t mask = CPU_INTERRUPT_HARD | CPU_INTERRUPT_RNMI;
+ 
+     if (interrupt_request & mask) {
+@@ -2154,6 +2158,9 @@
+ {
+     RISCVCPU *cpu = RISCV_CPU(cs);
+     CPURISCVState *env = &cpu->env;
++    if (env->arcs_state) {
++        arcs_n300_trap(env, !!(cs->exception_index & RISCV_EXCP_INT_FLAG));
++    }
+     bool virt = env->virt_enabled;
+     bool write_gva = false;
+     bool always_storeamo = (env->excp_uw2 & RISCV_UW2_ALWAYS_STORE_AMO);
+--- a/target/riscv/op_helper.c
++++ b/target/riscv/op_helper.c
+@@ -20,6 +20,7 @@
+ 
+ #include "qemu/osdep.h"
+ #include "cpu.h"
++#include "arcs_n300.h"
+ #include "internals.h"
+ #include "exec/cputlb.h"
+ #include "accel/tcg/cpu-ldst.h"
+@@ -398,6 +399,9 @@
+     uintptr_t ra = GETPC();
+ 
+     check_ret_from_m_mode(env, retpc, prev_priv, ra);
++    if (env->arcs_state) {
++        arcs_n300_mret(env);
++    }
+ 
+     target_ulong prev_virt = get_field(env->mstatus, MSTATUS_MPV) &&
+                              (prev_priv != PRV_M);
+--- a/target/riscv/helper.h
++++ b/target/riscv/helper.h
+@@ -131,6 +131,7 @@
+ #ifndef CONFIG_USER_ONLY
+ DEF_HELPER_1(sret, tl, env)
+ DEF_HELPER_1(mret, tl, env)
++DEF_HELPER_4(arcs_jalmnxti, tl, env, tl, tl, tl)
+ DEF_HELPER_1(mnret, tl, env)
+ DEF_HELPER_1(ctr_clear, void, env)
+ DEF_HELPER_1(wfi, void, env)
+--- a/target/riscv/translate.c
++++ b/target/riscv/translate.c
+@@ -1262,10 +1262,37 @@
+                                                ctx->base.pc_next + 2));
+         }
+         ctx->opcode = opcode;
++        if (env->arcs_dsp && (opcode & 0xfc00707f) == 0xc400107f) {
++            ctx->cur_insn_len = 4;
++            int rd = extract32(opcode, 7, 5);
++            TCGv a = get_gpr(ctx, extract32(opcode, 15, 5), EXT_NONE);
++            TCGv b = get_gpr(ctx, extract32(opcode, 20, 5), EXT_NONE);
++            TCGv old = get_gpr(ctx, rd, EXT_NONE);
++            TCGv result = tcg_temp_new();
++            tcg_gen_mul_tl(result, a, b);
++            if (opcode & (1u << 25)) { tcg_gen_sub_tl(result, old, result); }
++            else { tcg_gen_add_tl(result, old, result); }
++            gen_set_gpr(ctx, rd, result);
++            return;
++        }
++        if (env->arcs_state && (opcode & 0xfff0707f) == 0x7ed01073) {
++            TCGv source = get_gpr(ctx, extract32(opcode, 15, 5), EXT_NONE);
++            gen_helper_arcs_jalmnxti(cpu_pc, tcg_env,
++                tcg_constant_tl(extract32(opcode, 7, 5)), source,
++                tcg_constant_tl(ctx->base.pc_next));
++            tcg_gen_exit_tb(NULL, 0);
++            ctx->base.is_jmp = DISAS_NORETURN;
++            return;
++        }
+ 
+         for (guint i = 0; i < ctx->decoders->len; ++i) {
+             riscv_cpu_decode_fn func = g_ptr_array_index(ctx->decoders, i);
+             if (func(ctx, opcode)) {
++                if (env->arcs_state && opcode == 0x10500073) {
++                    /* WFI always exits in helper_wfi. Do not precharge
++                     * following, unexecuted instructions in this TB. */
++                    ctx->base.is_jmp = DISAS_NORETURN;
++                }
+                 return;
+             }
+         }
+--- a/target/riscv/meson.build
++++ b/target/riscv/meson.build
+@@ -27,6 +27,7 @@
+ 
+ riscv_system_ss = ss.source_set()
+ riscv_system_ss.add(files(
++  'arcs_n300.c',
+   'arch_dump.c',
+   'pmp.c',
+   'debug.c',
+--- a/hw/riscv/meson.build
++++ b/hw/riscv/meson.build
+@@ -1,5 +1,8 @@
+ riscv_ss = ss.source_set()
+ riscv_ss.add(files('boot.c'))
++riscv_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c', 'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c', 'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c', 'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c', 'arcs_bluetooth.c', 'arcs_audio.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c', 'arcs_wifi_ap.c', 'arcs_hsu.c', 'arcs_trng.c', 'arcs_network.c'))
++riscv_ss.add(when: 'CONFIG_ARCS', if_true: dependency('gmodule-2.0'))
++riscv_ss.add(when: 'CONFIG_ARCS', if_true: declare_dependency(link_args: [meson.project_source_root() / 'luna' / (host_machine.system() + '-' + host_machine.cpu_family()) / 'liblisem-luna.a']))
+ riscv_ss.add(when: 'CONFIG_RISCV_NUMA', if_true: files('numa.c'))
+ riscv_ss.add(files('riscv_hart.c'))
+ riscv_ss.add(when: 'CONFIG_OPENTITAN', if_true: files('opentitan.c'))
+--- a/hw/riscv/Kconfig
++++ b/hw/riscv/Kconfig
+@@ -1,3 +1,8 @@
++config ARCS
++    bool
++    depends on RISCV32
++    select SSI
++
+ config RISCV_IOMMU
+     bool
+ 
+--- a/accel/tcg/icount-common.c
++++ b/accel/tcg/icount-common.c
+@@ -81,13 +81,20 @@
+  * account executed instructions. This is done by the TCG vCPU
+  * thread so the main-loop can see time has moved forward.
+  */
++#include "icount-percpu.inc"
++#include "icount-pace.inc"
++
+ static void icount_update_locked(CPUState *cpu)
+ {
+     int64_t executed = icount_get_executed(cpu);
+     cpu->icount_budget -= executed;
++    qatomic_set_i64(&cpu->icount_executed, cpu->icount_executed + executed);
+ 
+     qatomic_set_i64(&timers_state.qemu_icount,
+                     timers_state.qemu_icount + executed);
++    if (cpu->icount_hz) {
++        icount_clock_advance(cpu, executed);
++    }
+ }
+ 
+ /*
+@@ -124,7 +131,7 @@
+ {
+     int64_t icount = icount_get_raw_locked();
+     return qatomic_read_i64(&timers_state.qemu_icount_bias) +
+-        icount_to_ns(icount);
++        (icount_clock_quantum ? 0 : icount_to_ns(icount));
+ }
+ 
+ int64_t icount_get_raw(void)
+@@ -301,13 +308,23 @@
+      * Nothing to do if the VM is stopped: QEMU_CLOCK_VIRTUAL timers
+      * do not fire, so computing the deadline does not make sense.
+      */
+-    if (!runstate_is_running()) {
++    if (!runstate_is_running() ||
++        qemu_reset_requested_get() != SHUTDOWN_CAUSE_NONE) {
+         return;
+     }
+ 
+     if (replay_mode != REPLAY_MODE_PLAY) {
+         if (!all_cpu_threads_idle()) {
+             return;
++        }
++
++        /* A pending debugger stop is not guest idle time. The I/O thread
++         * may observe stopped=true before it processes the debug request. */
++        CPUState *cpu;
++        CPU_FOREACH(cpu) {
++            if (cpu->stopped || cpu->stop) {
++                return;
++            }
+         }
+ 
+         if (qtest_enabled()) {
+@@ -340,6 +357,10 @@
+         if (!icount_sleep) {
+             warn_report_once("icount sleep disabled and no active timers");
+         }
++        return;
++    }
++
++    if (deadline > 0 && icount_pace_defer_warp(deadline)) {
+         return;
+     }
+ 
+--- a/accel/qtest/qtest.c
++++ b/accel/qtest/qtest.c
+@@ -25,7 +25,44 @@
+ #include "qemu/guest-random.h"
+ #include "qemu/main-loop.h"
+ #include "hw/core/cpu.h"
+-#include "accel/dummy-cpus.h"
++
++/* A non-executing CPU needs one wait primitive. Switching between sigwait
++ * and halt_cond can lose a coalesced kick during repeated pause/resume. All
++ * work and waits here are serialized by BQL; no guest instructions execute. */
++static void *qtest_cpu_thread(void *opaque)
++{
++    CPUState *cpu = opaque;
++    rcu_register_thread();
++    bql_lock();
++    qemu_thread_get_self(cpu->thread);
++    cpu->thread_id = qemu_get_thread_id();
++    current_cpu = cpu;
++    cpu_thread_signal_created(cpu);
++    qemu_guest_random_seed_thread_part2(cpu->random_seed);
++    do {
++        qemu_wait_io_event_common(cpu);
++        if (!cpu->unplug) {
++            qemu_cond_wait_bql(cpu->halt_cond);
++        }
++    } while (!cpu->unplug);
++    bql_unlock();
++    rcu_unregister_thread();
++    return NULL;
++}
++
++static void qtest_start_cpu(CPUState *cpu)
++{
++    char name[VCPU_THREAD_NAME_SIZE];
++    snprintf(name, sizeof(name), "CPU %d/QTEST", cpu->cpu_index);
++    qemu_thread_create(cpu->thread, name, qtest_cpu_thread, cpu,
++                       QEMU_THREAD_JOINABLE);
++}
++
++static void qtest_kick_cpu(CPUState *cpu)
++{
++    /* qemu_cpu_kick already broadcasts halt_cond while holding BQL. */
++    assert(bql_locked());
++}
+ 
+ static int64_t qtest_clock_counter;
+ 
+@@ -65,7 +102,8 @@
+ {
+     AccelOpsClass *ops = ACCEL_OPS_CLASS(oc);
+ 
+-    ops->create_vcpu_thread = dummy_start_vcpu_thread;
++    ops->create_vcpu_thread = qtest_start_cpu;
++    ops->kick_vcpu_thread = qtest_kick_cpu;
+     ops->get_virtual_clock = qtest_get_virtual_clock;
+     ops->set_virtual_clock = qtest_set_virtual_clock;
+     ops->handle_interrupt = generic_handle_interrupt;
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -1,3 +1,4 @@
++system_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs_st7789.c', 'lisa_display.c'))
+ hw_display_modules = {}
+ 
+ system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -42,6 +42,15 @@
+  * cpus-tcg vCPU thread so the main-loop can see time has moved forward.
+  */
+ void icount_update(CPUState *cpu);
++void icount_clock_configure(CPUState *cpu, uint32_t hz, uint64_t quantum);
++void icount_clock_set_hz(CPUState *cpu, uint32_t hz);
++void icount_clock_enable_pacing(void);
++void icount_clock_pace(void);
++int64_t icount_clock_audio_epoch(void);
++int64_t icount_clock_budget(CPUState *cpu, int64_t deadline);
++void icount_clock_finish(CPUState *cpu);
++int64_t icount_get_cpu_raw(CPUState *cpu);
++int64_t icount_get_cpu_cycles(CPUState *cpu);
+ 
+ /* get raw icount value */
+ int64_t icount_get_raw(void);
+--- a/accel/tcg/tcg-accel-ops-icount.c
++++ b/accel/tcg/tcg-accel-ops-icount.c
+@@ -68,8 +68,9 @@
+ 
+ static void icount_notify_aio_contexts(void)
+ {
+-    /* Wake up other AioContexts.  */
+-    qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
++    /* Empty AioContexts cannot service this deadline. Their first timer
++     * insertion has its own notification, so no wakeup is lost. */
++    qemu_clock_notify_active(QEMU_CLOCK_VIRTUAL);
+     qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+ }
+ 
+@@ -116,7 +117,9 @@
+ 
+     replay_mutex_lock();
+ 
+-    cpu->icount_budget = MIN(icount_get_limit(), cpu_budget);
++    cpu->icount_budget = cpu->icount_hz ?
++        icount_clock_budget(cpu, icount_get_limit()) :
++        MIN(icount_get_limit(), cpu_budget);
+     insns_left = MIN(0xffff, cpu->icount_budget);
+     cpu->neg.icount_decr.u16.low = insns_left;
+     cpu->icount_extra = cpu->icount_budget - insns_left;
+@@ -136,6 +139,9 @@
+ {
+     /* Account for executed instructions */
+     icount_update(cpu);
++    if (cpu->icount_hz) {
++        icount_clock_finish(cpu);
++    }
+ 
+     /* Reset the counters */
+     cpu->neg.icount_decr.u16.low = 0;
+--- a/target/riscv/csr.c
++++ b/target/riscv/csr.c
+@@ -1261,7 +1261,8 @@
+ 
+     if (!cfg_val) {
+         if (icount_enabled()) {
+-                curr_val = inst ? icount_get_raw() : icount_get();
++                curr_val = inst ? icount_get_cpu_raw(env_cpu(env)) :
++                                  icount_get_cpu_cycles(env_cpu(env));
+         } else {
+             curr_val = cpu_get_host_ticks();
+         }
+--- a/target/riscv/pmu.c
++++ b/target/riscv/pmu.c
+@@ -198,7 +198,7 @@
+     uint64_t delta;
+ 
+     if (icount_enabled()) {
+-        current_icount = icount_get_raw();
++        current_icount = icount_get_cpu_raw(env_cpu(env));
+     } else {
+         current_icount = cpu_get_host_ticks();
+     }
+@@ -238,7 +238,7 @@
+     uint64_t delta;
+ 
+     if (icount_enabled()) {
+-        current_ticks = icount_get();
++        current_ticks = icount_get_cpu_cycles(env_cpu(env));
+     } else {
+         current_ticks = cpu_get_host_ticks();
+     }
+--- a/include/qemu/timer.h
++++ b/include/qemu/timer.h
+@@ -198,6 +198,11 @@
+  * list linked to the clock, or qemu_notify() if none.
+  */
+ void qemu_clock_notify(QEMUClockType type);
++
++/* Notify only lists with pending timers. A first insertion independently
++ * rearms and notifies its list, including when racing this check.
++ * Caller must hold the same list-lifetime protection as qemu_clock_notify. */
++void qemu_clock_notify_active(QEMUClockType type);
+ 
+ /**
+  * qemu_clock_enable:
+--- a/util/qemu-timer.c
++++ b/util/qemu-timer.c
+@@ -148,6 +148,24 @@
+     }
+ }
+ 
++void qemu_clock_notify_active(QEMUClockType type)
++{
++    QEMUTimerList *timer_list;
++    QEMUClock *clock = qemu_clock_ptr(type);
++
++    QLIST_FOREACH(timer_list, &clock->timerlists, list) {
++        bool active;
++        qemu_mutex_lock(&timer_list->active_timers_lock);
++        active = timer_list->active_timers != NULL;
++        qemu_mutex_unlock(&timer_list->active_timers_lock);
++        /* A concurrent first insertion calls timerlist_rearm itself.
++         * Do not hold active_timers_lock over an arbitrary notifier. */
++        if (active) {
++            timerlist_notify(timer_list);
++        }
++    }
++}
++
+ /* Disabling the clock will wait for related timerlists to stop
+  * executing qemu_run_timers.  Thus, this functions should not
+  * be used from the callback of a timer that is based on @clock.
+--- a/tests/unit/meson.build
++++ b/tests/unit/meson.build
+@@ -48,6 +48,7 @@
+   'test-qapi-util': [],
+   'test-interval-tree': [],
+   'test-fifo': [],
++  'test-arcs-clock-notify': [],
+ }
+ 
+ if have_system or have_tools
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -218,6 +218,7 @@
+         /* Only used for icount_enabled() */
+         int64_t cpu_budget = 0;
+ 
++        icount_clock_pace();
+         bql_unlock();
+         replay_mutex_lock();
+         bql_lock();
+--- a/hw/audio/meson.build
++++ b/hw/audio/meson.build
+@@ -1,4 +1,5 @@
+ system_ss.add(files('soundhw.c'))
++system_ss.add(when: 'CONFIG_ARCS', if_true: files('lisa_stream.c'))
+ system_ss.add(when: 'CONFIG_AC97', if_true: files('ac97.c'))
+ system_ss.add(when: 'CONFIG_ADLIB', if_true: files('fmopl.c', 'adlib.c'))
+ system_ss.add(when: 'CONFIG_ASC', if_true: files('asc.c'))
+--- a/include/qemu/osdep.h
++++ b/include/qemu/osdep.h
+@@ -816,15 +816,7 @@
+  * for the current thread.
+  */
+ #ifdef __APPLE__
+-static inline void qemu_thread_jit_execute(void)
+-{
+-    pthread_jit_write_protect_np(true);
+-}
+-
+-static inline void qemu_thread_jit_write(void)
+-{
+-    pthread_jit_write_protect_np(false);
+-}
++#include "qemu/jit-state.h"
+ #else
+ static inline void qemu_thread_jit_write(void) {}
+ static inline void qemu_thread_jit_execute(void) {}
+--- a/util/osdep.c
++++ b/util/osdep.c
+@@ -30,6 +30,10 @@
+ #include "qemu/mprotect.h"
+ #include "qemu/hw-version.h"
+ #include "monitor/monitor.h"
++
++#ifdef __APPLE__
++__thread int qemu_jit_protection;
++#endif
+ 
+ static const char *hw_version = QEMU_HW_VERSION;
+ 
+--- a/target/riscv/insn_trans/trans_rvi.c.inc
++++ b/target/riscv/insn_trans/trans_rvi.c.inc
+@@ -984,5 +984,18 @@
+     translator_io_start(&ctx->base);
+     gen_helper_csrr(dest, tcg_env, csr);
+     gen_set_gpr(ctx, rd, dest);
++    if (RISCV_CPU(ctx->cs)->env.arcs_state &&
++        (rc == CSR_MCYCLE || rc == CSR_MCYCLEH ||
++         rc == CSR_CYCLE || rc == CSR_CYCLEH ||
++         rc == CSR_MINSTRET || rc == CSR_MINSTRETH ||
++         rc == CSR_INSTRET || rc == CSR_INSTRETH)) {
++        /* Pure counter reads cannot change translation flags. Keep the IO
++         * boundary and full CSR access/exception checks, but let the next
++         * TB use normal chaining and its normal IRQ/icount entry checks. */
++        decode_save_opc(ctx, 0);
++        gen_goto_tb(ctx, 0, ctx->cur_insn_len);
++        ctx->base.is_jmp = DISAS_NORETURN;
++        return true;
++    }
+     return do_csr_post(ctx);
+ }
+--- a/python/scripts/mkvenv.py
++++ b/python/scripts/mkvenv.py
+@@ -671,7 +671,7 @@
+     if not online:
+         full_args += ["--no-index"]
+     if wheels_dir:
+-        full_args += ["--find-links", f"file://{str(wheels_dir)}"]
++        full_args += ["--find-links", Path(wheels_dir).resolve().as_uri()]
+     full_args += list(args)
+     subprocess.run(
+         full_args,
+--- a/meson.build
++++ b/meson.build
+@@ -12,7 +12,11 @@
+ add_test_setup('thorough',
+                env: ['G_TEST_SLOW=1', 'SPEED=thorough', 'RUST_BACKTRACE=1'])
+ 
+-meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
++# Lisem packages native outputs directly; Windows does not need a symlink
++# install tree (which otherwise requires Developer Mode or elevation).
++if host_machine.system() != 'windows'
++  meson.add_postconf_script(find_program('scripts/symlink-install-tree.py'))
++endif
+ 
+ ####################
+ # Global variables #
+--- a/version.rc
++++ b/version.rc
+@@ -1,5 +1,7 @@
+ #include <winver.h>
+ #include "config-host.h"
+ 
++1 24 "lisem.manifest"
++
+ VS_VERSION_INFO VERSIONINFO
+ FILEVERSION QEMU_VERSION_MAJOR,QEMU_VERSION_MINOR,QEMU_VERSION_MICRO,0
+--- a/meson.build
++++ b/meson.build
+@@ -856,7 +856,7 @@
+ 
+   win = import('windows')
+   version_res = win.compile_resources('version.rc',
+-                                      depend_files: files('pc-bios/qemu-nsis.ico'),
++                                      depend_files: files('pc-bios/qemu-nsis.ico', 'lisem.manifest'),
+                                       include_directories: include_directories('.'))
+   host_dsosuf = '.dll'
+ elif host_os == 'darwin'

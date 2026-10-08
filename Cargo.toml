@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/core", "crates/cli", "desktop"]
+default-members = ["crates/core", "crates/cli"]
+resolver = "3"
+
+[profile.dev]
+debug = 0
+incremental = false

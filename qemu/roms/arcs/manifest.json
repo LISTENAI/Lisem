@@ -1,0 +1,14 @@
+{
+  "ap": {
+    "file": "ap.bin",
+    "size": 65536,
+    "address": 0,
+    "sha256": "8f07301b46b34336022c079cf479beaeae960f6cb14f08cc2a478a4264d10489"
+  },
+  "cp": {
+    "file": "cp.bin",
+    "size": 32768,
+    "address": 2097152,
+    "sha256": "b1710a8f7968399788bb191c34872c2640c1bf62c00400ad25dcc1f2027ee262"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "id": "arcs-mini",
+  "name": "Arcs-Mini",
+  "chip": "ls2684",
+  "screen": {
+    "width": 240,
+    "height": 240,
+    "label": "ST7789 · 240 × 240"
+  },
+  "buttons": [
+    {
+      "id": "function",
+      "label": "功能键",
+      "pin": 4,
+      "active_low": true,
+      "bank": "B"
+    }
+  ],
+  "flash_bytes": 16777216,
+  "uart_channels": [
+    0,
+    1,
+    2
+  ],
+  "audio": true,
+  "indicators": [
+    {
+      "id": "pa",
+      "kind": "audio-amplifier",
+      "label": "功放",
+      "bank": "A",
+      "pin": 1,
+      "active_low": false
+    },
+    {
+      "id": "user-led",
+      "kind": "led",
+      "label": "用户 LED",
+      "bank": "B",
+      "pin": 1,
+      "active_low": true,
+      "color": "#4cc3a2"
+    },
+    {
+      "id": "power-hold",
+      "kind": "signal",
+      "label": "电源保持",
+      "bank": "B",
+      "pin": 3,
+      "active_low": false
+    }
+  ],
+  "version": 1
+}

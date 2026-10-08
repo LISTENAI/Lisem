@@ -1,0 +1,112 @@
+name: Build and test
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-aarch64
+          - runner: macos-15-intel
+            target: darwin-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-aarch64
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+          - runner: windows-11-arm
+            target: windows-aarch64
+            arch: arm64
+            msystem: CLANGARM64
+            prefix: mingw-w64-clang-aarch64
+            directory: clangarm64
+          - runner: windows-2022
+            target: windows-x86_64
+            arch: x64
+            msystem: UCRT64
+            prefix: mingw-w64-ucrt-x86_64
+            directory: ucrt64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/artifacts/desktop-build
+      CARGO_BUILD_JOBS: 3
+      CC: clang
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d
+        with:
+          toolchain: 1.95.0
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang lld cmake ninja-build meson pkg-config \
+            libglib2.0-dev libpixman-1-dev libpulse-dev patchelf libvulkan-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
+            libssl-dev libdbus-1-dev libsecret-1-dev libx11-xcb-dev libxcb1-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
+            libxcb-xinput-dev libxcb-cursor-dev libasound2-dev gcc-riscv64-unknown-elf
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install glib pixman pkgconf ninja meson
+      - name: Install Windows dependencies
+        if: runner.os == 'Windows'
+        id: msys2
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+        with:
+          msystem: ${{ matrix.msystem }}
+          update: true
+          install: >-
+            git patch tar
+            ${{ matrix.prefix }}-clang ${{ matrix.prefix }}-glib2
+            ${{ matrix.prefix }}-pixman ${{ matrix.prefix }}-portaudio
+            ${{ matrix.prefix }}-python ${{ matrix.prefix }}-meson
+            ${{ matrix.prefix }}-ninja ${{ matrix.prefix }}-pkgconf
+      - name: Configure Windows toolchains
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          MSYS2_LOCATION: ${{ steps.msys2.outputs.msys2-location }}
+          MSYS2_DIRECTORY: ${{ matrix.directory }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products '*' -property installationPath
+          if (!$vs) { throw 'Visual Studio not found' }
+          $command = "`"$vs\Common7\Tools\VsDevCmd.bat`" -no_logo -arch=$env:BUILD_ARCH -host_arch=$env:BUILD_ARCH >nul && set"
+          $variables = & cmd.exe /d /s /c $command
+          if ($LASTEXITCODE -ne 0) { throw 'MSVC environment setup failed' }
+          foreach ($line in $variables) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
+          "$env:MSYS2_LOCATION\usr\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          "$env:MSYS2_LOCATION\$env:MSYS2_DIRECTORY\bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build, test and archive
+        if: runner.os != 'Windows'
+        run: python3 tools/ci.py --target '${{ matrix.target }}'
+      - name: Build, test and archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: python tools/ci.py --target '${{ matrix.target }}'
+      - name: Upload verified package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: Lisem-${{ matrix.target }}
+          path: artifacts/packages/*
+          if-no-files-found: error
+          retention-days: 30

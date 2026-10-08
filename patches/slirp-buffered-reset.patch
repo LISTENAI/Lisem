@@ -1,0 +1,53 @@
+--- a/src/socket.h
++++ b/src/socket.h
+@@ -45,6 +45,10 @@
+     struct gfwd_list *guestfwd;
+ 
+     int pollfds_idx; /* GPollFD GArray index */
++
++    /* A host read error follows bytes already accepted into so_snd. */
++    int so_pending_error;
++    uint32_t so_error_deadline;
+ 
+     Slirp *slirp; /* managing slirp instance */
+ 
+--- a/src/socket.c
++++ b/src/socket.c
+@@ -221,7 +221,19 @@
+ 
+             if (err == ECONNABORTED || err == ECONNRESET || err == ECONNREFUSED ||
+                 err == ENOTCONN || err == EPIPE) {
+-                tcp_drop(sototcpcb(so), err);
++                if (so->so_snd.sb_cc) {
++                    /* Preserve host recv() ordering across the TCP proxy:
++                     * deliver buffered bytes before reporting the reset.
++                     * Keep TCP retransmission/ACK processing alive, but stop
++                     * host I/O. A stalled guest gets the error after 60s.
++                     */
++                    so->so_pending_error = err;
++                    so->so_error_deadline = curtime + 60000;
++                    so->so_state |= SS_FCANTRCVMORE | SS_FCANTSENDMORE;
++                    tcp_output(sototcpcb(so));
++                } else {
++                    tcp_drop(sototcpcb(so), err);
++                }
+             } else {
+                 tcp_sockclosed(sototcpcb(so));
+             }
+--- a/src/slirp.c
++++ b/src/slirp.c
+@@ -833,6 +833,14 @@
+ 
+         so->pollfds_idx = -1;
+ 
++        if (so->so_pending_error) {
++            if (!so->so_snd.sb_cc ||
++                (int32_t)(curtime - so->so_error_deadline) >= 0) {
++                tcp_drop(so->so_tcpcb, so->so_pending_error);
++            }
++            continue;
++        }
++
+         /*
+          * See if we need a tcp_fasttimo
+          */

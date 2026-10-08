@@ -1,0 +1,20 @@
+Lisem component licenses
+
+Copyright (c) 2026 LISTENAI
+
+Lisem is distributed under component-specific licenses:
+
+* Independently authored Rust code, desktop assets, tools, tests, hardware
+  descriptions and documentation: MIT (LICENSES/MIT.txt), unless a file
+  carries a different license notice.
+* QEMU source additions and patches: GPL-2.0-or-later, except files with
+  their own license notices. See LICENSES/GPL-2.0.txt. QEMU and other
+  third-party code retain their respective licenses and copyright notices.
+* Native host components: the licenses specified in their source headers.
+* The public LUNA ABI header qemu/include/lisem/luna.h: MIT.
+* Precompiled LUNA archives in qemu/luna/ and the AP/CP ROM binaries in
+  qemu/roms/arcs/: LICENSES/LISTENAI-Binary.txt. Their manifests are MIT.
+
+The binary components are not covered by the MIT source-code license.
+Third-party dependencies retain their own licenses. Included Linger-derived
+material retains the notice and license in LICENSES/Linger-Apache-2.0.txt.

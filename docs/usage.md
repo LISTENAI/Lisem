@@ -1,0 +1,99 @@
+# 使用说明
+
+通过 `make build` 构建，再用 `make run` 或打开 `artifacts/desktop/Lisem.app`
+启动；Windows/Linux 打开 `artifacts/desktop/Lisem/` 中的桌面程序。
+应用保存实例列表；每个实例拥有独立 Flash、OTP 和 UID。
+
+## 实例与固件
+
+新建设备时选择板型。可创建空白 Flash，或导入原始真机 LPK。LPK 只识别
+芯片，不能决定板型。LPK 是一次性导入来源，写入后可移动或删除；实例运行
+只使用自己的 Flash。实例菜单支持复制/重新生成 UID、全片擦除及 LPK 写入，
+这些存储操作要求设备下电。重新生成 UID 可能需要在业务平台重新登记。
+
+移除实例仅从库中移除记录，不删除磁盘文件。已存在的实例可以重新打开。
+上电前核对实例的硬件描述；板型或芯片配置不匹配时拒绝启动。
+显示名称和控件标签不参与硬件兼容性判断。
+
+上电后固件执行 ROM 和 Flash；原固件可能要求长按功能键才能启动应用。
+按住鼠标就是按住按键，松开即释放。复位保留 Flash、OTP 和 UART 连接。
+关闭设备窗口保留运行；退出应用结束其模拟进程。
+
+## 音频和网络
+
+声音默认开启。右上角声音图标控制宿主静音，图标反色表示板级 PA 已使能。
+实例设置中的麦克风开关在下电时修改，使用时需允许系统麦克风访问。Linux 录播需要可用的 PulseAudio 或
+PipeWire pulse 服务；不启用音频的无头运行没有此要求。
+不用麦克风时仍实时播放 DAC，可导入 16 kHz、单声道 PCM16 WAV 测试输入。
+
+开启宿主网络后，固件可连接开放 AP `LISA-Sim` 并访问宿主网络。固件的设备
+鉴权、资源更新和唤醒词均由其业务及平台配置决定，模拟器不代办。关闭宿主
+网络仍有离线逻辑 AP，但不提供互联网。
+
+## UART
+
+先打开所需 UART，再连接显示的端点，最后上电即可看到完整启动日志。
+macOS/Linux 使用 PTY：
+
+```sh
+picocom --baud 115200 --imap lfcrlf /dev/ttysXXX
+```
+
+`--imap lfcrlf` 是 picocom 的显示选项，用于固件只输出 LF 的日志；模拟器
+保留原始字节。Linux 的端口通常形如 `/dev/pts/3`。Windows 显示
+`tcp://127.0.0.1:PORT`，用 PuTTY 的 **Raw** 模式连接，或复制界面给出的
+`putty -raw 127.0.0.1 -P PORT` 命令；不要使用 Telnet 模式。
+复位和上下电保持端点，退出应用后重新查看端口。
+
+## 串口烧录
+
+启用 UART0，在复位菜单中进入烧录模式，再运行支持不复位策略的 cskburn：
+
+```sh
+cskburn -C arcs -b 230400 -s /dev/ttysXXX --chip-id --reset-strategy none
+```
+
+具体擦写和 LPK 参数按当前 cskburn 帮助使用。不要同时让 picocom 和烧录
+工具读取同一端口。macOS 虚拟 PTY 不传 DTR/RTS，因此烧录工具不能自动
+控制板级 BOOT/RESET；烧录结束后从桌面正常复位。
+Windows 的 TCP 端点不是 COM 串口，要求串口设备路径的 cskburn 不能直接
+连接；可使用实例菜单或 CLI 导入 LPK。
+
+## 无头命令行
+
+macOS 包内的 `Contents/MacOS/lisem`，或 Windows/Linux 包根目录的
+`lisem.exe` / `lisem` 可直接用于无头操作，随包运行组件无需
+另行安装。以下用 `lisem` 表示该命令，`INSTANCE_ID` 取自创建结果：
+
+```sh
+lisem create --board arcs-mini --name "Mini" --lpk firmware.lpk
+lisem list
+lisem uid INSTANCE_ID
+lisem uart INSTANCE_ID 0
+lisem start INSTANCE_ID --seconds 120 --timeout 180
+lisem button INSTANCE_ID function press
+lisem button INSTANCE_ID function release
+lisem screenshot INSTANCE_ID screen.png
+lisem reset INSTANCE_ID
+lisem stop INSTANCE_ID
+lisem import INSTANCE_ID firmware.lpk
+lisem erase INSTANCE_ID
+lisem uid INSTANCE_ID --regenerate
+lisem shutdown INSTANCE_ID
+```
+
+按键的按下与松开是两个独立动作，中间由调用方决定实际等待时间。
+`reset --download` 进入 ROM 烧录模式；`write --offset` 写入原始二进制。
+`send INSTANCE_ID 0 TEXT` 向 UART 发送 UTF-8 字节，`--hex` 发送二进制。
+`--json` 供脚本读取结果；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
+
+前台 `run` 有明确虚拟时间和宿主时间上限，Ctrl-C 停止本轮运行；失败返回
+非零退出码。后台 `start` 在 CLI 返回后继续运行，`stop` 保留 UART 端点，
+`shutdown` 同时关闭运行时和 UART 端点。每个实例独立，可以分别启动和控制。
+
+CLI 默认离线、无宿主音频；`--network` 启用宿主上联，`--audio` 用于
+播放、`--microphone` 同时采集，`--mute` 仅静音实际输出。无头模式不要求
+DISPLAY、麦克风或声音设备，适合文本终端和 CI。
+
+开发时 `make headless` 只构建 Rust CLI；从源码目录运行还需
+`make qemu-build`，启用网络另需 `python3 tools/build_network.py`。

@@ -1,0 +1,54 @@
+use gpui::component::{Theme, ThemeMode};
+use gpui::{App, rgb};
+
+pub fn init(cx: &mut App) {
+    Theme::change(ThemeMode::Dark, None, cx);
+    Theme::update(cx, |theme| {
+        let c = &mut theme.colors;
+        c.background = rgb(0x15191f).into();
+        c.foreground = rgb(0xe6eaf0).into();
+        c.border = rgb(0x303844).into();
+        c.muted = rgb(0x202630).into();
+        c.muted_foreground = rgb(0x949eaf).into();
+        c.primary = rgb(0x4cc3a2).into();
+        c.primary_hover = rgb(0x71d7ba).into();
+        c.primary_active = rgb(0x38a88a).into();
+        c.primary_foreground = rgb(0x10251e).into();
+        c.button_primary = c.primary;
+        c.button_primary_hover = c.primary_hover;
+        c.button_primary_active = c.primary_active;
+        c.button_primary_foreground = c.primary_foreground;
+        c.accent = rgb(0x254c41).into();
+        c.accent_foreground = rgb(0x9be6cf).into();
+        c.secondary = rgb(0x242a33).into();
+        c.secondary_hover = rgb(0x343d49).into();
+        c.secondary_active = rgb(0x38444f).into();
+        c.secondary_foreground = c.foreground;
+        c.button = c.secondary;
+        c.button_hover = c.secondary_hover;
+        c.button_active = c.secondary_active;
+        c.button_foreground = c.foreground;
+        c.button_secondary = c.secondary;
+        c.button_secondary_hover = c.secondary_hover;
+        c.button_secondary_active = c.secondary_active;
+        c.button_secondary_foreground = c.foreground;
+        c.sidebar = rgb(0x191d24).into();
+        c.sidebar_foreground = c.foreground;
+        c.sidebar_border = c.border;
+        c.sidebar_accent = c.accent;
+        c.sidebar_accent_foreground = c.accent_foreground;
+        c.sidebar_primary = c.primary;
+        c.sidebar_primary_foreground = c.primary_foreground;
+        c.popover = rgb(0x202630).into();
+        c.popover_foreground = c.foreground;
+        c.input = rgb(0x38404b).into();
+        c.ring = c.primary;
+        c.caret = c.primary;
+        c.selection = c.accent;
+        c.tab_active = c.accent;
+        c.tab_active_foreground = c.accent_foreground;
+        c.tab_bar = c.background;
+        c.switch = c.secondary_active;
+        c.progress_bar = c.primary;
+    });
+}
