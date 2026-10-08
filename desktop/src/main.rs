@@ -1,5 +1,6 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod about;
 mod backend;
 mod display;
 mod icons;
@@ -30,7 +31,10 @@ use std::{
     time::Duration,
 };
 
-actions!(lisa_sim, [Quit, ShowLibrary, CloseWindow, InstallCli]);
+actions!(
+    lisa_sim,
+    [Quit, ShowLibrary, CloseWindow, InstallCli, ShowAbout]
+);
 
 #[derive(Clone)]
 enum Mode {
@@ -45,6 +49,7 @@ struct ManagedWindow {
 #[derive(Default)]
 struct Windows {
     library: Option<ManagedWindow>,
+    about: Option<AnyWindowHandle>,
     devices: HashMap<String, ManagedWindow>,
 }
 type WindowBook = Rc<RefCell<Windows>>;
@@ -1229,6 +1234,10 @@ fn application_menu() -> impl IntoElement {
         .ghost()
         .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, |menu, _, _| {
             menu.item(
+                PopupMenuItem::new("关于 Lisem")
+                    .on_click(|_, _, cx| cx.dispatch_action(&ShowAbout)),
+            )
+            .item(
                 PopupMenuItem::new("安装命令行工具")
                     .on_click(|_, _, cx| cx.dispatch_action(&InstallCli)),
             )
@@ -1530,6 +1539,8 @@ fn main() {
                 name: "Lisem".into(),
                 disabled: false,
                 items: vec![
+                    MenuItem::action("关于 Lisem", ShowAbout),
+                    MenuItem::separator(),
                     MenuItem::action("安装命令行工具", InstallCli),
                     MenuItem::separator(),
                     MenuItem::action("退出 Lisem", Quit),
@@ -1559,6 +1570,21 @@ fn main() {
             cx.defer(move |cx| {
                 let handle = show_library(b, w, cx);
                 let _ = handle.view.update(cx, |view, cx| view.install_cli(cx));
+            });
+        });
+        let w = windows.clone();
+        cx.on_action(move |_: &ShowAbout, cx| {
+            let w = w.clone();
+            cx.defer(move |cx| {
+                let mut book = w.borrow_mut();
+                if let Some(handle) = book.about
+                    && handle
+                        .update(cx, |_, window, _| window.activate_window())
+                        .is_ok()
+                {
+                    return;
+                }
+                book.about = Some(about::open(cx));
             });
         });
         cx.on_action(|_: &Quit, cx| cx.defer(|cx| cx.quit()));
