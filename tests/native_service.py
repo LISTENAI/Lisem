@@ -21,6 +21,7 @@ class NativeService:
             [*command_prefix, str(binary), '--data-dir', str(data), '_bridge'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1, env=env, cwd=cwd)
         self.capture = Path(data).parent / "captures" if capture else None
+        self.created = set()
         self.sequence = 0
         self.replies = queue.Queue()
         def read_replies():
@@ -47,6 +48,8 @@ class NativeService:
         assert reply['id'] == self.sequence
         if 'error' in reply:
             raise RuntimeError(reply['error'])
+        if method == 'create':
+            self.created.add(reply['result']['id'])
         return reply['result']
 
     def status(self):
@@ -69,7 +72,10 @@ class NativeService:
     def device(self, identifier):
         return next(item for item in self.status()['devices'] if item['id'] == identifier)
 
-    def close(self):
+    def close(self, *, preserve=False):
+        if not preserve and self.process.poll() is None:
+            for identifier in self.created:
+                self.dispatch('shutdown', {'id': identifier})
         self.process.stdin.close()
         try:
             assert self.process.wait(timeout=45) == 0

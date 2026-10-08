@@ -423,28 +423,6 @@ impl Desktop {
         }
         cx.notify();
     }
-    fn confirm_quit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self.backend.snapshot.lock().unwrap().clone();
-        let running =
-            current.data["session"].is_object() && current.data["session"]["finished"] == false;
-        if !running && !current.busy {
-            cx.quit();
-            return;
-        }
-        let answer = window.prompt(
-            PromptLevel::Warning,
-            "退出 Lisem？",
-            Some("由此应用启动的实例会下电。Flash 和 OTP 保留，运行现场不保存。"),
-            &["取消", "下电并退出"],
-            cx,
-        );
-        cx.spawn(async move |_, cx| {
-            if answer.await == Ok(1) {
-                let _ = cx.update(|cx| cx.quit());
-            }
-        })
-        .detach();
-    }
     fn button_state(&mut self, id: &str, pressed: bool) {
         let changed = if pressed {
             self.held.insert(id.into())
@@ -1583,17 +1561,7 @@ fn main() {
                 let _ = handle.view.update(cx, |view, cx| view.install_cli(cx));
             });
         });
-        let b = ui_backend.clone();
-        let w = windows.clone();
-        cx.on_action(move |_: &Quit, cx| {
-            let (b, w) = (b.clone(), w.clone());
-            cx.defer(move |cx| {
-                let handle = show_library(b, w, cx);
-                let _ = handle.handle.update(cx, |_, window, cx| {
-                    let _ = handle.view.update(cx, |v, cx| v.confirm_quit(window, cx));
-                });
-            });
-        });
+        cx.on_action(|_: &Quit, cx| cx.defer(|cx| cx.quit()));
         let w = windows.clone();
         cx.on_action(move |_: &CloseWindow, cx| {
             let active = cx
@@ -1615,7 +1583,12 @@ fn main() {
             });
         });
         let shutdown = ui_backend.clone();
-        cx.on_app_quit(move |_| {
+        let w = windows.clone();
+        cx.on_app_quit(move |cx| {
+            let book = w.borrow();
+            for entry in book.library.iter().chain(book.devices.values()) {
+                let _ = entry.view.update(cx, |v, _| v.release_buttons());
+            }
             shutdown.request_shutdown();
             async {}
         })

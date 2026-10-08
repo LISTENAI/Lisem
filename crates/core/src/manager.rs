@@ -1,5 +1,5 @@
 //! Front-end-neutral management API. Each running instance has its own worker;
-//! foreground CLI ownership and GUI ownership both use the same lifecycle.
+//! front ends choose whether their runs survive disconnection.
 use crate::{
     catalog::Catalog,
     runtime::{Client, Options},
@@ -296,6 +296,12 @@ impl Drop for Manager {
 }
 
 pub fn bridge(mut manager: Manager) -> Result<()> {
+    let result = serve_bridge(&mut manager);
+    manager.disown();
+    result
+}
+
+fn serve_bridge(manager: &mut Manager) -> Result<()> {
     manager.restore_ports()?;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();

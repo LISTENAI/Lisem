@@ -258,7 +258,7 @@ impl Bridge {
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        // EOF makes the service stop its own simulator process group and PTYs.
+        // Closing this client leaves instance workers and UART endpoints alive.
         self.input.take();
         let _ = self.child.wait();
     }
