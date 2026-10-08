@@ -90,7 +90,7 @@ jobs:
           $variables = & cmd.exe /d /s /c $command
           if ($LASTEXITCODE -ne 0) { throw 'MSVC environment setup failed' }
           foreach ($line in $variables) {
-            if ($line -match '^([^=]+)=(.*)$') {
+            if ($line -match '^(Path|INCLUDE|LIB|LIBPATH|(?:VC|VS|WindowsSDK|UniversalCRT|UCRT|Framework|NETFX|DevEnv|ExtensionSdk)[A-Za-z0-9_]*)=(.*)$') {
               "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
             }
           }

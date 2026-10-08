@@ -51,7 +51,7 @@ def main():
     env = os.environ.copy()
     env.pop('CC', None)
     if os.name == 'nt':
-        msvc = Path(env['VCToolsInstallDir']) / 'bin' / ('Host' + env['VSCMD_ARG_HOST_ARCH']) / env['VSCMD_ARG_TGT_ARCH']
+        msvc = Path(os.environ['VCToolsInstallDir']) / 'bin' / ('Host' + env['VSCMD_ARG_HOST_ARCH']) / env['VSCMD_ARG_TGT_ARCH']
         env['PATH'] = str(msvc) + os.pathsep + env['PATH']
     run('rust-tests', ['cargo', '+1.95.0', 'test', '--locked', '--workspace'], env=env)
     if system == 'linux' and arch == 'x86_64':
