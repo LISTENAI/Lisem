@@ -29,14 +29,20 @@ def verify_icon(bundle):
                             ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON), wintypes.UINT]
         extract.restype = wintypes.UINT
         large, small = wintypes.HICON(), wintypes.HICON()
-        assert extract(str(bundle / 'lisem-desktop.exe'), 0,
-                       ctypes.byref(large), ctypes.byref(small), 1) == 1
         destroy = ctypes.WinDLL('user32').DestroyIcon
         destroy.argtypes = [wintypes.HICON]
         destroy.restype = wintypes.BOOL
-        assert large.value and small.value, 'Executable must provide both icon sizes'
-        destroy(large)
-        destroy(small)
+        try:
+            count = extract(str(bundle / 'lisem-desktop.exe'), 0,
+                            ctypes.byref(large), ctypes.byref(small), 1)
+            # PE resources count the large and small handles separately.
+            assert count == 2, f'Expected two executable icons, extracted {count}'
+            assert large.value and small.value, 'Executable must provide both icon sizes'
+        finally:
+            if large.value:
+                destroy(large)
+            if small.value:
+                destroy(small)
     else:
         import configparser
         entry = configparser.ConfigParser(interpolation=None)
