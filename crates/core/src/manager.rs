@@ -196,6 +196,7 @@ impl Manager {
                         microphone: item["host"]["microphone"].as_bool().unwrap_or(false),
                         sound: item["host"]["sound"].as_bool().unwrap_or(true),
                         download: false,
+                        capture: params["capture"].as_str().map(PathBuf::from),
                     }
                 };
                 let result = self

@@ -1,5 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 #include "endpoint.h"
+#include "qemu/lisa-mapping.h"
+#include <time.h>
 #include <assert.h>
 #include <stdlib.h>
 
@@ -7,8 +9,39 @@ HostDevice *host_device_start(HostAudio *s) { (void)s; return NULL; }
 void host_device_stop(HostDevice *d) { (void)d; }
 double host_device_latency(HostDevice *d) { (void)d; return 0; }
 
+static void shared_transport(void)
+{
+#ifdef _WIN32
+    unsigned long pid = GetCurrentProcessId();
+#else
+    unsigned long pid = getpid();
+#endif
+    char name[40];
+    snprintf(name, sizeof(name), "shm:lsm-%012lx%012lx", pid, (unsigned long)time(NULL));
+    size_t size = sizeof(LisaAudioStream);
+    LisaAudioStream *producer = lisa_named_mapping(name, size, true);
+    assert(producer && !producer->magic);
+    assert(!lisa_named_mapping(name, size, true));
+    LisaAudioStream *consumer = lisa_named_mapping(name, size, false);
+    assert(consumer);
+    lisa_audio_store(&producer->magic, LISA_AUDIO_MAGIC);
+    assert(lisa_audio_load(&consumer->magic) == LISA_AUDIO_MAGIC);
+    assert(lisa_audio_dac(producer, 1000, -1234, true));
+    assert(consumer->output[0].value == -1234);
+    assert(!lisa_named_mapping("shm:../invalid", size, true));
+#ifdef _WIN32
+    UnmapViewOfFile(consumer); UnmapViewOfFile(producer);
+#else
+    munmap(consumer, size); munmap(producer, size);
+    char posix[32]; snprintf(posix, sizeof(posix), "/%s", name + 4);
+    assert(!shm_unlink(posix));
+#endif
+    assert(!lisa_named_mapping(name, size, false));
+}
+
 int main(void)
 {
+    shared_transport();
     HostAudio *host = calloc(1, sizeof(*host));
     LisaAudioStream *stream = calloc(1, sizeof(*stream));
     assert(host && stream);

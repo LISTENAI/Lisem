@@ -16,10 +16,11 @@ DEFAULT_BINARY = ROOT / 'artifacts/desktop' / (
 
 
 class NativeService:
-    def __init__(self, data, binary, *, command_prefix=(), env=None, cwd=None):
+    def __init__(self, data, binary, *, command_prefix=(), env=None, cwd=None, capture=True):
         self.process = subprocess.Popen(
             [*command_prefix, str(binary), '--data-dir', str(data), '_bridge'],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8", bufsize=1, env=env, cwd=cwd)
+        self.capture = Path(data).parent / "captures" if capture else None
         self.sequence = 0
         self.replies = queue.Queue()
         def read_replies():
@@ -31,6 +32,12 @@ class NativeService:
         threading.Thread(target=read_replies, daemon=True).start()
 
     def dispatch(self, method, params):
+        if method == 'start' and self.capture is not None:
+            params = dict(params)
+            if 'options' in params:
+                params['options'] = dict(params['options'], capture=str(self.capture.resolve()))
+            else:
+                params['capture'] = str(self.capture.resolve())
         self.sequence += 1
         self.process.stdin.write(json.dumps({'id': self.sequence, 'method': method, 'params': params}) + '\n')
         self.process.stdin.flush()

@@ -98,5 +98,9 @@ CLI 默认离线、无宿主音频；`--network` 启用宿主上联，`--audio` 
 播放、`--microphone` 同时采集，`--mute` 仅静音实际输出。无头模式不要求
 DISPLAY、麦克风或声音设备，适合文本终端和 CI。
 
+正常运行不保存录音、画面、UART 或网络包的归档。需要排查问题时，显式使用
+`lisem run INSTANCE_ID --capture DIRECTORY`；诊断内容保存在指定目录，
+可能包含原始语音和固件日志，由调用方管理。
+
 开发时 `make headless` 只构建 Rust CLI；从源码目录运行还需
 `make qemu-build`，启用网络另需 `python3 tools/build_network.py`。

@@ -12,21 +12,52 @@ const HEADER: usize = 80;
 
 pub struct Display {
     pub path: PathBuf,
-    map: memmap2::MmapMut,
+    map: Map,
     width: u32,
     height: u32,
     bytes: usize,
     last: u64,
 }
 
+enum Map {
+    File(memmap2::MmapMut),
+    Shared(crate::shared::Mapping),
+}
+impl std::ops::Deref for Map {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::File(map) => map,
+            Self::Shared(map) => map,
+        }
+    }
+}
+
 impl Display {
     pub fn open(path: &Path) -> Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).open(path)?;
-        let len = file.metadata()?.len() as usize;
-        if !(HEADER + 3 * 20..=HEADER + 3 * (16 + 2048 * 2048 * 4)).contains(&len) {
-            return Err(anyhow::anyhow!("Invalid display map size"));
-        }
-        let map = unsafe { memmap2::MmapOptions::new().map_mut(&file)? };
+        let map = if let Some(name) = path.to_str().and_then(|s| s.strip_prefix("shm:")) {
+            let header = crate::shared::Mapping::open(name, HEADER)?;
+            let magic = unsafe { &*header.as_ptr().cast::<AtomicU64>() };
+            if magic.load(Ordering::Acquire) != MAGIC {
+                anyhow::bail!("Display map is not ready");
+            }
+            let bytes = u64::from_ne_bytes(header[32..40].try_into().unwrap());
+            anyhow::ensure!(
+                (4..=2048 * 2048 * 4).contains(&bytes),
+                "Invalid display map size"
+            );
+            let len = HEADER + 3 * (16 + bytes as usize);
+            Map::Shared(crate::shared::Mapping::open(name, len)?)
+        } else {
+            let file = OpenOptions::new().read(true).write(true).open(path)?;
+            let len = file.metadata()?.len() as usize;
+            anyhow::ensure!(
+                (HEADER + 3 * 20..=HEADER + 3 * (16 + 2048 * 2048 * 4)).contains(&len),
+                "Invalid display map size"
+            );
+            Map::File(unsafe { memmap2::MmapOptions::new().map_mut(&file)? })
+        };
+        let len = map.len();
         let mut display = Self {
             path: path.to_owned(),
             map,
@@ -94,6 +125,7 @@ impl Display {
     }
 }
 
+#[derive(Clone)]
 pub struct Frame {
     pub width: u32,
     pub height: u32,

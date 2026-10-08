@@ -148,6 +148,11 @@ void host_input(HostAudio *s, const int16_t *in, size_t count, double adc_time)
 
 static bool save_pending(LisaAudioStream *p, FILE *input, FILE *output, FILE *reference)
 {
+    if (!input) {
+        lisa_audio_store(&p->input_logged, lisa_audio_load(&p->input_write));
+        lisa_audio_store(&p->output_logged, lisa_audio_load(&p->output_write));
+        return true;
+    }
     uint64_t at = lisa_audio_load(&p->input_logged), end = lisa_audio_load(&p->input_write);
     while (at < end) {
         uint64_t count = LISA_AUDIO_CAPACITY - (at & LISA_AUDIO_MASK);
@@ -206,33 +211,43 @@ static void control(HostAudio *s)
 
 static int run(const char *directory, unsigned seconds, bool capture)
 {
-    char path[4096];
-    if (snprintf(path, sizeof(path), "%s" HOST_SEPARATOR "stream.bin", directory) >= (int)sizeof(path)) { return 1; }
-    int fd = lisa_open_shared_file(path, true);
-    if (fd < 0) { perror("Create audio transport"); return 1; }
-#ifdef _WIN32
-    int result = _chsize_s(fd, sizeof(LisaAudioStream));
-#else
-    int result = ftruncate(fd, sizeof(LisaAudioStream));
-    int flags = fcntl(STDIN_FILENO, F_GETFL);
-    if (flags >= 0) { fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK); }
+    bool recording_files = strncmp(directory, "shm:", 4) != 0;
+    LisaAudioStream *p;
+    if (!recording_files) {
+        p = lisa_named_mapping(directory, sizeof(*p), true);
+#ifndef _WIN32
+        int flags = fcntl(STDIN_FILENO, F_GETFL);
+        if (flags >= 0) { fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK); }
 #endif
-    LisaAudioStream *p = result ? NULL : lisa_shared_mapping(fd, sizeof(*p));
+    } else {
+        char path[4096];
+        if (snprintf(path, sizeof(path), "%s" HOST_SEPARATOR "stream.bin", directory) >= (int)sizeof(path)) { return 1; }
+        int fd = lisa_open_shared_file(path, true);
+        if (fd < 0) { perror("Create audio transport"); return 1; }
 #ifdef _WIN32
-    _close(fd);
+        int result = _chsize_s(fd, sizeof(LisaAudioStream));
 #else
-    close(fd);
+        int result = ftruncate(fd, sizeof(LisaAudioStream));
+        int flags = fcntl(STDIN_FILENO, F_GETFL);
+        if (flags >= 0) { fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK); }
 #endif
+        p = result ? NULL : lisa_shared_mapping(fd, sizeof(*p));
+#ifdef _WIN32
+        _close(fd);
+#else
+        close(fd);
+#endif
+    }
     if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture;
     HostAudio *s = calloc(1, sizeof(*s));
     if (!s) { return 1; }
     s->stream = p; s->capture = capture;
-    FILE *input = open_output(directory, "microphone.pcm", "wb");
-    FILE *output = open_output(directory, "dac-frames.bin", "wb");
-    FILE *reference = open_output(directory, "reference.pcm", "wb");
-    if (!input || !output || !reference) { perror("Open audio captures"); return 1; }
+    FILE *input = recording_files ? open_output(directory, "microphone.pcm", "wb") : NULL;
+    FILE *output = recording_files ? open_output(directory, "dac-frames.bin", "wb") : NULL;
+    FILE *reference = recording_files ? open_output(directory, "reference.pcm", "wb") : NULL;
+    if (recording_files && (!input || !output || !reference)) { perror("Open audio captures"); return 1; }
     HostDevice *device = host_device_start(s);
     int error = device ? 0 : 1;
     double started = host_monotonic_seconds(), done_at = 0;
@@ -260,14 +275,14 @@ static int run(const char *directory, unsigned seconds, bool capture)
     }
     host_device_stop(device);
     if (!save_pending(p, input, output, reference)) { error = 1; }
-    if (fclose(input)) { error = 1; }
-    if (fclose(output)) { error = 1; }
-    if (fclose(reference)) { error = 1; }
+    if (input && fclose(input)) { error = 1; }
+    if (output && fclose(output)) { error = 1; }
+    if (reference && fclose(reference)) { error = 1; }
     if (error) { fprintf(stderr, "Host audio device failed\n"); }
     if (((!completed && !interrupted) || error) && !lisa_audio_load(&p->host_error)) {
         lisa_audio_store(&p->host_error, LISA_AUDIO_DEVICE);
     }
-    FILE *report = open_output(directory, "report.json", "wb");
+    FILE *report = recording_files ? open_output(directory, "report.json", "wb") : stdout;
     if (report) {
         fprintf(report, "{\"complete\":%s,\"capture\":%s,\"rate\":16000,\"host_error\":%llu,"
                 "\"guest_error\":%llu,\"input_frames\":%llu,\"input_nonzero\":%llu,"
@@ -297,7 +312,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
                 (unsigned long long)s->output_frames, (unsigned long long)p->output_cursor_ns,
                 (unsigned long long)p->watermark_ns, s->mute ? "true" : "false",
                 (unsigned long long)s->mute_changes, interrupted ? "true" : "false");
-        fclose(report);
+        if (recording_files) { fclose(report); } else { fflush(report); }
     }
     bool success = (completed || interrupted) && !p->host_error && !p->guest_error;
 #ifdef _WIN32

@@ -26,13 +26,18 @@ static void running(void *opaque, bool enabled, RunState state)
 void lisa_host_audio_init(LisaHostAudio *s, const char *path)
 {
     if (!path) { return; }
-    int fd = lisa_open_shared_file(path, false);
-    struct stat st;
-    if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size != sizeof(LisaAudioStream)) {
-        error_report("Invalid host audio transport file"); exit(1);
+    LisaAudioStream *p;
+    if (!strncmp(path, "shm:", 4)) {
+        p = lisa_named_mapping(path, sizeof(*p), false);
+    } else {
+        int fd = lisa_open_shared_file(path, false);
+        struct stat st;
+        if (fd < 0 || fstat(fd, &st) || !S_ISREG(st.st_mode) || st.st_size != sizeof(LisaAudioStream)) {
+            error_report("Invalid host audio transport file"); exit(1);
+        }
+        p = lisa_shared_mapping(fd, sizeof(*p));
+        close(fd);
     }
-    LisaAudioStream *p = lisa_shared_mapping(fd, sizeof(*p));
-    close(fd);
     if (!p || p->magic != LISA_AUDIO_MAGIC || p->bytes != sizeof(*p) ||
         p->rate != LISA_AUDIO_RATE || p->capacity != LISA_AUDIO_CAPACITY ||
         lisa_audio_load(&p->ready) != 1 || lisa_audio_load(&p->state) != LISA_AUDIO_INIT ||

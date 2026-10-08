@@ -3,7 +3,8 @@
 use crate::{
     assets::{Assets, Backend},
     catalog::Catalog,
-    display::Display,
+    display::{Display, Frame},
+    shared::Regions,
     storage::{self, Lease},
     transport::{self, Qmp, SerialPort, Uart},
 };
@@ -18,11 +19,11 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use uuid::Uuid;
 
@@ -35,6 +36,8 @@ pub struct Options {
     pub microphone: bool,
     pub sound: bool,
     pub download: bool,
+    #[serde(default)]
+    pub capture: Option<PathBuf>,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -46,6 +49,7 @@ impl Default for Options {
             microphone: false,
             sound: true,
             download: false,
+            capture: None,
         }
     }
 }
@@ -93,16 +97,61 @@ impl Drop for Process {
         }
     }
 }
+/// Drain diagnostic pipes independently, retaining only a bounded tail in RAM.
+struct PipeLog {
+    bytes: Arc<Mutex<Vec<u8>>>,
+    reader: Option<thread::JoinHandle<()>>,
+}
+impl PipeLog {
+    fn collect(mut reader: impl Read, bytes: &Mutex<Vec<u8>>) {
+        let mut chunk = [0; 8192];
+        while let Ok(count) = reader.read(&mut chunk) {
+            if count == 0 {
+                break;
+            }
+            let mut tail = bytes.lock().unwrap();
+            tail.extend_from_slice(&chunk[..count]);
+            let excess = tail.len().saturating_sub(256 * 1024);
+            tail.drain(..excess);
+        }
+    }
+    fn start(reader: impl Read + Send + 'static) -> Self {
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let tail = bytes.clone();
+        let reader = thread::spawn(move || Self::collect(reader, &tail));
+        Self {
+            bytes,
+            reader: Some(reader),
+        }
+    }
+    fn finish(&mut self) -> String {
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+        String::from_utf8_lossy(&self.bytes.lock().unwrap()).into_owned()
+    }
+}
+
 struct Audio {
     process: Process,
+    stdout: PipeLog,
+    stderr: PipeLog,
 }
 impl Audio {
-    fn start(assets: &Assets, output: &Path, options: &Options) -> Result<Self> {
+    fn start(
+        assets: &Assets,
+        output: &Path,
+        options: &Options,
+        shared: Option<&str>,
+    ) -> Result<Self> {
         assets.verify_audio()?;
         let directory = output.join("host-audio");
-        fs::create_dir(&directory)?;
-        let child = crate::process::command(assets.audio())
-            .arg(&directory)
+        if shared.is_none() {
+            fs::create_dir(&directory)?;
+        }
+        let mut command = crate::process::command(assets.audio());
+        command
+            .arg(shared.map(Path::new).unwrap_or(&directory))
             .arg((options.timeout + 50).min(900).to_string())
             .arg(if options.microphone {
                 "capture"
@@ -111,32 +160,35 @@ impl Audio {
             })
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(File::create(directory.join("helper.log"))?)
-            .spawn()?;
+            .stderr(Stdio::piped());
+        let mut child = command.spawn()?;
+        let stdout = child.stdout.take().context("Audio stdout missing")?;
+        let stderr = PipeLog::start(child.stderr.take().context("Audio stderr missing")?);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let bytes = Arc::new(Mutex::new(Vec::new()));
+        let tail = bytes.clone();
+        let reader = thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            let result = reader.read_line(&mut line).map(|_| line);
+            let _ = tx.send(result);
+            PipeLog::collect(reader, &tail);
+        });
         let mut audio = Self {
             process: Process { child },
+            stdout: PipeLog {
+                bytes,
+                reader: Some(reader),
+            },
+            stderr,
         };
-        let stdout = audio
-            .process
-            .child
-            .stdout
-            .take()
-            .context("Audio stdout missing")?;
-        let (tx, rx) = std::sync::mpsc::channel();
-        thread::spawn(move || {
-            let mut line = String::new();
-            let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
-            let _ = tx.send(result);
-        });
         let line = rx
             .recv_timeout(Duration::from_secs(40))
             .context("Host audio initialization timed out")??;
         ensure!(
             !line.is_empty(),
             "Host audio initialization failed: {}",
-            fs::read_to_string(directory.join("helper.log"))
-                .unwrap_or_default()
-                .trim()
+            String::from_utf8_lossy(&audio.stderr.bytes.lock().unwrap()).trim()
         );
         let ready: Value =
             serde_json::from_str(&line).context("Invalid host audio initialization response")?;
@@ -166,7 +218,13 @@ impl Audio {
         let deadline = Instant::now() + Duration::from_secs(if drain { 20 } else { 2 });
         loop {
             if let Some(status) = self.process.child.try_wait()? {
-                ensure!(status.success(), "Host audio exited with {status}");
+                let errors = self.stderr.finish();
+                self.stdout.finish();
+                ensure!(
+                    status.success(),
+                    "Host audio exited with {status}: {}",
+                    errors.trim()
+                );
                 return Ok(());
             }
             ensure!(Instant::now() < deadline, "Host audio shutdown timed out");
@@ -180,6 +238,13 @@ pub struct Session {
     qmp: Qmp,
     uart: Vec<Uart>,
     audio: Option<Audio>,
+    stdout: Option<PipeLog>,
+    stderr: Option<PipeLog>,
+    display: Display,
+    frame: Option<Frame>,
+    framebuffer: PathBuf,
+    _regions: Regions,
+    _workspace: Option<tempfile::TempDir>,
     _lease: Lease,
     pub output: PathBuf,
     pub state: Value,
@@ -208,11 +273,26 @@ impl Session {
             instance,
             &catalog.layout(item["board"].as_str().context("Missing board")?)?,
         )?;
-        let output = instance.join("runs").join(format!(
-            "run-{}-{}",
-            SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
-            Uuid::new_v4().simple()
-        ));
+        let mut regions = Regions::new(instance)?;
+        let workspace = if options.capture.is_none() {
+            Some(tempfile::tempdir()?)
+        } else {
+            None
+        };
+        let output = if let Some(path) = &options.capture {
+            let path = std::path::absolute(path)?;
+            fs::create_dir_all(&path)?;
+            let output = path.join(format!("capture-{}", Uuid::new_v4().simple()));
+            fs::create_dir(&output)?;
+            output
+        } else {
+            workspace.as_ref().unwrap().path().to_owned()
+        };
+        let framebuffer = if options.capture.is_some() {
+            output.join("live/framebuffer")
+        } else {
+            PathBuf::from(regions.allocate()?)
+        };
         fs::create_dir_all(output.join("live"))?;
         let mut command = crate::process::command(assets.qemu());
         backend.configure(
@@ -221,11 +301,19 @@ impl Session {
             &output,
             options.seconds,
             options.download,
+            options.capture.is_some(),
         );
-        command
-            .stdin(Stdio::null())
-            .stdout(File::create(output.join("qemu.log"))?)
-            .stderr(File::options().append(true).open(output.join("qemu.log"))?);
+        command.stdin(Stdio::null());
+        if options.capture.is_some() {
+            command
+                .stdout(File::create(output.join("qemu.log"))?)
+                .stderr(File::options().append(true).open(output.join("qemu.log"))?);
+        } else {
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .env("ARCS_QEMU_DISPLAY_SHM", &framebuffer);
+        }
         if options.network {
             ensure!(
                 assets.network().is_file(),
@@ -233,19 +321,38 @@ impl Session {
             );
             command
                 .env("ARCS_QEMU_NETWORK_LIBRARY", assets.network())
-                .env(
+                .env("ARCS_QEMU_NETWORK_LOOPBACK", "0");
+            if options.capture.is_some() {
+                command.env(
                     "ARCS_QEMU_NETWORK_CAPTURE",
                     output.join("host-network.pcap"),
-                )
-                .env("ARCS_QEMU_NETWORK_LOOPBACK", "0");
+                );
+            }
         }
+        let audio_shared = if options.host_audio && options.capture.is_none() {
+            Some(regions.allocate()?)
+        } else {
+            None
+        };
         let audio = if options.host_audio {
-            Some(Audio::start(&assets, &output, &options)?)
+            Some(Audio::start(
+                &assets,
+                &output,
+                &options,
+                audio_shared.as_deref(),
+            )?)
         } else {
             None
         };
         if audio.is_some() {
-            command.env("ARCS_QEMU_HOST_AUDIO", output.join("host-audio/stream.bin"));
+            command.env(
+                "ARCS_QEMU_HOST_AUDIO",
+                audio_shared
+                    .as_deref()
+                    .map(Path::new)
+                    .map(Path::to_owned)
+                    .unwrap_or_else(|| output.join("host-audio/stream.bin")),
+            );
         }
         let qmp_listener = transport::listener()?;
         command.args([
@@ -271,27 +378,44 @@ impl Session {
                 &format!("chardev:uart{channel}"),
             ]);
         }
-        let process = Process::guest(&mut command, &lease)?;
+        let mut process = Process::guest(&mut command, &lease)?;
+        let stdout = process.child.stdout.take().map(PipeLog::start);
+        let stderr = process.child.stderr.take().map(PipeLog::start);
         let control = transport::accept(&qmp_listener)?;
         let mut uart = Vec::new();
         for (channel, listener) in listeners.iter().enumerate() {
             let path = output.join(format!("uart{channel}.bin"));
-            uart.push(Uart::new(transport::accept(listener)?, &path)?);
-            fs::hard_link(
-                &path,
-                output.join("live").join(format!("uart{channel}.bin")),
-            )?;
+            uart.push(Uart::new(
+                transport::accept(listener)?,
+                options.capture.as_ref().map(|_| path.as_path()),
+            )?);
+            if options.capture.is_some() {
+                fs::hard_link(
+                    &path,
+                    output.join("live").join(format!("uart{channel}.bin")),
+                )?;
+            }
         }
         let qmp = Qmp::new(control, &mut uart)?;
-        storage::write_json(
-            &output.join("run.json"),
-            &json!({"qemu_sha256":storage::sha256(&assets.qemu())?,"flash_sha256":storage::sha256(&instance.join("flash.bin"))?,"otp_sha256":storage::sha256(&instance.join("otp.bin"))?,"boot_source":"chip-rom","options":options}),
-        )?;
+        let display = Display::open(&framebuffer)?;
+        if options.capture.is_some() {
+            storage::write_json(
+                &output.join("run.json"),
+                &json!({"qemu_sha256":storage::sha256(&assets.qemu())?,"flash_sha256":storage::sha256(&instance.join("flash.bin"))?,"otp_sha256":storage::sha256(&instance.join("otp.bin"))?,"boot_source":"chip-rom","options":options}),
+            )?;
+        }
         let mut session = Self {
             process,
             qmp,
             uart,
             audio,
+            stdout,
+            stderr,
+            display,
+            frame: None,
+            framebuffer,
+            _regions: regions,
+            _workspace: workspace,
             _lease: lease,
             output,
             state: json!({}),
@@ -317,8 +441,10 @@ impl Session {
         self.state["microphone"] = json!(self.options.microphone);
         self.state["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
         self.state["output"] = json!(self.output);
-        self.state["framebuffer"] = json!(self.output.join("live/framebuffer"));
-        storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+        self.state["framebuffer"] = json!(self.framebuffer);
+        if self.options.capture.is_some() {
+            storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+        }
         self.capture_at = Instant::now() + Duration::from_millis(100);
         Ok(())
     }
@@ -333,7 +459,24 @@ impl Session {
             self.finished = true;
             self.state["finished"] = json!(true);
             self.state["returncode"] = json!(status.code().unwrap_or(-1));
-            if let Ok(report) = storage::read_json(&self.output.join("report.json")) {
+            let errors = self
+                .stderr
+                .as_mut()
+                .map(PipeLog::finish)
+                .unwrap_or_else(|| {
+                    fs::read_to_string(self.output.join("qemu.log")).unwrap_or_default()
+                });
+            let report = if let Some(stdout) = &mut self.stdout {
+                stdout
+                    .finish()
+                    .lines()
+                    .rev()
+                    .find_map(|line| serde_json::from_str::<Value>(line).ok())
+            } else {
+                storage::read_json(&self.output.join("report.json")).ok()
+            };
+            if let Some(report) = report {
+                self.state["report"] = report.clone();
                 self.state["seconds"] = json!(report["virtual_ns"].as_f64().unwrap_or(0.0) / 1e9);
                 self.state["ap_exceptions"] = report["cores"][0]["exceptions"].clone();
                 self.state["exceptions"] = report["cores"][1]["exceptions"].clone();
@@ -341,9 +484,9 @@ impl Session {
                 if ![Some("budget-complete"), Some("probe-pass")]
                     .contains(&report["status"].as_str())
                 {
-                    let log = fs::read_to_string(self.output.join("qemu.log")).unwrap_or_default();
                     self.state["error"] = json!(
-                        log.lines()
+                        errors
+                            .lines()
                             .rev()
                             .find(|s| s.contains("ARCS"))
                             .unwrap_or("QEMU failed")
@@ -361,10 +504,30 @@ impl Session {
             {
                 self.state["error"] = json!(error.to_string());
             }
-            storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+            if let Some(audio) = &self.audio {
+                if let Ok(report) =
+                    serde_json::from_slice::<Value>(&audio.stdout.bytes.lock().unwrap())
+                {
+                    self.state["audio"] = report;
+                }
+            }
+            if self.options.capture.is_some() {
+                storage::write_json(&self.output.join("live/state.json"), &self.state)?;
+            }
         } else if let Some(audio) = &mut self.audio
             && let Some(status) = audio.process.child.try_wait()?
         {
+            // QEMU marks the stream complete before its process handle signals.
+            // The helper can finish draining during that exit window.
+            if status.success() {
+                let deadline = Instant::now() + Duration::from_millis(100);
+                while Instant::now() < deadline {
+                    if self.process.child.try_wait()?.is_some() {
+                        return self.tick();
+                    }
+                    thread::sleep(Duration::from_millis(2));
+                }
+            }
             self.state["error"] = json!(format!("Host audio exited unexpectedly with {status}"));
             self.stop()?;
         } else if self.started.elapsed().as_secs() >= self.options.timeout {
@@ -388,6 +551,12 @@ impl Session {
             return Err(error);
         }
         Ok(())
+    }
+    fn frame(&mut self) -> Option<Frame> {
+        if let Some(frame) = self.display.latest() {
+            self.frame = Some(frame);
+        }
+        self.frame.clone()
     }
     fn stop(&mut self) -> Result<()> {
         if self.finished {
@@ -420,6 +589,7 @@ pub struct Runtime {
     id: String,
     session: Option<Session>,
     last_state: Value,
+    last_frame: Option<Frame>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -440,6 +610,7 @@ impl Runtime {
             id,
             session: None,
             last_state: Value::Null,
+            last_frame: None,
             ports,
             shutdown: false,
         })
@@ -457,7 +628,9 @@ impl Runtime {
             )?;
         }
         if self.session.as_ref().is_some_and(|s| s.finished) {
-            self.last_state = self.session.take().unwrap().state.clone();
+            let mut session = self.session.take().unwrap();
+            self.last_frame = session.frame();
+            self.last_state = session.state.clone();
         }
         Ok(())
     }
@@ -527,10 +700,14 @@ impl Runtime {
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
                 let options: Options = serde_json::from_value(params["options"].clone())?;
-                let session =
+                let mut session =
                     Session::start(&self.catalog, &self.catalog.device(&self.id)?, options)?;
-                for (&channel, port) in &mut self.ports {
-                    port.bind(session.output.join(format!("uart{channel}.bin")));
+                for (channel, uart) in session.uart.iter_mut().enumerate() {
+                    if let Some(port) = self.ports.get_mut(&(channel as u8)) {
+                        port.bind(uart.output())?;
+                    } else {
+                        uart.discard_output();
+                    }
                 }
                 self.session = Some(session);
                 self.status()
@@ -538,6 +715,7 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    self.last_frame = session.frame();
                     self.last_state = session.state.clone();
                 }
                 self.tick()?;
@@ -601,13 +779,17 @@ impl Runtime {
                 session
                     .qmp
                     .set("x-lisa-audio-input", json!(target), &mut session.uart)?;
-                storage::atomic_write(
-                    &session
-                        .output
-                        .join("live")
-                        .join(format!("input-{}.wav", Uuid::new_v4().simple())),
-                    &bytes,
-                )?;
+                if session.options.capture.is_some() {
+                    storage::atomic_write(
+                        &session
+                            .output
+                            .join("live")
+                            .join(format!("input-{}.wav", Uuid::new_v4().simple())),
+                        &bytes,
+                    )?;
+                } else {
+                    fs::remove_file(&target)?;
+                }
                 session.state["input_busy"] = json!(true);
                 Ok(json!(true))
             }
@@ -629,12 +811,15 @@ impl Runtime {
                 let enabled = params["enabled"].as_bool().unwrap_or(true);
                 if enabled && !self.ports.contains_key(&(channel as u8)) {
                     let mut port = SerialPort::new()?;
-                    if let Some(session) = &self.session {
-                        port.bind(session.output.join(format!("uart{channel}.bin")));
+                    if let Some(session) = &mut self.session {
+                        port.bind(session.uart[channel as usize].output())?;
                     }
                     self.ports.insert(channel as u8, port);
                 } else if !enabled {
                     self.ports.remove(&(channel as u8));
+                    if let Some(session) = &mut self.session {
+                        session.uart[channel as usize].discard_output();
+                    }
                 }
                 let item = self.catalog.device(&self.id)?;
                 self.catalog.update(
@@ -648,17 +833,15 @@ impl Runtime {
                     .unwrap_or(Value::Null))
             }
             "screenshot" => {
-                let output = self
-                    .session
-                    .as_ref()
-                    .map(|s| s.output.clone())
-                    .or_else(|| self.last_state["output"].as_str().map(PathBuf::from))
-                    .context("No captured display")?;
                 let path = Path::new(params["path"].as_str().context("Screenshot path missing")?);
-                let mut display = Display::open(&output.join("live/framebuffer"))?;
                 let deadline = Instant::now() + Duration::from_secs(1);
                 loop {
-                    if let Some(frame) = display.latest() {
+                    let frame = if let Some(session) = &mut self.session {
+                        session.frame()
+                    } else {
+                        self.last_frame.clone()
+                    };
+                    if let Some(frame) = frame {
                         frame.save(path)?;
                         break;
                     }

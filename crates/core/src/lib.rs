@@ -7,5 +7,6 @@ pub mod manager;
 pub mod paths;
 pub mod process;
 pub mod runtime;
+mod shared;
 pub mod storage;
 mod transport;

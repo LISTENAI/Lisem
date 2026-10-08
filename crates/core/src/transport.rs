@@ -5,9 +5,10 @@ use serde_json::{Value, json};
 use std::{
     collections::VecDeque,
     fs::File,
-    io::{Read, Seek, SeekFrom, Write},
+    io::{Read, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::Path,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -36,19 +37,79 @@ pub fn accept(listener: &TcpListener) -> Result<TcpStream> {
     }
 }
 
+const UART_CAPACITY: usize = 1024 * 1024;
+#[derive(Default)]
+pub struct OutputBuffer {
+    bytes: VecDeque<u8>,
+    closed: bool,
+    tail: Option<(TcpStream, Option<File>)>,
+}
+impl OutputBuffer {
+    fn drain_tail(&mut self) -> Result<()> {
+        if !self.closed {
+            return Ok(());
+        }
+        let Some((stream, log)) = &mut self.tail else {
+            return Ok(());
+        };
+        let mut buffer = [0; 65536];
+        let limit = buffer.len().min(UART_CAPACITY - self.bytes.len());
+        if limit == 0 {
+            return Ok(());
+        }
+        match stream.read(&mut buffer[..limit]) {
+            Ok(0) => self.tail = None,
+            Ok(n) => {
+                if let Some(log) = log {
+                    log.write_all(&buffer[..n])?;
+                }
+                self.bytes.extend(&buffer[..n]);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => self.tail = None,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+    fn exhausted(&self) -> bool {
+        self.closed && self.tail.is_none() && self.bytes.is_empty()
+    }
+}
+type Output = Arc<Mutex<OutputBuffer>>;
+
 pub struct Uart {
     pub stream: TcpStream,
     pub pending: VecDeque<u8>,
-    log: File,
+    log: Option<File>,
+    output: Output,
+    retain: bool,
 }
 impl Uart {
-    pub fn new(stream: TcpStream, path: &Path) -> Result<Self> {
+    pub fn new(stream: TcpStream, path: Option<&Path>) -> Result<Self> {
         stream.set_nonblocking(true)?;
+        let log = path.map(File::create).transpose()?;
+        let tail = (
+            stream.try_clone()?,
+            log.as_ref().map(File::try_clone).transpose()?,
+        );
         Ok(Self {
             stream,
             pending: VecDeque::new(),
-            log: File::create(path)?,
+            log,
+            output: Arc::new(Mutex::new(OutputBuffer {
+                tail: Some(tail),
+                ..Default::default()
+            })),
+            retain: true,
         })
+    }
+    pub fn output(&mut self) -> Output {
+        self.retain = true;
+        self.output.clone()
+    }
+    pub fn discard_output(&mut self) {
+        self.retain = false;
+        self.output.lock().unwrap().bytes.clear();
     }
     pub fn send(&mut self, bytes: &[u8]) -> Result<()> {
         ensure!(
@@ -62,9 +123,26 @@ impl Uart {
         let mut buffer = [0; 65536];
         // Bound each host turn so a noisy UART cannot starve other channels.
         for _ in 0..16 {
-            match self.stream.read(&mut buffer) {
+            let mut output = self.output.lock().unwrap();
+            let available = if self.retain {
+                UART_CAPACITY - output.bytes.len()
+            } else {
+                buffer.len()
+            };
+            let limit = available.min(buffer.len());
+            if limit == 0 {
+                break;
+            }
+            match self.stream.read(&mut buffer[..limit]) {
                 Ok(0) => break,
-                Ok(n) => self.log.write_all(&buffer[..n])?,
+                Ok(n) => {
+                    if let Some(log) = &mut self.log {
+                        log.write_all(&buffer[..n])?;
+                    }
+                    if self.retain {
+                        output.bytes.extend(&buffer[..n]);
+                    }
+                }
                 Err(e)
                     if matches!(
                         e.kind(),
@@ -86,6 +164,12 @@ impl Uart {
             }
         }
         Ok(())
+    }
+}
+
+impl Drop for Uart {
+    fn drop(&mut self) {
+        self.output.lock().unwrap().closed = true;
     }
 }
 
@@ -177,7 +261,7 @@ pub struct SerialPort {
     master: SocketTerminal,
     #[cfg(unix)]
     _slave: File,
-    sources: VecDeque<(PathBuf, u64)>,
+    sources: VecDeque<Output>,
     pending: Vec<u8>,
 }
 impl SerialPort {
@@ -247,10 +331,18 @@ impl SerialPort {
             })
         }
     }
-    pub fn bind(&mut self, path: PathBuf) {
-        self.sources.push_back((path, 0));
-        self.pending.clear();
+    pub fn bind(&mut self, output: Output) -> Result<()> {
+        self.sources.retain(|source| {
+            let source = source.lock().unwrap();
+            !source.exhausted()
+        });
+        ensure!(
+            self.sources.len() < 8,
+            "UART output backlog spans too many runs; drain the terminal"
+        );
+        self.sources.push_back(output);
         self.discard_input();
+        Ok(())
     }
     fn discard_input(&mut self) {
         #[cfg(unix)]
@@ -272,20 +364,23 @@ impl SerialPort {
     }
     pub fn pump(&mut self, uart: Option<&mut Uart>) -> Result<()> {
         {
-            if let Some((path, offset)) = self.sources.front_mut()
-                && path.exists()
-            {
-                let mut file = File::open(path)?;
-                file.seek(SeekFrom::Start(*offset))?;
-                let mut bytes = [0; 4096];
-                let n = file.read(&mut bytes)?;
-                if n > 0 {
-                    match self.master.write(&bytes[..n]) {
-                        Ok(n) => *offset += n as u64,
+            if let Some(source) = self.sources.front() {
+                let mut output = source.lock().unwrap();
+                output.drain_tail()?;
+                let bytes = output.bytes.make_contiguous();
+                let length = bytes.len().min(4096);
+                if length != 0 {
+                    match self.master.write(&bytes[..length]) {
+                        Ok(n) => {
+                            output.bytes.drain(..n);
+                        }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                         Err(e) => return Err(e.into()),
                     }
-                } else if self.sources.len() > 1 {
+                }
+                let exhausted = output.exhausted();
+                drop(output);
+                if exhausted {
                     self.sources.pop_front();
                 }
             }
@@ -400,7 +495,7 @@ mod tests {
         });
         let temporary = tempfile::tempdir().unwrap();
         let log = temporary.path().join("uart.bin");
-        let mut uart = [Uart::new(accept(&uart_listener).unwrap(), &log).unwrap()];
+        let mut uart = [Uart::new(accept(&uart_listener).unwrap(), Some(&log)).unwrap()];
         Qmp::new(accept(&qmp_listener).unwrap(), &mut uart).unwrap();
         server.join().unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
@@ -414,6 +509,43 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(std::fs::read(log).unwrap(), expected);
+    }
+
+    #[test]
+    fn retired_uart_drains_socket_tail_without_exceeding_memory_budget() {
+        let listener = listener().unwrap();
+        let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        peer.set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut uart = Uart::new(accept(&listener).unwrap(), None).unwrap();
+        let output = uart.output();
+        let expected: Vec<u8> = (0..UART_CAPACITY + 65536).map(|i| (i * 31) as u8).collect();
+        let sent = expected.clone();
+        let writer = std::thread::spawn(move || peer.write_all(&sent).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while output.lock().unwrap().bytes.len() < UART_CAPACITY {
+            uart.pump().unwrap();
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        uart.pump().unwrap();
+        assert_eq!(output.lock().unwrap().bytes.len(), UART_CAPACITY);
+        drop(uart);
+        let mut actual = Vec::new();
+        loop {
+            let mut buffer = output.lock().unwrap();
+            buffer.drain_tail().unwrap();
+            assert!(buffer.bytes.len() <= UART_CAPACITY);
+            actual.extend(buffer.bytes.drain(..));
+            if buffer.exhausted() {
+                break;
+            }
+            assert!(Instant::now() < deadline);
+            drop(buffer);
+            std::thread::yield_now();
+        }
+        writer.join().unwrap();
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -436,17 +568,23 @@ mod tests {
         };
         let first: Vec<u8> = (0..131072).map(|i| (i * 73) as u8).collect();
         let second: Vec<u8> = (0..65536).map(|i| (i * 19 + 7) as u8).collect();
-        let a = temp.path().join("a.bin");
-        let b = temp.path().join("b.bin");
-        std::fs::write(&a, &first).unwrap();
-        std::fs::write(&b, &second).unwrap();
-        port.bind(a);
+        let a = Arc::new(Mutex::new(OutputBuffer {
+            bytes: first.clone().into(),
+            closed: true,
+            tail: None,
+        }));
+        let b = Arc::new(Mutex::new(OutputBuffer {
+            bytes: second.clone().into(),
+            closed: true,
+            tail: None,
+        }));
+        port.bind(a).unwrap();
         // Fill the terminal without reading, then seal the run. Unread output
         // must survive the next run and the powered-off input purge.
         for _ in 0..64 {
             port.pump(None).unwrap();
         }
-        port.bind(b);
+        port.bind(b).unwrap();
         let expected: Vec<u8> = first.into_iter().chain(second).collect();
         let mut actual = Vec::new();
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -466,7 +604,11 @@ mod tests {
         let listener = listener().unwrap();
         let mut peer = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         peer.set_nonblocking(true).unwrap();
-        let mut uart = Uart::new(accept(&listener).unwrap(), &temp.path().join("raw.bin")).unwrap();
+        let mut uart = Uart::new(
+            accept(&listener).unwrap(),
+            Some(&temp.path().join("raw.bin")),
+        )
+        .unwrap();
         uart.pending.resize(65536, 42);
         let input: Vec<u8> = (0..=255).collect();
         terminal.write_all(&input).unwrap();

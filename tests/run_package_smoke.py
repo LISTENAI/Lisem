@@ -71,7 +71,7 @@ def main():
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
         subprocess.run([str(binary), '--help'], env=env, cwd=directory,
                        check=True, timeout=15, stdout=subprocess.DEVNULL)
-        service = NativeService(directory / 'library', binary, env=env, cwd=directory)
+        service = NativeService(directory / 'library', binary, env=env, cwd=directory, capture=False)
         uart = None
         try:
             item = service.create_device('arcs-mini')
@@ -123,7 +123,13 @@ def main():
                 value, status = exchange(0x0a, struct.pack('<I', address))
                 assert status == b'\0\0'
                 assert value == int.from_bytes(rom[address:address + 4], 'little')
+            workspace = Path(state['output'])
+            assert state['framebuffer'].startswith('shm:lsm-')
+            assert not (device / 'runs').exists()
+            assert not [p for p in workspace.rglob('*') if p.is_file()]
             service.stop()
+            assert not workspace.exists()
+            assert not (device / 'ipc.json').exists()
             assert service.status()['serial'][item['id']]['0'] == port
             assert (device / 'otp.bin').read_bytes() == otp
             assert hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest() == initial_flash

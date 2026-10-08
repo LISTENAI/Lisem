@@ -133,10 +133,14 @@ struct RunOptions {
     microphone: bool,
     #[arg(long)]
     mute: bool,
+    /// Save diagnostic recordings and traces under a directory.
+    #[arg(long)]
+    capture: Option<PathBuf>,
 }
-impl From<RunOptions> for Options {
-    fn from(v: RunOptions) -> Self {
-        Self {
+impl TryFrom<RunOptions> for Options {
+    type Error = anyhow::Error;
+    fn try_from(v: RunOptions) -> Result<Self> {
+        Ok(Self {
             seconds: v.seconds,
             timeout: v.timeout,
             network: v.network,
@@ -144,7 +148,8 @@ impl From<RunOptions> for Options {
             microphone: v.microphone,
             sound: !v.mute,
             download: false,
-        }
+            capture: v.capture.as_deref().map(absolute).transpose()?,
+        })
     }
 }
 
@@ -209,12 +214,12 @@ fn run() -> Result<i32> {
             }
         }
         Action::Run { id, options } => {
-            let options = Options::from(options);
+            let options = Options::try_from(options)?;
             foreground = Some((id.clone(), options.timeout));
             manager.call("start", json!({"id": id, "options": options}))?
         }
         Action::Start { id, options } => manager.call(
-            "start", json!({"id": id, "options": Options::from(options)}),
+            "start", json!({"id": id, "options": Options::try_from(options)?}),
         )?,
         Action::Stop { id } => manager.call("stop", json!({"id": id}))?,
         Action::Reset { id, download } => manager.call(
@@ -257,7 +262,7 @@ fn run() -> Result<i32> {
                 );
                 ensure!(
                     state["session"]["error"].is_null() && state["session"]["guest_fault"] != true,
-                    "Guest run failed; inspect its run directory"
+                    "Guest run failed; inspect the reported error"
                 );
                 return Ok(0);
             }

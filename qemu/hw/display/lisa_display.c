@@ -75,11 +75,17 @@ void lisa_display_init(QemuConsole *console, const char *directory)
         error_report("Unsupported host display size"); exit(1);
     }
     size_t bytes = width * height * 4, length = sizeof(DisplayMap) + 3 * (16 + bytes);
-    g_autofree char *path = g_build_filename(directory, "framebuffer", NULL);
-    int fd = lisa_open_shared_file(path, true);
-    if (fd < 0 || ftruncate(fd, length)) { perror("Create host display map"); exit(1); }
-    DisplayMap *p = lisa_shared_mapping(fd, length);
-    close(fd);
+    const char *shared = getenv("ARCS_QEMU_DISPLAY_SHM");
+    DisplayMap *p;
+    if (shared) {
+        p = lisa_named_mapping(shared, length, true);
+    } else {
+        g_autofree char *path = g_build_filename(directory, "framebuffer", NULL);
+        int fd = lisa_open_shared_file(path, true);
+        if (fd < 0 || ftruncate(fd, length)) { perror("Create host display map"); exit(1); }
+        p = lisa_shared_mapping(fd, length);
+        close(fd);
+    }
     if (!p) { perror("Map host display"); exit(1); }
     p->width = width; p->height = height; p->stride = width * 4; p->bytes = bytes;
     __atomic_store_n(&p->magic, DISPLAY_MAGIC, __ATOMIC_RELEASE);

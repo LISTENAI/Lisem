@@ -45,6 +45,7 @@ struct ArcsMachine {
     unsigned pcm_rate, pcm_channels, output_rate;
     uint64_t input_frames, nonzero_samples;
     GByteArray *pcm_output;
+    uint64_t output_samples;
     LisaHostAudio host_audio;
     PCMFeedback speaker_feedback;
     GByteArray *wifi_capture;
@@ -286,7 +287,7 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
             audio_error(s, "host microphone requires 16 kHz ADC");
         }
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error)) {
-            audio_error(s, "host audio transport failed; see host-audio/report.json");
+            audio_error(s, "host audio transport failed");
         }
         lisa_host_audio_epoch(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
         values[0] = lisa_audio_adc(p, now);
@@ -308,7 +309,7 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
 {
     ArcsMachine *s = opaque;
     if (s->output_rate && rate != s->output_rate) { audio_error(s, "output rate changed during capture"); }
-    if (s->pcm_output->len == 32000000) { audio_error(s, "capture capacity reached"); }
+    if (s->pcm_output && s->pcm_output->len == 32000000) { audio_error(s, "capture capacity reached"); }
     s->output_rate = rate;
     int16_t value = MAX(INT16_MIN, MIN(INT16_MAX, sample));
     pcm_feedback_write(&s->speaker_feedback, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), rate,
@@ -324,10 +325,17 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
          * remains unchanged; the board amplifier only gates host playback. */
         if (lisa_audio_load(&p->host_error) || lisa_audio_load(&p->guest_error) ||
             !lisa_audio_dac(p, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), value, pa_enabled(s))) {
-            audio_error(s, "host audio transport failed; see host-audio/report.json");
+            audio_error(s, "host audio transport failed");
         }
     }
-    uint8_t bytes[2]; stw_le_p(bytes, value); g_byte_array_append(s->pcm_output, bytes, 2);
+    if (s->pcm_output) {
+        uint8_t bytes[2]; stw_le_p(bytes, value); g_byte_array_append(s->pcm_output, bytes, 2);
+    } else {
+        s->desktop_rate = rate;
+    }
+    s->output_samples++;
+    s->desktop_samples++;
+
     if (value) { s->nonzero_samples++; }
 }
 
@@ -352,7 +360,7 @@ static void pcm_save(ArcsMachine *s)
 
 static void connect_pcm(ArcsMachine *s)
 {
-    s->pcm_output = g_byte_array_new();
+    if (getenv("ARCS_QEMU_AUDIO_OUTPUT")) { s->pcm_output = g_byte_array_new(); }
     const char *path = getenv("ARCS_QEMU_AUDIO_INPUT");
     const char *host = getenv("ARCS_QEMU_HOST_AUDIO");
     lisa_host_audio_init(&s->host_audio, host);
@@ -394,7 +402,7 @@ static void report(void *opaque, const char *status)
 {
     ArcsMachine *s = opaque;
     if (!s->report || s->reported) { return; }
-    FILE *f = fopen(s->report, "w");
+    FILE *f = !strcmp(s->report, "-") ? stdout : fopen(s->report, "w");
     if (!f) { perror("ARCS report"); exit(1); }
     s->reported = true;
     lisa_host_audio_finish(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
@@ -467,7 +475,7 @@ static void report(void *opaque, const char *status)
             ",\"input_frames\":%" PRIu64 ",\"output_samples\":%u,\"output_rate\":%u,\"nonzero_samples\":%" PRIu64 "}",
             s->soc.codec.adc_frames, s->soc.codec.dac_samples, s->soc.codec.underruns,
             s->soc.gpdma.bytes, s->soc.gpdma.blocks, s->input_frames,
-            s->pcm_output ? s->pcm_output->len / 2 : 0, s->output_rate, s->nonzero_samples);
+            (unsigned)s->output_samples, s->output_rate, s->nonzero_samples);
     fprintf(f, ",\"wifi_tx\":{\"captured\":%u,\"ac1_completed\":%" PRIu64
             ",\"ac3_completed\":%" PRIu64 ",\"busy\":[%s,%s]}", s->wifi_frames,
             s->soc.wifi.tx[0].completed, s->soc.wifi.tx[1].completed,
@@ -504,7 +512,7 @@ static void report(void *opaque, const char *status)
     fprintf(f, ",\"bluetooth_channel_diagnostic_reads\":%" PRIu64, s->soc.bluetooth.channel_status_reads);
     lisa_host_audio_report(&s->host_audio, f);
     fprintf(f, "}\n");
-    fclose(f);
+    if (f == stdout) { fflush(f); } else { fclose(f); }
     pcm_save(s);
     const char *capture = getenv("ARCS_QEMU_WIFI_CAPTURE");
     if (capture && s->wifi_capture && !g_file_set_contents(capture,
@@ -624,7 +632,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     qemu_devices_reset(type);
     /* Live host input keeps its consumed position across guest warm resets. */
     if (!s->desktop_directory) { s->pcm_position = 0; }
-    s->input_frames = s->nonzero_samples = 0; s->output_rate = 0;
+    s->input_frames = s->nonzero_samples = s->output_samples = 0; s->output_rate = 0;
     s->speaker_feedback = (PCMFeedback){0};
     if (s->pcm_output) { g_byte_array_set_size(s->pcm_output, 0); }
     if (s->wifi_capture) { reset_radio(s); }
@@ -738,7 +746,7 @@ static void machine_init(MachineState *machine)
  * advance guest clocks, complete operations or change guest-visible state. */
 static void desktop_capture(ArcsMachine *s)
 {
-    if (!s->desktop_directory) { return; }
+    if (!s->desktop_directory || !s->pcm_output) { return; }
     if (s->pcm_output->len > s->desktop_pcm_written) {
         if (s->desktop_rate && s->desktop_rate != s->output_rate) {
             error_report("ARCS desktop capture rate changed"); exit(1);
@@ -751,7 +759,6 @@ static void desktop_capture(ArcsMachine *s)
             perror("ARCS desktop audio"); exit(1);
         }
         s->desktop_pcm_written += length;
-        s->desktop_samples += length / 2;
     }
 }
 

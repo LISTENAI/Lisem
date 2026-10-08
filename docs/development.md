@@ -16,6 +16,15 @@
 QEMU 和音频构建记录输入/产物哈希，启动前拒绝过期模型。上游源码和下载
 缓存放 `.tools/`，生成物放 `artifacts/`。不得在生成目录修改源码后交付。
 
+无归档实时通道可用原始 LPK 验证：
+
+```sh
+python3 tests/run_live_memory.py --lpk firmware.lpk --audio --microphone --network
+```
+
+该测试使用独立临时实例，检查运行中没有自动录制文件、画面和 UART 可用、
+音频完整交付、退出清理及 OTP 保持；麦克风与网络选项需要宿主相应能力。
+
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、
@@ -110,7 +119,8 @@ QEMU、音频、网络与硬件描述，`Frameworks` 保存递归收集的非系
 Apple Silicon 默认以 Apple M1 指令集构建 QEMU，不采用构建机器专用指令。
 
 GUI/CLI 从可执行文件位置发现运行资源；启动时校验包内资产及动态库哈希。
-运行不读取源码构建记录。实例和日志写入设备库，应用包保持只读。
+运行不读取源码构建记录。实例存储写入设备库，应用包保持只读。正常运行的音视频和 UART
+不自动写盘；需要诊断归档时使用 `lisem run ID --capture DIRECTORY`。
 `--root` 和 `LISEM_ROOT` 可显式指定开发运行资源，不写入构建机器绝对路径。
 
 发布前将包搬到仓库外，禁止子进程访问源码、Homebrew 与 Cargo 目录，验证

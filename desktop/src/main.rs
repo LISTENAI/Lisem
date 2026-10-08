@@ -78,7 +78,6 @@ enum Action {
     Serial(u8),
     SerialToggle(u8),
     Folder,
-    Runs,
     CopyUid,
 }
 
@@ -364,13 +363,6 @@ impl Desktop {
                     cx.open_with_system(&PathBuf::from(d.path));
                 }
             }
-            Action::Runs => {
-                if self.active() {
-                    if let Some(path) = self.state.data["session"]["output"].as_str() {
-                        cx.open_with_system(&PathBuf::from(path));
-                    }
-                }
-            }
             Action::CopyUid => {
                 if let Some(d) = self.device() {
                     cx.write_to_clipboard(ClipboardItem::new_string(d.uid));
@@ -513,7 +505,6 @@ impl Desktop {
                     idle && !on,
                     false,
                 ),
-                ("运行文件".into(), Action::Runs, self.active(), false),
             ],
         }
     }

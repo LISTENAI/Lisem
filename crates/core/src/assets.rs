@@ -204,6 +204,7 @@ impl Backend {
         output: &Path,
         seconds: u64,
         download: bool,
+        capture: bool,
     ) {
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("ARCS_QEMU_") {
@@ -233,13 +234,18 @@ impl Backend {
             .env("ARCS_QEMU_PACE", "1")
             .env("ARCS_QEMU_FLASH_PERSIST", "1")
             .env("ARCS_QEMU_OTP_IMAGE", instance.join("otp.bin"))
-            .env("ARCS_QEMU_REPORT", output.join("report.json"))
-            .env("ARCS_QEMU_SCREEN", output.join("screen.ppm"))
             .env("ARCS_QEMU_DESKTOP", output.join("live"))
-            .env("ARCS_QEMU_AUDIO_OUTPUT", output.join("audio.wav"))
-            .env("ARCS_QEMU_WIFI_CAPTURE", output.join("wifi-tx.pcap"))
-            .env("ARCS_QEMU_BLE_CAPTURE", output.join("ble-tx.jsonl"))
             .env("ARCS_QEMU_WIFI_AP", "Lisem");
+        if capture {
+            command
+                .env("ARCS_QEMU_REPORT", output.join("report.json"))
+                .env("ARCS_QEMU_SCREEN", output.join("screen.ppm"))
+                .env("ARCS_QEMU_AUDIO_OUTPUT", output.join("audio.wav"))
+                .env("ARCS_QEMU_WIFI_CAPTURE", output.join("wifi-tx.pcap"))
+                .env("ARCS_QEMU_BLE_CAPTURE", output.join("ble-tx.jsonl"));
+        } else {
+            command.env("ARCS_QEMU_REPORT", "-");
+        }
         if download {
             command.env("ARCS_QEMU_BOOT_RELEASE_NS", "50000000");
         }

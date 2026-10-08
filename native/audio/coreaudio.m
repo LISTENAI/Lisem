@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <mach/mach_time.h>
 #include "audio/lisa_stream.h"
+#include "qemu/lisa-mapping.h"
 
 #define FRAMES 160
 #define BUFFERS 4
@@ -171,6 +172,11 @@ static bool microphone_permission(void)
 static bool save_pending(HostAudio *s, FILE *input, FILE *output, FILE *reference)
 {
     LisaAudioStream *p = s->stream;
+    if (!input) {
+        lisa_audio_store(&p->input_logged, lisa_audio_load(&p->input_write));
+        lisa_audio_store(&p->output_logged, lisa_audio_load(&p->output_write));
+        return true;
+    }
     uint64_t at = lisa_audio_load(&p->input_logged), end = lisa_audio_load(&p->input_write);
     while (at < end) {
         uint64_t count = LISA_AUDIO_CAPACITY - (at & LISA_AUDIO_MASK);
@@ -194,23 +200,29 @@ static bool save_pending(HostAudio *s, FILE *input, FILE *output, FILE *referenc
 
 static int run(const char *directory, unsigned seconds, bool capture_input)
 {
-    NSString *dir = [NSString stringWithUTF8String:directory];
-    NSString *path = [dir stringByAppendingPathComponent:@"stream.bin"];
-    int fd = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_EXCL, 0600);
-    if (fd < 0 || ftruncate(fd, sizeof(LisaAudioStream))) { perror("Create audio transport"); return 1; }
-    LisaAudioStream *p = mmap(NULL, sizeof(*p), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    close(fd);
-    if (p == MAP_FAILED) { perror("Map audio transport"); return 1; }
+    bool recording_files = strncmp(directory, "shm:", 4) != 0;
+    NSString *dir = recording_files ? [NSString stringWithUTF8String:directory] : nil;
+    LisaAudioStream *p;
+    if (!recording_files) {
+        p = lisa_named_mapping(directory, sizeof(*p), true);
+    } else {
+        NSString *path = [dir stringByAppendingPathComponent:@"stream.bin"];
+        int fd = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_EXCL, 0600);
+        if (fd < 0 || ftruncate(fd, sizeof(*p))) { perror("Create audio transport"); return 1; }
+        p = lisa_shared_mapping(fd, sizeof(*p));
+        close(fd);
+    }
+    if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture_input;
     HostAudio s = {.stream = p};
     mach_timebase_info_data_t timebase;
     mach_timebase_info(&timebase);
     s.host_ticks_per_frame = 1e9 * timebase.denom / timebase.numer / LISA_AUDIO_RATE;
-    FILE *input = fopen([dir stringByAppendingPathComponent:@"microphone.pcm"].fileSystemRepresentation, "wb");
-    FILE *output = fopen([dir stringByAppendingPathComponent:@"dac-frames.bin"].fileSystemRepresentation, "wb");
-    FILE *reference = fopen([dir stringByAppendingPathComponent:@"reference.pcm"].fileSystemRepresentation, "wb");
-    if (!input || !output || !reference) { perror("Open audio capture"); return 1; }
+    FILE *input = recording_files ? fopen([dir stringByAppendingPathComponent:@"microphone.pcm"].fileSystemRepresentation, "wb") : NULL;
+    FILE *output = recording_files ? fopen([dir stringByAppendingPathComponent:@"dac-frames.bin"].fileSystemRepresentation, "wb") : NULL;
+    FILE *reference = recording_files ? fopen([dir stringByAppendingPathComponent:@"reference.pcm"].fileSystemRepresentation, "wb") : NULL;
+    if (recording_files && (!input || !output || !reference)) { perror("Open audio capture"); return 1; }
     AudioStreamBasicDescription format = {.mSampleRate = LISA_AUDIO_RATE,
         .mFormatID = kAudioFormatLinearPCM,
         .mFormatFlags = kLinearPCMFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
@@ -295,9 +307,9 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     if (s.input) { AudioQueueStop(s.input, true); AudioQueueDispose(s.input, true); }
     if (s.output) { AudioQueueStop(s.output, true); AudioQueueDispose(s.output, true); }
     if (!save_pending(&s, input, output, reference)) { fail_status(&s, -1); }
-    if (fclose(input)) { fail_status(&s, -1); }
-    if (fclose(output)) { fail_status(&s, -1); }
-    if (fclose(reference)) { fail_status(&s, -1); }
+    if (input && fclose(input)) { fail_status(&s, -1); }
+    if (output && fclose(output)) { fail_status(&s, -1); }
+    if (reference && fclose(reference)) { fail_status(&s, -1); }
     struct rusage usage;
     getrusage(RUSAGE_SELF, &usage);
     NSDictionary *stats = @{
@@ -321,7 +333,11 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
         @"cpu_seconds": @(usage.ru_utime.tv_sec + usage.ru_stime.tv_sec + (usage.ru_utime.tv_usec + usage.ru_stime.tv_usec) / 1e6)
     };
     NSData *json = [NSJSONSerialization dataWithJSONObject:stats options:NSJSONWritingPrettyPrinted error:NULL];
-    [json writeToFile:[dir stringByAppendingPathComponent:@"report.json"] atomically:YES];
+    if (recording_files) {
+        [json writeToFile:[dir stringByAppendingPathComponent:@"report.json"] atomically:YES];
+    } else {
+        fwrite(json.bytes, 1, json.length, stdout); fputc('\n', stdout); fflush(stdout);
+    }
     bool success = (completed || interrupted) && !lisa_audio_load(&p->host_error) && !error && !s.callback_error;
     munmap(p, sizeof(*p));
     return success ? 0 : 1;
