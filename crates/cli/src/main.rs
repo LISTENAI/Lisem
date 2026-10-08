@@ -58,7 +58,8 @@ enum Action {
     Write {
         id: String,
         image: PathBuf,
-        #[arg(long, default_value_t = 0)]
+        /// Byte offset in decimal or hexadecimal (0x...).
+        #[arg(long, default_value_t = 0, value_parser = parse_offset)]
         offset: u64,
     },
     /// Erase all Flash while retaining OTP and UID.
@@ -164,6 +165,16 @@ impl TryFrom<RunOptions> for Options {
             download: false,
             capture: v.capture.as_deref().map(absolute).transpose()?,
         })
+    }
+}
+
+fn parse_offset(value: &str) -> std::result::Result<u64, std::num::ParseIntError> {
+    match value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(hex) => u64::from_str_radix(hex, 16),
+        None => value.parse(),
     }
 }
 
