@@ -19,24 +19,28 @@ static void shared_transport(void)
     char name[40];
     snprintf(name, sizeof(name), "shm:lsm-%012lx%012lx", pid, (unsigned long)time(NULL));
     size_t size = sizeof(LisaAudioStream);
-    LisaAudioStream *producer = lisa_named_mapping(name, size, true);
+    LisaMapping writer = {0}, reader = {0}, duplicate = {0};
+    LisaAudioStream *producer = lisa_named_mapping(name, size, true, &writer);
     assert(producer && !producer->magic);
-    assert(!lisa_named_mapping(name, size, true));
-    LisaAudioStream *consumer = lisa_named_mapping(name, size, false);
+    assert(!lisa_named_mapping(name, size, true, &duplicate));
+    LisaAudioStream *consumer = lisa_named_mapping(name, size, false, &reader);
     assert(consumer);
     lisa_audio_store(&producer->magic, LISA_AUDIO_MAGIC);
     assert(lisa_audio_load(&consumer->magic) == LISA_AUDIO_MAGIC);
     assert(lisa_audio_dac(producer, 1000, -1234, true));
     assert(consumer->output[0].value == -1234);
-    assert(!lisa_named_mapping("shm:../invalid", size, true));
-#ifdef _WIN32
-    UnmapViewOfFile(consumer); UnmapViewOfFile(producer);
-#else
-    munmap(consumer, size); munmap(producer, size);
+    assert(!lisa_named_mapping("shm:../invalid", size, true, &duplicate));
+    lisa_mapping_close(&writer);
+    LisaMapping late_reader = {0};
+    LisaAudioStream *late = lisa_named_mapping(name, size, false, &late_reader);
+    assert(late && late->output[0].value == -1234);
+    lisa_mapping_close(&reader);
+    lisa_mapping_close(&late_reader);
+#ifndef _WIN32
     char posix[32]; snprintf(posix, sizeof(posix), "/%s", name + 4);
     assert(!shm_unlink(posix));
 #endif
-    assert(!lisa_named_mapping(name, size, false));
+    assert(!lisa_named_mapping(name, size, false, &reader));
 }
 
 int main(void)

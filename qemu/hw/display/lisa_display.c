@@ -21,6 +21,7 @@ typedef struct LisaDisplay {
     DisplayChangeListener listener;
     DisplaySurface *surface;
     DisplayMap *map;
+    LisaMapping mapping;
     uint64_t sequence;
 } LisaDisplay;
 
@@ -77,8 +78,9 @@ void lisa_display_init(QemuConsole *console, const char *directory)
     size_t bytes = width * height * 4, length = sizeof(DisplayMap) + 3 * (16 + bytes);
     const char *shared = getenv("ARCS_QEMU_DISPLAY_SHM");
     DisplayMap *p;
+    LisaDisplay *s = g_new0(LisaDisplay, 1);
     if (shared) {
-        p = lisa_named_mapping(shared, length, true);
+        p = lisa_named_mapping(shared, length, true, &s->mapping);
     } else {
         g_autofree char *path = g_build_filename(directory, "framebuffer", NULL);
         int fd = lisa_open_shared_file(path, true);
@@ -89,7 +91,6 @@ void lisa_display_init(QemuConsole *console, const char *directory)
     if (!p) { perror("Map host display"); exit(1); }
     p->width = width; p->height = height; p->stride = width * 4; p->bytes = bytes;
     __atomic_store_n(&p->magic, DISPLAY_MAGIC, __ATOMIC_RELEASE);
-    LisaDisplay *s = g_new0(LisaDisplay, 1);
     s->map = p; s->surface = surface;
     s->listener = (DisplayChangeListener){.con = console, .ops = &listener_ops, .update_interval = 16};
     register_displaychangelistener(&s->listener);

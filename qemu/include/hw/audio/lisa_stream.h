@@ -3,7 +3,9 @@
 #define HW_AUDIO_LISA_STREAM_H
 #include "qemu/timer.h"
 #include "audio/lisa_stream.h"
+#include "qemu/lisa-mapping.h"
 typedef struct LisaHostAudio {
+    LisaMapping mapping;
     LisaAudioStream *stream;
     QEMUTimer *timer;
 } LisaHostAudio;

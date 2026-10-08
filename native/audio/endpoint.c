@@ -213,8 +213,9 @@ static int run(const char *directory, unsigned seconds, bool capture)
 {
     bool recording_files = strncmp(directory, "shm:", 4) != 0;
     LisaAudioStream *p;
+    LisaMapping mapping = {0};
     if (!recording_files) {
-        p = lisa_named_mapping(directory, sizeof(*p), true);
+        p = lisa_named_mapping(directory, sizeof(*p), true, &mapping);
 #ifndef _WIN32
         int flags = fcntl(STDIN_FILENO, F_GETFL);
         if (flags >= 0) { fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK); }
@@ -315,11 +316,15 @@ static int run(const char *directory, unsigned seconds, bool capture)
         if (recording_files) { fclose(report); } else { fflush(report); }
     }
     bool success = (completed || interrupted) && !p->host_error && !p->guest_error;
+    if (!recording_files) {
+        lisa_mapping_close(&mapping);
+    } else {
 #ifdef _WIN32
-    UnmapViewOfFile(p);
+        UnmapViewOfFile(p);
 #else
-    munmap(p, sizeof(*p));
+        munmap(p, sizeof(*p));
 #endif
+    }
     free(s);
     return success ? 0 : 1;
 }

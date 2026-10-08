@@ -203,8 +203,9 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     bool recording_files = strncmp(directory, "shm:", 4) != 0;
     NSString *dir = recording_files ? [NSString stringWithUTF8String:directory] : nil;
     LisaAudioStream *p;
+    LisaMapping mapping = {0};
     if (!recording_files) {
-        p = lisa_named_mapping(directory, sizeof(*p), true);
+        p = lisa_named_mapping(directory, sizeof(*p), true, &mapping);
     } else {
         NSString *path = [dir stringByAppendingPathComponent:@"stream.bin"];
         int fd = open(path.fileSystemRepresentation, O_RDWR | O_CREAT | O_EXCL, 0600);
@@ -339,7 +340,8 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
         fwrite(json.bytes, 1, json.length, stdout); fputc('\n', stdout); fflush(stdout);
     }
     bool success = (completed || interrupted) && !lisa_audio_load(&p->host_error) && !error && !s.callback_error;
-    munmap(p, sizeof(*p));
+    if (recording_files) { munmap(p, sizeof(*p)); }
+    else { lisa_mapping_close(&mapping); }
     return success ? 0 : 1;
 }
 

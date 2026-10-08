@@ -28,7 +28,7 @@ void lisa_host_audio_init(LisaHostAudio *s, const char *path)
     if (!path) { return; }
     LisaAudioStream *p;
     if (!strncmp(path, "shm:", 4)) {
-        p = lisa_named_mapping(path, sizeof(*p), false);
+        p = lisa_named_mapping(path, sizeof(*p), false, &s->mapping);
     } else {
         int fd = lisa_open_shared_file(path, false);
         struct stat st;

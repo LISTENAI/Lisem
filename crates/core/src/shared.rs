@@ -11,6 +11,8 @@ use std::{
 pub struct Mapping {
     pointer: *mut u8,
     length: usize,
+    #[cfg(windows)]
+    section: *mut std::ffi::c_void,
 }
 // Shared accesses use the transport's atomic ownership protocol.
 unsafe impl Send for Mapping {}
@@ -61,7 +63,7 @@ impl Mapping {
             pointer.cast()
         };
         #[cfg(windows)]
-        let pointer = {
+        let (pointer, section) = {
             let name: Vec<u16> = format!("Local\\{name}\0").encode_utf16().collect();
             let handle = unsafe { windows::OpenFileMappingW(0x000f001f, 0, name.as_ptr()) };
             ensure!(
@@ -70,17 +72,21 @@ impl Mapping {
                 std::io::Error::last_os_error()
             );
             let pointer = unsafe { windows::MapViewOfFile(handle, 0x000f001f, 0, 0, length) };
-            unsafe {
-                windows::CloseHandle(handle);
+            if pointer.is_null() {
+                let error = std::io::Error::last_os_error();
+                unsafe {
+                    windows::CloseHandle(handle);
+                }
+                anyhow::bail!("Cannot map shared memory: {error}");
             }
-            ensure!(
-                !pointer.is_null(),
-                "Cannot map shared memory: {}",
-                std::io::Error::last_os_error()
-            );
-            pointer.cast()
+            (pointer.cast(), handle)
         };
-        Ok(Self { pointer, length })
+        Ok(Self {
+            pointer,
+            length,
+            #[cfg(windows)]
+            section,
+        })
     }
 }
 impl Deref for Mapping {
@@ -98,6 +104,7 @@ impl Drop for Mapping {
         #[cfg(windows)]
         unsafe {
             windows::UnmapViewOfFile(self.pointer.cast());
+            windows::CloseHandle(self.section);
         }
     }
 }
