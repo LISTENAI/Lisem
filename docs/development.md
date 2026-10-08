@@ -72,6 +72,18 @@ macOS/Linux 使用保留执行权限的 tar.gz，Windows 使用 zip。正式发�
 通过 CI 的归档，不用本地构建替换。LUNA 与 ROM 直接使用仓库随附字节。
 原始固件业务和声学效果仍按下面的步骤独立验收，不能由 CI 握手测试替代。
 
+发布时使用版本标签对应的成功 CI 产物，将六个平台的归档和各自的 SHA-256
+文件附到同一 GitHub Release。核对包内版本、标签和构建提交一致；macOS
+同时核对包内 `LSMinimumSystemVersion`，按实际依赖要求声明支持的系统版本。
+
+macOS 的 Homebrew 分发使用 [LISTENAI 公共 tap](https://github.com/LISTENAI/homebrew-tap)
+中的 `lisem` cask。cask 的 `app` 安装 `Lisem.app`，`binary` 链接包内
+`Contents/MacOS/lisem`；安装和升级共用同一应用包。首次接入需在 tap 添加
+`Casks/lisem.rb` 及 `projects.yaml` 的 `cask` 项，资产分别匹配
+`Lisem-darwin-aarch64.tar.gz` 和 `Lisem-darwin-x86_64.tar.gz`。初始校验值
+取自正式 Release，后续版本由 tap 的现有更新流程维护。cask 普通卸载保留
+实例数据，不在升级时终止或删除设备实例。
+
 ## 原固件验证
 
 使用实际发布 LPK；与独立指令探针和测试图分别记录结果。以下测试创建
@@ -133,9 +145,10 @@ GUI/CLI 从可执行文件位置发现运行资源；启动时校验包内资产
 python3 tests/run_macos_bundle.py --lpk /path/to/firmware.lpk --output /tmp/lisem-bundle-check
 ```
 
-本地构建使用 ad-hoc 签名；公开分发需配置 Developer ID 签名/公证，并在
-声明支持的最低系统版本上完成安装和升级验证。封装依赖闭包不能替代跨机器
-兼容性验证，构建机上的第三方库可能提高最终应用的最低系统版本。
+macOS 应用使用 ad-hoc 签名，未公证。首次打开可能需要在系统“隐私与安全性”
+设置中允许。发布前在声明支持的最低系统版本上完成安装和升级验证。封装
+依赖闭包不能替代跨机器兼容性验证，构建机上的第三方库可能提高最终应用的
+最低系统版本。
 不随应用分发业务固件、用户实例或平台凭据。ARCS 固定 ROM 属于已授权
 芯片资产，其哈希与用途见 `qemu/roms/arcs/manifest.json`。
 
