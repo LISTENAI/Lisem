@@ -41,7 +41,7 @@ runs:
         fi
         sudo apt-get "${apt_options[@]}" update
         sudo apt-get "${apt_options[@]}" install -y --no-install-recommends ccache clang lld cmake ninja-build meson pkg-config \
-          libglib2.0-dev libpixman-1-dev libpulse-dev patchelf libvulkan-dev \
+          libglib2.0-dev libpixman-1-dev libjpeg-dev libpulse-dev patchelf libvulkan-dev \
           libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libfontconfig1-dev \
           libssl-dev libdbus-1-dev libsecret-1-dev libx11-xcb-dev libxcb1-dev \
           libxcb-shape0-dev libxcb-xfixes0-dev libxcb-render0-dev libxcb-randr0-dev \
@@ -49,7 +49,7 @@ runs:
     - name: Install macOS dependencies
       if: runner.os == 'macOS' && (inputs.phase == 'native' || inputs.phase == 'package')
       shell: bash
-      run: brew install ccache glib pixman pkgconf ninja meson
+      run: brew install ccache glib pixman jpeg-turbo pkgconf ninja meson
     - name: Identify Windows toolchain cache
       if: runner.os == 'Windows' && inputs.phase != 'rust'
       id: windows-cache
@@ -101,7 +101,7 @@ runs:
         cache: false
         install: >-
           git patch tar
-          ${{ inputs.phase != 'tests' && format('{0}-ccache {0}-clang {0}-glib2 {0}-pixman {0}-portaudio {0}-python {0}-meson {0}-ninja {0}-pkgconf', inputs.prefix) || '' }}
+          ${{ inputs.phase != 'tests' && format('{0}-ccache {0}-clang {0}-glib2 {0}-pixman {0}-libjpeg-turbo {0}-portaudio {0}-python {0}-meson {0}-ninja {0}-pkgconf', inputs.prefix) || '' }}
     - name: Save Windows toolchain
       if: runner.os == 'Windows' && (inputs.phase == 'native' || inputs.phase == 'tests') && steps.windows-toolchain.outputs.cache-hit != 'true'
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830

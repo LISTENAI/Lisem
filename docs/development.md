@@ -31,7 +31,7 @@ MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、
-Git 和 patch。Python 仅参与构建与验证，不随运行产品启动。
+Git、patch 和 libjpeg-turbo。Python 仅参与构建与验证，不随运行产品启动。
 
 macOS 使用 Xcode Command Line Tools，以及 GLib、Pixman 和 libslirp 的构建依赖。
 Linux 使用 Clang/GCC、GLib、Pixman、PulseAudio 开发包、patchelf，以及 GPUI
@@ -40,7 +40,7 @@ Linux 使用 Clang/GCC、GLib、Pixman、PulseAudio 开发包、patchelf，以�
 纯文本 Linux 的 CLI 不需要显示服务器；未开启宿主音频时也不需要音频服务。
 
 Windows 使用原生 MSVC Rust 工具链和对应架构的 Visual Studio C++ Build Tools、
-Windows SDK；QEMU、音频和网络组件使用 MSYS2 的 Clang、GLib、Pixman、
+Windows SDK；QEMU、音频和网络组件使用 MSYS2 的 Clang、GLib、Pixman、libjpeg-turbo、
 PortAudio、Python、Meson、Ninja、pkgconf、Git、patch 和 GNU tar。
 ARM64 使用 CLANGARM64 环境，x64 使用 UCRT64 环境。先进入对应架构的
 Visual Studio Developer Command Prompt，再将 MSYS2 工具目录加入 PATH，

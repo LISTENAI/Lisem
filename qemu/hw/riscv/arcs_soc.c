@@ -241,6 +241,8 @@ static void reset(DeviceState *dev)
     arcs_codec_reset(s);
     arcs_hsu_reset(s);
     arcs_trng_reset(s);
+    arcs_jpeg_reset(s);
+    arcs_jpeg_clock(s, false);
     arcs_sysctl_reset(s);
 }
 
@@ -333,6 +335,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_wifi_dma_init(s);
     arcs_bluetooth_init(s);
     arcs_audio_init(s);
+    arcs_jpeg_init(s);
     arcs_hsu_init(s);
     arcs_trng_init(s);
     arcs_sysctl_init(s);

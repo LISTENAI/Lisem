@@ -57,7 +57,9 @@ static bool data_address(uint32_t address, unsigned size, bool write)
             (address >= 0x28000000 && end <= 0x29000000) ||
             (!write && address >= 0x30000000 && end <= 0x31000000) ||
             (write && address >= APC_BASE + 0xf4 && end <= APC_BASE + 0x104) ||
-            (!write && address >= APC_BASE + 0x104 && end <= APC_BASE + 0x114));
+            (!write && address >= APC_BASE + 0x104 && end <= APC_BASE + 0x114) ||
+            (write && address >= 0x45003000 && end <= 0x45003800) ||
+            (!write && address >= 0x45002800 && end <= 0x45003000));
 }
 
 static void service(void *opaque)

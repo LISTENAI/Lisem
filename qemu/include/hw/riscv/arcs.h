@@ -22,6 +22,7 @@
 #include "hw/riscv/arcs_audio.h"
 #include "hw/riscv/arcs_hsu.h"
 #include "hw/riscv/arcs_trng.h"
+#include "hw/riscv/arcs_jpeg.h"
 
 #define TYPE_ARCS_SOC "arcs-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsSoC, ARCS_SOC)
@@ -77,6 +78,7 @@ struct ArcsSoC {
     ArcsCodec codec;
     ArcsHSU hsu;
     ArcsTRNG trng;
+    ArcsJPEG jpeg;
     MemoryRegion mailbox_io;
     uint32_t mailbox_regs[0xc0 / 4];
     qemu_irq spi_cs[3], spi_dma[3], uart_dma[6];

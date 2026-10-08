@@ -239,11 +239,12 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsConfigIO *io = opaque;
     if (size != 4 || (off != 0 && off != 8 && off != 12 && off != 16 && off != 0x1c) ||
-        (off == 0 && (value & 0x7d39))) {
+        (off == 0 && (value & 0x3d39))) {
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
     }
     /* Reject reset targets whose peripheral model is not connected. */
     if (off == 0) {
+        if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
         if (value & 2) { arcs_gpdma_reset(io->soc); }
         if (value & 4) { arcs_hsu_reset(io->soc); }
         if (value & 0x40) { arcs_codec_reset(io->soc); }
@@ -255,6 +256,10 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         arcs_hsu_clock(io->soc, value & 0x2000);
     }
     io->soc->sysctl.ap_regs[off / 4] = off == 0 ? value & 0x1f0000 : value;
+    if (off == 8 || off == 12) {
+        arcs_jpeg_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x8000) &&
+                        (io->soc->sysctl.ap_regs[3] & 0x80000000));
+    }
 }
 
 static void rc_irq(ArcsSoC *soc)
