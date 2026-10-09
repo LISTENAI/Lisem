@@ -67,6 +67,12 @@ void arcs_timer_clock(ArcsTimer *t, uint32_t frequency, bool enabled)
     timer_update(t);
 }
 
+void arcs_soc_fail_report(ArcsSoC *s, const char *status)
+{
+    s->report(s->report_opaque, status);
+    exit(1);
+}
+
 void arcs_soc_fail(ArcsSoC *s, hwaddr address, unsigned size,
                         bool write, uint64_t value)
 {
@@ -74,8 +80,7 @@ void arcs_soc_fail(ArcsSoC *s, hwaddr address, unsigned size,
     error_report("ARCS unsupported %s hart=%u pc=0x%08x address=0x%08" HWADDR_PRIx
                  " size=%u value=0x%" PRIx64, write ? "write" : "read", hart,
                  (uint32_t)s->cpu[hart].env.pc, address, size, value);
-    s->report(s->report_opaque, "unsupported-mmio");
-    exit(1);
+    arcs_soc_fail_report(s, "unsupported-mmio");
 }
 
 static uint64_t io_read(void *opaque, hwaddr address, unsigned size)
@@ -237,6 +242,7 @@ static void reset(DeviceState *dev)
     arcs_wifi_dma_reset(s);
     arcs_bluetooth_reset(s);
     arcs_gpdma_reset(s);
+    arcs_dma2d_reset(s);
     arcs_apc_reset(s);
     arcs_codec_reset(s);
     arcs_hsu_reset(s);
@@ -335,6 +341,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_wifi_dma_init(s);
     arcs_bluetooth_init(s);
     arcs_audio_init(s);
+    arcs_dma2d_init(s);
     arcs_jpeg_init(s);
     arcs_dvp_init(s);
     arcs_hsu_init(s);

@@ -9,9 +9,9 @@ QEMU_TESTS := \
     qemu-adc qemu-aon-timer qemu-audio qemu-bluetooth \
     qemu-bluetooth-activity qemu-bluetooth-link qemu-bluetooth-rx qemu-calendar qemu-camera qemu-camera-capture qemu-camera-input \
     qemu-clock-notify qemu-counter-chain qemu-cpu qemu-cpu-clocks \
-    qemu-desktop qemu-display qemu-dma qemu-dma2d qemu-dualtimer qemu-dvp-clock \
+    qemu-desktop qemu-display qemu-dma qemu-dma2d qemu-dma2d-memory qemu-dualtimer qemu-dvp-clock \
     qemu-gpio qemu-host-audio qemu-host-display qemu-host-network \
-    qemu-hsu qemu-i2c qemu-icount qemu-jit-state qemu-jpeg \
+    qemu-hsu qemu-i2c qemu-icount qemu-jit-state qemu-jpeg qemu-jpeg-encode \
     qemu-mailbox qemu-pacing qemu-psram qemu-remap qemu-rf \
     qemu-rom qemu-sd qemu-soc-clocks qemu-storage \
     qemu-sysctl qemu-trng qemu-uart qemu-usb \

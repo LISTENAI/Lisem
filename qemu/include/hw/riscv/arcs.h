@@ -24,6 +24,7 @@
 #include "hw/riscv/arcs_hsu.h"
 #include "hw/riscv/arcs_trng.h"
 #include "hw/riscv/arcs_jpeg.h"
+#include "hw/riscv/arcs_dma2d.h"
 
 #define TYPE_ARCS_SOC "arcs-soc"
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsSoC, ARCS_SOC)
@@ -75,6 +76,7 @@ struct ArcsSoC {
     ArcsWiFiDMA wifi_dma;
     ArcsBluetooth bluetooth;
     ArcsGPDMA gpdma;
+    ArcsDMA2D dma2d;
     ArcsAPC apc;
     ArcsCodec codec;
     ArcsHSU hsu;
@@ -92,6 +94,8 @@ struct ArcsSoC {
     void *report_opaque;
 };
 
+/* Preserve the common report-and-terminate contract after a precise diagnostic. */
+G_NORETURN void arcs_soc_fail_report(ArcsSoC *s, const char *status);
 G_NORETURN void arcs_soc_fail(ArcsSoC *s, hwaddr address, unsigned size,
                    bool write, uint64_t value);
 void arcs_soc_irq(ArcsSoC *s, unsigned irq, bool level);

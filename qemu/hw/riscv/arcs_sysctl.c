@@ -374,7 +374,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     /* Reject reset targets whose peripheral model is not connected. */
     if (off == 0) {
         if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
-        if (value & 2) { arcs_gpdma_reset(io->soc); }
+        if (value & 2) { arcs_gpdma_reset(io->soc); arcs_dma2d_reset(io->soc); }
         if (value & 4) { arcs_hsu_reset(io->soc); }
         if (value & 0x40) { arcs_codec_reset(io->soc); }
         if (value & 0x80) { arcs_apc_reset(io->soc); }
@@ -385,6 +385,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         arcs_hsu_clock(io->soc, value & 0x2000);
     }
     io->soc->sysctl.ap_regs[off / 4] = off == 0 ? value & 0x1f0000 : value;
+    if (off == 8) { arcs_dma2d_clock(io->soc, value & 0x4000); }
     if (off == 8 || off == 0x1c) {
         arcs_dvp_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x208000) == 0x208000);
     }
@@ -677,6 +678,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     s->cp_entry = 0x00200000;
     memset(s->ap_regs, 0, sizeof(s->ap_regs));
     arcs_dvp_clock(soc, false);
+    arcs_dma2d_clock(soc, false);
     memset(s->wdt_control, 0, sizeof(s->wdt_control));
     memset(s->wdt_unlocked, 0, sizeof(s->wdt_unlocked));
     memset(s->wdt_expired, 0, sizeof(s->wdt_expired));

@@ -9,15 +9,14 @@ typedef struct ArcsAudioChannel {
     uint32_t control, source, destination, total, remaining;
     unsigned mode, width, slot, completed_slot;
     bool busy, half_sent, stop_after_block;
-    bool image_rgb, image_swap;
 } ArcsAudioChannel;
 typedef struct ArcsGPDMA {
     ArcsSoC *soc;
     MemoryRegion io;
     QEMUTimer *event;
     int64_t deadline;
-    uint32_t regs[0xc0], pending, image_pending;
-    ArcsAudioChannel channel[10];
+    uint32_t regs[0xc0], pending;
+    ArcsAudioChannel channel[6];
     bool requests[16], servicing;
     uint64_t bytes, blocks;
 } ArcsGPDMA;

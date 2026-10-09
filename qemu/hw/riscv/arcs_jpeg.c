@@ -1,10 +1,11 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Baseline JPEG decode interface: programmed tables and entropy FIFO -> MCU blocks. */
+/* Baseline JPEG codec: programmed tables, MCU pixels and entropy FIFOs. */
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs.h"
 #include "system/address-spaces.h"
 #include "qemu/bswap.h"
 #include "hw/irq.h"
+#include "qemu/error-report.h"
 #include <jpeglib.h>
 #include <setjmp.h>
 
@@ -16,14 +17,21 @@
 #define MINIMUM 0x2800
 #define HUFFBASE 0x3000
 #define QUANT 0x3800
+#define HENC 0x5800
+
+static bool encoding(ArcsJPEG *s) { return !(R(s, 4) & 1); }
 
 static void update(ArcsJPEG *s)
 {
     bool run = s->clock && s->active;
-    qemu_set_irq(s->input_request,
-                 run && s->input_started && s->received < ROUND_UP(R(s, 0x18) + 1, 4));
-    qemu_set_irq(s->output_request,
-                 run && s->output_started && s->decoded && s->consumed < s->output_size);
+    bool input = run && s->input_started && s->received <
+        (encoding(s) ? R(s, 0x18) : ROUND_UP(R(s, 0x18) + 1, 4));
+    bool output = run && s->output_started && s->decoded && s->consumed < s->output_size;
+    /* Handshake 6 is ECS and 7 is pixels, independent of transfer direction. */
+    qemu_set_irq(s->input_request, encoding(s) ? output : input);
+    qemu_set_irq(s->output_request, encoding(s) ? input : output);
+    qemu_set_irq(s->dma2d_input_request, encoding(s) ? output : input);
+    qemu_set_irq(s->dma2d_output_request, encoding(s) ? input : output);
     arcs_soc_irq(s->soc, 72, !!(R(s, 0x40) & ~R(s, 0x44) & 13));
 }
 
@@ -240,11 +248,34 @@ done:
     return success;
 }
 
+#include "arcs_jpeg_encode.inc"
+
+bool arcs_jpeg_dma_output_info(ArcsSoC *soc, unsigned request,
+                               uint32_t *remaining_bytes, uint32_t *input_bytes, bool *complete)
+{
+    ArcsJPEG *s = &soc->jpeg;
+    if (request != 6 || !encoding(s) || !s->clock || !s->active ||
+        !s->output_started || !s->decoded) { return false; }
+    *remaining_bytes = s->output_size - s->consumed;
+    *input_bytes = R(s, 0x18);
+    *complete = !*remaining_bytes;
+    return true;
+}
+
 static void complete(void *opaque)
 {
     ArcsJPEG *s = opaque;
-    if (!decode(s)) {
-        arcs_soc_fail(s->soc, BASE + ECS, 4, true, 0);
+    s->failure = NULL; s->host_error = 0;
+    if (!(encoding(s) ? encode(s) : decode(s))) {
+        error_report("ARCS JPEG codec completion rejected: mode=%s reason=%s host_error=%d "
+                     "control=0x%x pixels=%u ecs=%u source=%u enc_size=0x%x "
+                     "scaling=0x%x ifctrl=0x%x jcr1=0x%x mcus=%u restart=%u "
+                     "components=0x%x,0x%x,0x%x",
+                     encoding(s) ? "encode" : "decode", s->failure ? s->failure : "decoder configuration or stream",
+                     s->host_error, R(s, 4), R(s, 0x10), R(s, 0x14), R(s, 0x18), R(s, 0x68),
+                     R(s, 0x60), R(s, 0x74), R(s, 0x804), R(s, 0x808), R(s, 0x80c),
+                     R(s, 0x810), R(s, 0x814), R(s, 0x818));
+        arcs_soc_fail_report(s->soc, "peripheral-error");
     }
     s->decoded = true;
     s->remaining_ns = 0;
@@ -269,7 +300,8 @@ static bool valid_register(hwaddr off)
            (off >= 0x60 && off <= 0x74) || (off >= 0x800 && off <= 0x81c) ||
            (off >= SYMBOL && off < SYMBOL + 336 * 4) ||
            (off >= MINIMUM && off < MINIMUM + 16 * 4) ||
-           (off >= HUFFBASE && off < HUFFBASE + 64 * 4) || (off >= QUANT && off < QUANT + 128 * 4);
+           (off >= HUFFBASE && off < HUFFBASE + 64 * 4) || (off >= QUANT && off < QUANT + 128 * 4) ||
+           (off >= HENC && off < HENC + 384 * 4);
 }
 
 static uint64_t jpeg_read(void *opaque, hwaddr off, unsigned size)
@@ -280,7 +312,8 @@ static uint64_t jpeg_read(void *opaque, hwaddr off, unsigned size)
     if (size != 4 || (off & 3)) {
         goto fail;
     }
-    if (off >= PIXEL && off < PIXEL + 0x800) {
+    unsigned output = encoding(s) ? ECS : PIXEL;
+    if (off >= output && off < output + 0x800) {
         if (!s->clock || !s->active || !s->decoded || !s->output_started ||
             s->consumed + 4 > s->output_size) {
             goto fail;
@@ -288,7 +321,7 @@ static uint64_t jpeg_read(void *opaque, hwaddr off, unsigned size)
         uint32_t value = ldl_le_p(s->output + s->consumed);
         s->consumed += 4;
         if (s->consumed == s->output_size) {
-            R(s, 0x40) |= 4;
+            R(s, 0x40) |= encoding(s) ? 8 : 4;
         }
         update(s);
         return value;
@@ -309,9 +342,10 @@ static void jpeg_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (size != 4 || (off & 3)) {
         goto fail;
     }
-    if (off >= ECS && off < ECS + 0x800) {
+    unsigned input = encoding(s) ? PIXEL : ECS;
+    if (off >= input && off < input + 0x800) {
         if (!s->clock || !s->active || !s->input_started ||
-            s->received >= ROUND_UP(R(s, 0x18) + 1, 4)) {
+            s->received >= (encoding(s) ? R(s, 0x18) : ROUND_UP(R(s, 0x18) + 1, 4))) {
             goto fail;
         }
         uint8_t bytes[4];
@@ -319,7 +353,7 @@ static void jpeg_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         g_byte_array_append(s->input, bytes, 4);
         s->received += 4;
         if (s->received >= R(s, 0x18) && !s->remaining_ns && !s->decoded) {
-            R(s, 0x40) |= 8;
+            if (!encoding(s)) { R(s, 0x40) |= 8; }
             /* Functional latency scales with MCU work, on the virtual clock. */
             s->remaining_ns = ((uint64_t)R(s, 0x808) + 1) * 1000;
             s->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining_ns;
@@ -362,17 +396,21 @@ static void jpeg_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             goto fail;
         }
         if (off == 12 && value) {
-            s->input_started = true;
+            if (encoding(s)) { s->output_started = true; }
+            else { s->input_started = true; }
         }
         if ((off == 8 || off == 0x64) && value) {
-            s->output_started = true;
+            if (encoding(s)) { s->input_started = true; }
+            else { s->output_started = true; }
         }
+        update(s);
         return;
     }
     R(s, off) = value;
     if ((R(s, 0x800) & 1) && (R(s, 0x74) & 1) && !s->active) {
-        if (!s->clock || !R(s, 0x18) || R(s, 0x18) > 0xfffff || R(s, 0x18) != R(s, 0x14) ||
-            R(s, 0x10) > 0xffffff) {
+        if (!s->clock || !R(s, 0x18) || R(s, 0x10) > 0xffffff ||
+            (encoding(s) ? (R(s, 0x18) != R(s, 0x10) || (R(s, 0x18) & 3)) :
+             (R(s, 0x18) > 0xfffff || R(s, 0x18) != R(s, 0x14)))) {
             goto fail;
         }
         s->active = true;
@@ -426,8 +464,10 @@ void arcs_jpeg_init(ArcsSoC *soc)
     s->event = timer_new_ns(QEMU_CLOCK_VIRTUAL, complete, s);
     s->input_request = qdev_get_gpio_in_named(DEVICE(soc), "gpdma-request", 6);
     s->output_request = qdev_get_gpio_in_named(DEVICE(soc), "gpdma-request", 7);
+    s->dma2d_input_request = qdev_get_gpio_in_named(DEVICE(soc), "dma2d-request", 6);
+    s->dma2d_output_request = qdev_get_gpio_in_named(DEVICE(soc), "dma2d-request", 7);
     static const char *names[] = {
-        "control", "codec", "pixels", "entropy", "symbols", "minima", "bases", "quantizers",
+        "control", "codec", "pixels", "entropy", "symbols", "minima", "bases", "quantizers", "encode-huffman",
     };
     /* Each hardware window is 2 KiB. Keep them separate so TCG subpage
      * dispatch never encodes an unaligned region offset as an IOTLB index. */
@@ -435,7 +475,7 @@ void arcs_jpeg_init(ArcsSoC *soc)
         ArcsJPEGWindow *window = &s->windows[i];
         g_autofree char *name = g_strdup_printf("arcs-jpeg-%s", names[i]);
         window->jpeg = s;
-        window->offset = i * 0x800;
+        window->offset = i == 8 ? HENC : i * 0x800;
         memory_region_init_io(&window->io, OBJECT(soc), &ops, window, name, 0x800);
         memory_region_add_subregion(get_system_memory(), BASE + window->offset, &window->io);
     }
