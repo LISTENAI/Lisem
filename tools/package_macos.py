@@ -149,8 +149,8 @@ def package(bundle, target):
         (contents / 'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleIdentifier': 'com.listenai.emulator', 'CFBundleName': 'Lisem',
             'CFBundleDisplayName': 'Lisem', 'CFBundleExecutable': 'lisem-desktop',
-            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.1.1',
-            'CFBundleVersion': '0.1.1', 'NSHighResolutionCapable': True,
+            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '0.2.0',
+            'CFBundleVersion': '0.2.0', 'NSHighResolutionCapable': True,
             'CFBundleIconFile': 'Lisem.icns',
             'LSMinimumSystemVersion': minimum,
             'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。'}))
