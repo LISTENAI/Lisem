@@ -119,12 +119,17 @@ enum Action {
         #[arg(long)]
         cancel: bool,
     },
-    /// Select a PNG/JPEG/PNM camera image, center-cropped to 640x480; retained until cleared.
+    /// List host camera IDs and authorization without starting capture.
+    CameraDevices,
+    /// Select a camera image or host camera; retained until cleared.
     Camera {
         id: String,
-        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        #[arg(required_unless_present_any = ["clear", "device"], conflicts_with_all = ["clear", "device"])]
         image: Option<PathBuf>,
-        /// Remove input; sensor capture waits for another image.
+        /// Host camera ID from camera-devices. No automatic fallback.
+        #[arg(long, conflicts_with = "clear")]
+        device: Option<String>,
+        /// Remove any input; sensor capture waits for a new source.
         #[arg(long)]
         clear: bool,
     },
@@ -290,9 +295,17 @@ fn run() -> Result<i32> {
             if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
             json!({"id":id,"run":run,"sequence":sequence}),
         )?,
-        Action::Camera { id, image, .. } => {
+        Action::CameraDevices => manager.call("camera_devices", json!({}))?,
+        Action::Camera { id, image, device, .. } => {
             let state = manager.call("inspect", json!({"id":id}))?;
-            manager.call("camera", json!({"id":id,"run":state["runtime"]["session"]["output"],"path":image.as_deref().map(absolute).transpose()?}))?
+            let mut params = json!({"id":id,"run":state["runtime"]["session"]["output"]});
+            if let Some(device) = device {
+                ensure!(!device.trim().is_empty(), "Camera device ID must not be empty");
+                params["device_id"] = json!(device);
+            } else {
+                params["path"] = json!(image.as_deref().map(absolute).transpose()?);
+            }
+            manager.call("camera", params)?
         }
         Action::Screenshot { id, output } => manager.call(
             "screenshot", json!({"id": id, "path": absolute(&output)?}),
@@ -365,6 +378,45 @@ fn main() {
         Err(error) => {
             eprintln!("{error:#}");
             std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_source_arguments_are_exclusive() {
+        for args in [
+            vec!["lisem", "camera-devices"],
+            vec!["lisem", "camera", "instance", "image.png"],
+            vec!["lisem", "camera", "instance", "--device", "camera-id"],
+            vec!["lisem", "camera", "instance", "--clear"],
+        ] {
+            assert!(Args::try_parse_from(args).is_ok());
+        }
+        for args in [
+            vec!["lisem", "camera", "instance"],
+            vec!["lisem", "camera", "instance", "image.png", "--clear"],
+            vec![
+                "lisem",
+                "camera",
+                "instance",
+                "image.png",
+                "--device",
+                "camera-id",
+            ],
+            vec![
+                "lisem",
+                "camera",
+                "instance",
+                "--device",
+                "camera-id",
+                "--clear",
+            ],
+        ] {
+            assert!(Args::try_parse_from(args).is_err());
         }
     }
 }

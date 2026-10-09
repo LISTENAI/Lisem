@@ -102,7 +102,8 @@ def main():
             wait_until(lambda state: state['camera_change']['status'] == 'applied'
                        and state['controls']['buttons']['function'] is False)
             assert cli('status', identifier)['device']['host']['camera_image'] == str(image)
-            assert cli('camera', identifier, '--clear')['status'] == 'applied'
+            assert cli('camera', identifier, '--clear')['status'] in ('applied', 'pending')
+            wait_until(lambda state: state['camera_change']['status'] == 'applied')
             assert cli('status', identifier)['device']['host']['camera_image'] is None
 
             sequence = command('button_sequence', run=run, button='function', count=1,

@@ -15,7 +15,11 @@ fn relocated_bundle_checks_native_assets_and_library_integrity() {
     storage::write_json(&root.join("manifest.json"), &json!({})).unwrap();
     let assets = Assets::new(&root).unwrap();
     let mut files = serde_json::Map::new();
-    for path in [assets.qemu(), assets.audio(), assets.network()] {
+    let mut required = vec![assets.qemu(), assets.audio(), assets.network()];
+    if cfg!(target_os = "macos") {
+        required.push(assets.camera());
+    }
+    for path in required {
         fs::write(&path, b"native asset").unwrap();
         files.insert(
             path.strip_prefix(&root)
@@ -41,6 +45,9 @@ fn relocated_bundle_checks_native_assets_and_library_integrity() {
         "frameworks":{"dependency.dylib":storage::sha256(&library).unwrap()}});
     storage::write_json(&root.join("manifest.json"), &manifest).unwrap();
     assets.verify_qemu().unwrap();
+    if cfg!(target_os = "macos") {
+        assets.verify_camera().unwrap();
+    }
     let moved = temp.path().join("Moved.app");
     fs::rename(contents.parent().unwrap(), &moved).unwrap();
     let root = moved.join("Contents/Resources/runtime");

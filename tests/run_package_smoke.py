@@ -18,6 +18,12 @@ def verify_icon(bundle):
         import plistlib
         contents = bundle / 'Contents'
         info = plistlib.loads((contents / 'Info.plist').read_bytes())
+        assert info['NSCameraUsageDescription']
+        assert info['NSCameraUseContinuityCameraDeviceType']
+        runtime = contents / 'Resources/runtime'
+        manifest = json.loads((runtime / 'manifest.json').read_text())
+        camera = runtime / 'bin/lisa-camera'
+        assert hashlib.sha256(camera.read_bytes()).hexdigest() == manifest['files']['bin/lisa-camera']
         icon = (contents / 'Resources' / info['CFBundleIconFile']).read_bytes()
         assert icon[:4] == b'icns' and int.from_bytes(icon[4:8], 'big') == len(icon)
     elif os.name == 'nt':
@@ -69,6 +75,12 @@ def main():
                if not key.startswith(('LISEM_', 'LISA_SIM_', 'DYLD_', 'ARCS_QEMU_'))
                and key not in ('DISPLAY', 'WAYLAND_DISPLAY', 'LD_LIBRARY_PATH')}
         env['PATH'] = str(Path(os.environ['SystemRoot']) / 'System32') if os.name == 'nt' else '/usr/bin:/bin'
+        if os.sys.platform == 'darwin':
+            camera = bundle / 'Contents/Resources/runtime/bin/lisa-camera'
+            listing = json.loads(subprocess.check_output(
+                [str(camera), '--list'], env=env, cwd=directory, timeout=5))
+            assert listing['supported'] is True
+            assert listing['authorization'] in ('authorized', 'not-determined', 'denied', 'restricted')
         subprocess.run([str(binary), '--help'], env=env, cwd=directory,
                        check=True, timeout=15, stdout=subprocess.DEVNULL)
         if os.name != 'nt':

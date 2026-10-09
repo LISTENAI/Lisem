@@ -285,6 +285,17 @@ impl Catalog {
             value["host"]["camera_image"].is_null() || value["host"]["camera_image"].is_string(),
             "Invalid camera image setting"
         );
+        ensure!(
+            value["host"]["camera_device"].is_null()
+                || value["host"]["camera_device"]
+                    .as_str()
+                    .is_some_and(|id| !id.is_empty() && id.len() <= 4096),
+            "Invalid host camera device setting"
+        );
+        ensure!(
+            value["host"]["camera_image"].is_null() || value["host"]["camera_device"].is_null(),
+            "Camera image and device are mutually exclusive"
+        );
         if !value["host"]["uart"].is_null() {
             valid_uart(&value["host"]["uart"])?;
         }
@@ -311,6 +322,20 @@ impl Catalog {
             );
             value["host"]["camera_image"] = image.clone();
         }
+        if let Some(device) = changes.get("camera_device") {
+            ensure!(
+                device.is_null()
+                    || device
+                        .as_str()
+                        .is_some_and(|id| !id.is_empty() && id.len() <= 4096),
+                "Invalid host camera device setting"
+            );
+            value["host"]["camera_device"] = device.clone();
+        }
+        ensure!(
+            value["host"]["camera_image"].is_null() || value["host"]["camera_device"].is_null(),
+            "Camera image and device are mutually exclusive"
+        );
         if let Some(uart) = changes.get("uart") {
             valid_uart(uart)?;
             value["host"]["uart"] = uart.clone();

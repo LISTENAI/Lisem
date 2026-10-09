@@ -31,6 +31,7 @@ pub struct Device {
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub data: Value,
+    pub cameras: Value,
     pub frame: Option<Arc<RenderImage>>,
     pub frames: BTreeMap<String, Arc<RenderImage>>,
     pub selected: Option<String>,
@@ -119,6 +120,9 @@ impl Backend {
                         state.operation = None;
                         match reply {
                             Ok(value) => {
+                                if method == "camera_devices" {
+                                    state.cameras = value.clone();
+                                }
                                 if method == "create" || method == "attach" {
                                     state.selected = value["id"].as_str().map(str::to_owned);
                                 }

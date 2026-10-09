@@ -164,7 +164,7 @@ impl Manager {
             "sessions":sessions,"session":session,"serial":serial,"data_dir":self.catalog.data,
             "client_build":client_build,"runtimes":runtimes,
             "available_qemu_sha256":self.available_qemu_sha256,
-            "capabilities":{"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
+            "capabilities":{"host_camera":cfg!(target_os = "macos"),"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
         )
     }
     fn qemu_comparison(&self, runtime: &Value) -> &'static str {
@@ -180,6 +180,11 @@ impl Manager {
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         if method == "status" {
             return self.status();
+        }
+        if method == "camera_devices" {
+            return crate::camera_capture::devices(&crate::assets::Assets::new(
+                &self.catalog.root,
+            )?);
         }
         if method == "create" {
             let package = params["package"].as_str().map(Path::new);

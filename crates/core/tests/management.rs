@@ -201,4 +201,30 @@ fn camera_input_selection_is_validated_persisted_and_explicitly_cleared() {
     assert!(error.to_string().contains("Cannot open camera image"));
     runtime.call("camera", &json!({"path":null})).unwrap();
     assert!(catalog.device(&id).unwrap()["host"]["camera_image"].is_null());
+    assert!(
+        runtime
+            .call("camera", &json!({"path":null,"device_id":"test"}))
+            .is_err()
+    );
+    assert!(runtime.call("camera", &json!({"device_id":""})).is_err());
+    if cfg!(target_os = "macos") {
+        let selected = runtime
+            .call("camera", &json!({"device_id":"test-device"}))
+            .unwrap();
+        assert_eq!(selected["status"], "saved");
+        assert_eq!(
+            catalog.device(&id).unwrap()["host"]["camera_device"],
+            "test-device"
+        );
+        runtime.call("camera", &json!({"path":null})).unwrap();
+        assert!(catalog.device(&id).unwrap()["host"]["camera_device"].is_null());
+    } else {
+        assert!(
+            runtime
+                .call("camera", &json!({"device_id":"test-device"}))
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported")
+        );
+    }
 }

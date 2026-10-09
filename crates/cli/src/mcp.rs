@@ -18,7 +18,7 @@ use std::{
     time::Duration,
 };
 
-#[derive(Deserialize, JsonSchema)]
+#[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Empty {}
 #[derive(Deserialize, Serialize, JsonSchema)]
@@ -165,9 +165,13 @@ struct Camera {
     id: String,
     /// Required while powered on; identifies the run being updated.
     run: Option<String>,
-    /// PNG/JPEG/PNM path on the Lisem host. Null or omitted clears input.
-    /// Kept in host settings and reloaded at startup. Pixels are not saved.
+    /// PNG/JPEG/PNM path on the Lisem host; mutually exclusive with device_id.
+    /// Null or omitted clears input when device_id is absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<PathBuf>,
+    /// Exact host camera ID from lisem_camera_devices. Never falls back to another camera.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    device_id: Option<String>,
 }
 
 fn definition<T: JsonSchema + 'static>(
@@ -184,6 +188,46 @@ fn definition<T: JsonSchema + 'static>(
                 .open_world(!read_only),
         )
 }
+fn camera_arguments(value: Value) -> Result<Camera> {
+    ensure!(
+        !(value.get("path").is_some() && value.get("device_id").is_some()),
+        "Camera path and device_id are mutually exclusive"
+    );
+    if let Some(device) = value.get("device_id") {
+        ensure!(
+            device.as_str().is_some_and(|id| !id.trim().is_empty()),
+            "Camera device_id must be a non-empty string"
+        );
+    }
+    arguments(value)
+}
+
+fn camera_params(value: Value) -> Result<Value> {
+    let source = camera_arguments(value)?;
+    let clear = source.device_id.is_none() && source.path.is_none();
+    let mut params = serde_json::to_value(source)?;
+    if clear {
+        // Keep the original MCP omission-as-clear contract explicit at the core boundary.
+        params["path"] = Value::Null;
+    }
+    Ok(params)
+}
+
+fn camera_definition() -> Tool {
+    let mut tool = definition::<Camera>(
+        "lisem_camera_input",
+        "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) or an explicit host camera device_id. Path and device_id are mutually exclusive. Sources preserve aspect ratio and center-crop to 640x480; board mounting and firmware control orientation. Selection persists for next power-on. Null or omitted path with no device_id clears all input; capture waits without synthetic frames. Requires run while powered on. Pending is unconfirmed: poll lisem_status runtime.session.camera_change for applied, rejected or unknown. Phase waiting-first-frame permits clearing or replacing the candidate; phase selecting must not be retried until resolved. camera_capture reports host capture state and failures. Applied can include a persistence error. Camera pixels are not saved.",
+        false,
+    );
+    let schema = Arc::make_mut(&mut tool.input_schema);
+    schema.insert("not".into(), json!({"required":["path", "device_id"]}));
+    schema["properties"]["device_id"] = json!({
+        "type":"string", "minLength":1,
+        "description":"Exact host camera ID from lisem_camera_devices; mutually exclusive with path."
+    });
+    tool
+}
+
 fn tools() -> Vec<Tool> {
     vec![
         definition::<Empty>(
@@ -281,11 +325,12 @@ fn tools() -> Vec<Tool> {
             "Return the latest published screen as PNG plus frame metadata. Compare run and frame.sequence between observations; active_run does not guarantee a frame newer than an action. last_run is the retained frame after power-off. Frame clocks are publication times, not response times. Does not write a file or advance guest time.",
             true,
         ),
-        definition::<Camera>(
-            "lisem_camera_input",
-            "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) for a board camera. Preserves aspect ratio, center-crops to 640x480. Can set before power-on or replace during a run. Null path clears input; capture then waits without producing synthetic frames. Requires run while powered on. A status of pending means the outcome is not confirmed: do not retry; poll lisem_status runtime.session.camera_change for applied, rejected or unknown. An applied result can include a configuration persistence error.",
-            false,
+        definition::<Empty>(
+            "lisem_camera_devices",
+            "List host camera IDs, names and camera authorization without starting capture. Select an explicit device_id with lisem_camera_input. Does not automatically choose or open a camera.",
+            true,
         ),
+        camera_definition(),
         definition::<Audio>(
             "lisem_audio_input",
             "Feed a 16 kHz mono PCM16 WAV of at most 60 seconds through ADC. Requires microphone capture off and no queued input.",
@@ -348,7 +393,8 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
                 p,
             )?
         }
-        "lisem_camera_input" => call(manager, "camera", arguments::<Camera>(value)?)?,
+        "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
+        "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
         "lisem_button_sequence" => call(
             manager,
@@ -486,4 +532,58 @@ pub fn serve(manager: Manager, stop: Arc<AtomicBool>) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("Instance manager failed"))?
         .stop_owned();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camera_arguments_reject_ambiguous_sources() {
+        for value in [
+            json!({"id":"instance", "path":"image.png", "device_id":"camera"}),
+            json!({"id":"instance", "path":null, "device_id":"camera"}),
+            json!({"id":"instance", "device_id":null}),
+            json!({"id":"instance", "device_id":"  "}),
+        ] {
+            assert!(camera_arguments(value).is_err());
+        }
+        for value in [
+            json!({"id":"instance"}),
+            json!({"id":"instance", "path":null}),
+            json!({"id":"instance", "path":"image.png"}),
+            json!({"id":"instance", "device_id":"camera"}),
+        ] {
+            assert!(camera_arguments(value).is_ok());
+        }
+        let source = camera_arguments(json!({"id":"instance", "device_id":"camera"})).unwrap();
+        let serialized = serde_json::to_value(source).unwrap();
+        assert_eq!(serialized["device_id"], "camera");
+        assert!(serialized.get("path").is_none());
+        assert_eq!(
+            camera_params(json!({"id":"instance"})).unwrap()["path"],
+            Value::Null
+        );
+        assert!(
+            camera_params(json!({"id":"instance"}))
+                .unwrap()
+                .get("path")
+                .is_some()
+        );
+        assert!(
+            camera_params(json!({"id":"instance", "device_id":"camera"}))
+                .unwrap()
+                .get("path")
+                .is_none()
+        );
+        let tool = camera_definition();
+        assert_eq!(
+            tool.input_schema["not"],
+            json!({"required":["path","device_id"]})
+        );
+        assert_eq!(
+            tool.input_schema["properties"]["device_id"]["type"],
+            "string"
+        );
+    }
 }

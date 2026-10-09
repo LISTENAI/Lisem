@@ -79,6 +79,7 @@ enum Action {
     Audio,
     Camera,
     ClearCamera,
+    RefreshCameras,
     Sound,
     Network,
     Microphone,
@@ -160,6 +161,7 @@ impl Desktop {
                             state.frame = state.frames.get(id).cloned();
                         }
                         let changed = view.state.data != state.data
+                            || view.state.cameras != state.cameras
                             || view.state.frame.as_ref().map(Arc::as_ptr)
                                 != state.frame.as_ref().map(Arc::as_ptr)
                             || view.state.busy != state.busy
@@ -350,6 +352,7 @@ impl Desktop {
             Action::ChoosePackage | Action::Attach | Action::Import | Action::Audio | Action::Camera => {
                 self.choose_file(action, cx);
             }
+            Action::RefreshCameras => self.send("camera_devices", json!({})),
             Action::ClearCamera => {
                 let mut params = self.params();
                 params["path"] = Value::Null;
@@ -839,6 +842,12 @@ impl Desktop {
             .child(Tab::new().label("连接"))
             .on_click(cx.listener(|v, index: &usize, _, cx| {
                 v.settings_tab = ["general", "storage", "connections"][*index];
+                if v.settings_tab == "connections"
+                    && v.state.data["capabilities"]["host_camera"] == true
+                    && !v.state.busy
+                {
+                    v.send("camera_devices", json!({}));
+                }
                 cx.notify();
             }));
         let mut body = div()
@@ -946,22 +955,100 @@ impl Desktop {
                 if d.hardware["board"]["camera"].is_object() {
                     let change = &self.state.data["session"]["camera_change"];
                     let pending = change["status"] == "pending";
-                    let camera_notice = change["error"].as_str().unwrap_or_else(|| {
-                        match change["status"].as_str() {
-                            Some("pending") => "正在确认图片切换结果…",
-                            Some("applied") => "图片输入已更新",
-                            Some("unknown") => "未能确认图片切换结果",
-                            _ => "保持比例，居中裁切至 640 × 480；重新上电时读取原文件",
-                        }
-                    });
-                    body = body
-                        .child(info(
-                            "摄像头图片",
-                            d.host["camera_image"]
+                    let waiting_first_frame = pending && change["phase"] == "waiting-first-frame";
+                    let host_camera = self.state.data["capabilities"]["host_camera"] == true;
+                    let selected_device = d.host["camera_device"].as_str();
+                    let devices = self.state.cameras["devices"].as_array();
+                    let source_name = selected_device
+                        .map(|id| {
+                            devices
+                                .into_iter()
+                                .flatten()
+                                .find(|device| device["id"] == id)
+                                .and_then(|device| device["name"].as_str())
+                                .unwrap_or(id)
+                        })
+                        .or_else(|| d.host["camera_image"].as_str())
+                        .unwrap_or("未选择，采集等待输入");
+                    let capture = &self.state.data["session"]["camera_capture"];
+                    let camera_notice = if let Some(error) = change["error"].as_str() {
+                        error.to_owned()
+                    } else if waiting_first_frame {
+                        "正在打开摄像头，等待授权或第一帧；可关闭输入取消".into()
+                    } else if pending {
+                        "正在确认输入切换结果…".into()
+                    } else if change["status"] == "unknown" {
+                        "未能确认输入切换结果，请检查设备状态".into()
+                    } else if selected_device.is_some() && self.powered() {
+                        match capture["state"].as_str() {
+                            Some("starting") => "正在打开摄像头，等待第一帧…".into(),
+                            Some("live") => format!(
+                                "实时取景 · 已接收 {} 帧 · 丢弃 {} 帧",
+                                capture["frames"].as_u64().unwrap_or(0),
+                                capture["dropped"].as_u64().unwrap_or(0)
+                            ),
+                            Some("disconnected") => "摄像头已断开，请重新连接后选择".into(),
+                            Some("error") => capture["error"]
                                 .as_str()
-                                .unwrap_or("未选择，采集等待输入"),
-                        ))
-                        .child(caption(camera_notice))
+                                .unwrap_or("摄像头无法采集，请检查系统权限或重新选择")
+                                .into(),
+                            _ => "等待摄像头输入".into(),
+                        }
+                    } else if selected_device.is_some() {
+                        "已选择，上电后开启摄像头".into()
+                    } else if d.host["camera_image"].is_string() {
+                        "保持比例，居中裁切；重新上电时读取原文件".into()
+                    } else if host_camera {
+                        "选择图片或宿主摄像头作为场景输入".into()
+                    } else {
+                        "选择图片作为场景输入".into()
+                    };
+                    let enabled = idle && (!pending || waiting_first_frame);
+                    let view = cx.entity().downgrade();
+                    let camera_menu = Button::new("host-camera")
+                        .label("宿主摄像头…")
+                        .disabled(!enabled || !host_camera)
+                        .dropdown_menu(move |mut menu, _, cx| {
+                            let Some(view_entity) = view.upgrade() else {
+                                return menu;
+                            };
+                            let current = view_entity.read(cx);
+                            let selected = current
+                                .device()
+                                .and_then(|d| d.host["camera_device"].as_str().map(str::to_owned));
+                            let devices = current.state.cameras["devices"]
+                                .as_array()
+                                .cloned()
+                                .unwrap_or_default();
+                            if devices.is_empty() {
+                                menu = menu.item(
+                                    PopupMenuItem::new("未发现摄像头，请刷新设备").disabled(true),
+                                );
+                            }
+                            for device in devices {
+                                let Some(id) = device["id"].as_str().map(str::to_owned) else {
+                                    continue;
+                                };
+                                let name = device["name"].as_str().unwrap_or(&id).to_owned();
+                                let view = view.clone();
+                                menu = menu.item(
+                                    PopupMenuItem::new(name)
+                                        .checked(selected.as_deref() == Some(id.as_str()))
+                                        .on_click(move |_, _, cx| {
+                                            let _ = view.update(cx, |v, cx| {
+                                                let mut params = v.params();
+                                                params["device_id"] = json!(id);
+                                                v.send("camera", params);
+                                                cx.notify();
+                                            });
+                                        }),
+                                );
+                            }
+                            menu
+                        });
+                    body = body
+                        .child(info("摄像头输入", source_name))
+                        .child(caption(&camera_notice))
                         .child(
                             div()
                                 .flex()
@@ -970,19 +1057,43 @@ impl Desktop {
                                     "选择图片…",
                                     "camera",
                                     Action::Camera,
-                                    idle && !pending,
+                                    enabled,
                                     false,
                                     cx,
                                 ))
+                                .when(host_camera, |e| e.child(camera_menu))
                                 .child(self.control(
-                                    "清除图片",
+                                    "关闭输入",
                                     "clear-camera",
                                     Action::ClearCamera,
-                                    idle && !pending && d.host["camera_image"].is_string(),
+                                    enabled
+                                        && (waiting_first_frame
+                                            || d.host["camera_image"].is_string()
+                                            || selected_device.is_some()),
                                     false,
                                     cx,
                                 )),
                         );
+                    if host_camera {
+                        let authorization = match self.state.cameras["authorization"].as_str() {
+                            Some("denied") => {
+                                "摄像头权限已拒绝，请在系统设置中允许 Lisem 使用摄像头"
+                            }
+                            Some("restricted") => "系统限制了摄像头访问",
+                            Some("not-determined") => "首次开启时会请求系统摄像头权限",
+                            _ => "只使用所选摄像头；画面不保存",
+                        };
+                        body = body.child(caption(authorization)).child(self.control(
+                            "刷新设备",
+                            "refresh-cameras",
+                            Action::RefreshCameras,
+                            idle,
+                            false,
+                            cx,
+                        ));
+                    } else {
+                        body = body.child(caption("当前系统暂不支持宿主摄像头，可选择图片输入"));
+                    }
                 }
             }
             _ => {

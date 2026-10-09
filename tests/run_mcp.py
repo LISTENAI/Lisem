@@ -62,6 +62,18 @@ class Client:
                     self.process.wait()
         self.process.stdout.close()
 
+    def camera(self, arguments):
+        result = self.tool('lisem_camera_input', arguments)
+        deadline = time.monotonic() + 15
+        while result['status'] == 'pending':
+            assert time.monotonic() < deadline, 'Camera source was never acknowledged'
+            time.sleep(.02)
+            state = self.tool('lisem_status', {'id': arguments['id']})
+            assert not state['runtime']['session']['finished'], state
+            result = state['runtime']['session']['camera_change']
+        assert result['status'] in ('saved', 'applied'), result
+        return result
+
     def screenshot(self, identifier, run, source):
         result = self.rpc('tools/call', {'name': 'lisem_screenshot',
                                        'arguments': {'id': identifier}})['result']
@@ -93,8 +105,8 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 22
-            assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_button_sequence',
+            assert len(names) == 23
+            assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel'} <= names
             assert all(tool['inputSchema'].get('additionalProperties') is False for tool in definitions)
             assert client.rpc('tools/call', {'name': 'missing', 'arguments': {}})['error']
@@ -105,9 +117,15 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            cameras = client.tool('lisem_camera_devices', {})
+            assert isinstance(cameras['supported'], bool)
+            assert isinstance(cameras['devices'], list)
+            assert cameras['authorization'] in {'authorized', 'not-determined', 'denied', 'restricted', 'unsupported'}
+            client.tool('lisem_camera_input', {'id': identifier, 'path': None, 'device_id': 'camera'}, error=True)
+            client.tool('lisem_camera_input', {'id': identifier, 'device_id': ''}, error=True)
             camera_image = Path(temporary) / 'camera.ppm'
             camera_image.write_bytes(b'P6\n2 2\n255\n' + bytes([20, 80, 160]) * 4)
-            client.tool('lisem_camera_input', {'id': identifier, 'path': str(camera_image)})
+            client.camera({'id': identifier, 'path': str(camera_image)})
             assert client.tool('lisem_status', {'id': identifier})['device']['host']['camera_image'] == str(camera_image)
             client.tool('lisem_camera_input', {'id': identifier, 'path': str(Path(temporary) / 'missing.png')}, error=True)
             uid = item['uid']
@@ -135,9 +153,9 @@ def main():
             assert started['session']['camera_image'] == str(camera_image)
             client.tool('lisem_camera_input', {'id': identifier, 'run': 'stale', 'path': None}, error=True)
             client.tool('lisem_camera_input', {'id': identifier, 'path': None}, error=True)
-            client.tool('lisem_camera_input', {'id': identifier, 'run': run, 'path': None})
+            client.camera({'id': identifier, 'run': run, 'path': None})
             assert client.tool('lisem_status', {'id': identifier})['device']['host']['camera_image'] is None
-            client.tool('lisem_camera_input', {'id': identifier, 'run': run, 'path': str(camera_image)})
+            client.camera({'id': identifier, 'run': run, 'path': str(camera_image)})
             client.tool('lisem_button', {'id': identifier, 'run': 'stale', 'button': 'function', 'pressed': True}, error=True)
             buttons = {'id': identifier, 'run': run, 'button': 'function', 'count': 3, 'hold_ms': 80, 'gap_ms': 80}
             client.tool('lisem_button_sequence', dict(buttons, run='stale'), error=True)

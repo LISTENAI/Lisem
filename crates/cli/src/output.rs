@@ -30,13 +30,7 @@ impl Output {
                 Self::Message(format!("Button {button}: {state}."))
             }
             Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } => Self::Json,
-            Action::Camera { image, .. } => Self::Message(match image {
-                Some(path) => format!(
-                    "Camera image selected: {} (640x480, center crop).",
-                    path.display()
-                ),
-                None => "Camera image cleared; capture waits for input.".into(),
-            }),
+            Action::Camera { .. } | Action::CameraDevices => Self::Json,
             Action::Screenshot { output, .. } => {
                 Self::Message(format!("Screenshot saved: {}", output.display()))
             }

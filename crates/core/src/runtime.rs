@@ -264,6 +264,9 @@ pub struct Session {
     process: Process,
     qmp: Qmp,
     camera: Option<crate::camera_input::Input>,
+    camera_capture: Option<crate::camera_capture::Capture>,
+    camera_candidate: Option<crate::camera_capture::Capture>,
+    camera_disconnecting: bool,
     uart: Vec<Uart>,
     audio: Option<Audio>,
     stdout: Option<PipeLog>,
@@ -464,6 +467,9 @@ impl Session {
             pending_cancel: false,
             qmp,
             camera,
+            camera_capture: None,
+            camera_candidate: None,
+            camera_disconnecting: false,
             uart,
             audio,
             stdout,
@@ -501,6 +507,23 @@ impl Session {
                 .confirmed(generation, true)?;
         }
         session.state["camera_image"] = item["host"]["camera_image"].clone();
+        session.state["camera_device"] = item["host"]["camera_device"].clone();
+        session.state["camera_capture"] = json!({"state":"off","device_id":null,"frames":0,"dropped":0,"last_frame_host_ns":0,"error":null});
+        if let Some(device) = item["host"]["camera_device"].as_str() {
+            let rotation = crate::camera::mounting_rotation(&item["hardware"]["board"])?;
+            match crate::camera_capture::Capture::start(&assets, device, rotation) {
+                Ok(capture) => {
+                    session.state["camera_capture"] = capture.status(true);
+                    session.state["camera_change"] = json!({"status":"pending","phase":"waiting-first-frame","device_id":device});
+                    session.camera_candidate = Some(capture);
+                }
+                Err(error) => {
+                    session.state["camera_capture"] = json!({"state":"error","device_id":device,"frames":0,"dropped":0,"last_frame_host_ns":0,"error":error.to_string()});
+                    session.state["camera_change"] =
+                        json!({"status":"rejected","device_id":device,"error":error.to_string()});
+                }
+            }
+        }
         session.capture()?;
         session.qmp.call("cont", json!({}), &mut session.uart)?;
         Ok(session)
@@ -539,6 +562,7 @@ impl Session {
             port.pump()?;
         }
         if let Some(status) = self.process.child.try_wait()? {
+            self.end_camera_capture();
             self.finished = true;
             self.state["finished"] = json!(true);
             self.state["returncode"] = json!(status.code().unwrap_or(-1));
@@ -657,7 +681,55 @@ impl Session {
         }
         self.frame.clone()
     }
+    fn end_camera_capture(&mut self) {
+        if self.camera_candidate.is_some() && self.state["camera_change"]["status"] == "pending" {
+            self.state["camera_change"]["status"] = json!("rejected");
+            self.state["camera_change"]["error"] =
+                json!("Camera capture stopped before source selection was confirmed");
+        }
+        self.camera_candidate = None;
+        self.camera_capture = None;
+        self.state["camera_capture"]["state"] = json!("off");
+    }
+    fn disconnect_camera_input(&mut self) -> Result<()> {
+        if self.camera_disconnecting {
+            let input = self
+                .camera
+                .as_mut()
+                .context("Camera input map is missing")?;
+            if input.publish(None, crate::camera_input::SourceState::Disconnected, 0)? {
+                self.camera_disconnecting = false;
+            }
+        }
+        Ok(())
+    }
+    fn close_camera_input(&mut self) -> Result<()> {
+        self.camera_disconnecting |= self.camera_capture.is_some();
+        // Explicit close releases the physical device before awaiting QEMU.
+        // A temporary unavailable publication retires the old live scene while
+        // Clear's independent source generation waits for acknowledgement.
+        self.end_camera_capture();
+        self.disconnect_camera_input()
+    }
+    fn selected_camera(&mut self, source: &CameraSource, applied: bool) {
+        if applied {
+            self.camera_disconnecting = false;
+        }
+        if source.device.is_some() {
+            if applied {
+                self.camera_capture = self.camera_candidate.take();
+                if let Some(capture) = &self.camera_capture {
+                    self.state["camera_capture"] = capture.status(false);
+                }
+            } else {
+                self.camera_candidate = None;
+            }
+        } else if applied {
+            self.end_camera_capture();
+        }
+    }
     fn stop(&mut self) -> Result<()> {
+        self.end_camera_capture();
         if self.finished {
             return Ok(());
         }
@@ -687,34 +759,89 @@ impl Drop for Session {
     }
 }
 
+#[derive(Clone, Default)]
+struct CameraSource {
+    path: Option<PathBuf>,
+    device: Option<String>,
+}
+impl CameraSource {
+    fn from_params(params: &Value) -> Result<Self> {
+        if let Some(device) = params.get("device_id") {
+            ensure!(
+                params.get("path").is_none(),
+                "Camera image path and device ID are mutually exclusive"
+            );
+            let id = device
+                .as_str()
+                .filter(|id| !id.is_empty() && id.len() <= 4096)
+                .context("Invalid host camera device ID")?;
+            ensure!(
+                cfg!(target_os = "macos"),
+                "Host camera capture is unsupported on this platform"
+            );
+            return Ok(Self {
+                path: None,
+                device: Some(id.into()),
+            });
+        }
+        let value = params
+            .get("path")
+            .context("Camera image path or device ID is required")?;
+        ensure!(
+            value.is_null() || value.is_string(),
+            "Camera image path must be a string or null"
+        );
+        Ok(Self {
+            path: value
+                .as_str()
+                .map(|p| std::path::absolute(Path::new(p)))
+                .transpose()?,
+            device: None,
+        })
+    }
+    fn properties(&self) -> Value {
+        json!({"path":self.path,"device_id":self.device})
+    }
+    fn settings(&self) -> Value {
+        json!({"camera_image":self.path,"camera_device":self.device})
+    }
+}
+
 fn finish_camera_change(
     catalog: &Catalog,
     id: &str,
     state: &mut Value,
-    path: Option<PathBuf>,
+    source: CameraSource,
     result: Result<Value>,
 ) {
+    let mut change = source.properties();
     match result {
         Ok(_) => {
-            state["camera_image"] = json!(path);
+            state["camera_image"] = json!(source.path);
+            state["camera_device"] = json!(source.device);
             let saved = catalog.device(id).and_then(|item| {
                 catalog.update(
                     Path::new(item["path"].as_str().unwrap()),
-                    &json!({"camera_image":path}),
+                    &source.settings(),
                 )
             });
-            state["camera_change"] = match saved {
-                Ok(_) => json!({"status":"applied","path":path}),
-                Err(error) => {
-                    json!({"status":"applied","path":path,"error":format!("Camera input applied but configuration was not saved: {error}")})
-                }
-            };
+            change["status"] = json!("applied");
+            if let Err(error) = saved {
+                change["error"] = json!(format!(
+                    "Camera input applied but configuration was not saved: {error}"
+                ));
+            }
         }
         Err(error) => {
-            state["camera_change"] =
-                json!({"status":"rejected","path":path,"error":error.to_string()})
+            change["status"] = json!("rejected");
+            change["error"] = json!(error.to_string());
+            if source.device.is_some() {
+                state["camera_capture"]["state"] = json!("error");
+                state["camera_capture"]["error"] = json!(error.to_string());
+            }
         }
     }
+    state["camera_change"] = change;
 }
 
 pub struct Runtime {
@@ -725,7 +852,7 @@ pub struct Runtime {
     last_state: Value,
     last_frame: Option<Frame>,
     last_uart: Vec<transport::Output>,
-    pending_camera: Option<(u64, u64, Option<PathBuf>)>,
+    pending_camera: Option<(u64, u64, CameraSource)>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -765,13 +892,20 @@ impl Runtime {
                     .as_ref()
                     .is_some_and(|(pending, _, _)| *pending == id)
                 {
-                    let (_, generation, path) = self.pending_camera.take().unwrap();
+                    let (_, generation, source) = self.pending_camera.take().unwrap();
                     session
                         .camera
                         .as_mut()
                         .context("Camera input map is missing")?
                         .confirmed(generation, result.is_ok())?;
-                    finish_camera_change(&self.catalog, &self.id, &mut session.state, path, result);
+                    session.selected_camera(&source, result.is_ok());
+                    finish_camera_change(
+                        &self.catalog,
+                        &self.id,
+                        &mut session.state,
+                        source,
+                        result,
+                    );
                 }
             }
             if !session.finished && session.qmp.pending_id().is_none() {
@@ -795,6 +929,7 @@ impl Runtime {
                     session.pending_releases.remove(&button);
                 }
             }
+            Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
         }
         for (&channel, port) in &mut self.ports {
@@ -815,6 +950,114 @@ impl Runtime {
             self.last_uart = session.uart.iter().map(Uart::observer).collect();
             self.last_frame = session.frame();
             self.last_state = session.state.clone();
+        }
+        Ok(())
+    }
+    fn tick_camera(
+        catalog: &Catalog,
+        id: &str,
+        pending: &mut Option<(u64, u64, CameraSource)>,
+        session: &mut Session,
+    ) -> Result<()> {
+        if session.finished {
+            return Ok(());
+        }
+        session.disconnect_camera_input()?;
+        // Existing source keeps running while a replacement awaits permission,
+        // its first frame or QMP acknowledgement. The two mailboxes never mix.
+        if let Some(capture) = &mut session.camera_capture {
+            let input = session
+                .camera
+                .as_mut()
+                .context("Camera input map is missing")?;
+            if capture.ended() {
+                if !capture.disconnected_published {
+                    capture.disconnected_published =
+                        input.publish(None, crate::camera_input::SourceState::Disconnected, 0)?;
+                }
+                let _ = capture.take();
+            } else if let Some(frame) = capture.take() {
+                if !input.publish(
+                    Some(&frame.rgb),
+                    crate::camera_input::SourceState::Live,
+                    frame.host_ns,
+                )? {
+                    capture.dropped();
+                }
+            }
+            if session.camera_candidate.is_none() {
+                session.state["camera_capture"] = capture.status(false);
+            }
+        }
+        if pending.is_some() {
+            return Ok(());
+        }
+        let Some(candidate) = &mut session.camera_candidate else {
+            return Ok(());
+        };
+        session.state["camera_capture"] = candidate.status(true);
+        if candidate.ended()
+            || candidate.started.elapsed() >= crate::camera_capture::FIRST_FRAME_TIMEOUT
+        {
+            let source = CameraSource {
+                path: None,
+                device: Some(candidate.device_id.clone()),
+            };
+            let error = candidate
+                .error()
+                .unwrap_or_else(|| "Host camera did not deliver a frame within 120 seconds".into());
+            session.state["camera_capture"]["state"] = json!("error");
+            session.state["camera_capture"]["error"] = json!(error);
+            finish_camera_change(
+                catalog,
+                id,
+                &mut session.state,
+                source,
+                Err(anyhow::anyhow!(error)),
+            );
+            session.camera_candidate = None;
+            return Ok(());
+        }
+        if session.qmp.pending_id().is_some() {
+            return Ok(());
+        }
+        let Some(frame) = candidate.take() else {
+            return Ok(());
+        };
+        let source = CameraSource {
+            path: None,
+            device: Some(candidate.device_id.clone()),
+        };
+        let input = session
+            .camera
+            .as_mut()
+            .context("Camera input map is missing")?;
+        let generation = input.prepare(
+            crate::camera_input::SourceState::Live,
+            Some(&frame.rgb),
+            frame.host_ns,
+        )?;
+        match session.qmp.set_camera_source(generation, &mut session.uart) {
+            Ok(()) => {
+                input.confirmed(generation, true)?;
+                session.selected_camera(&source, true);
+                finish_camera_change(catalog, id, &mut session.state, source, Ok(Value::Null));
+            }
+            Err(error) if error.is::<transport::ControlPending>() => {
+                session.state["camera_change"]["phase"] = json!("selecting");
+                *pending = Some((session.qmp.pending_id().unwrap(), generation, source));
+            }
+            Err(error) => {
+                if session.qmp.pending_id().is_none() {
+                    input.confirmed(generation, false)?;
+                    session.selected_camera(&source, false);
+                    finish_camera_change(catalog, id, &mut session.state, source, Err(error));
+                } else {
+                    session.state["camera_change"]["status"] = json!("unknown");
+                    session.state["camera_change"]["error"] = json!(error.to_string());
+                    return Err(error);
+                }
+            }
         }
         Ok(())
     }
@@ -1041,19 +1284,10 @@ impl Runtime {
                     item["hardware"]["board"]["camera"].is_object(),
                     "This board has no camera input"
                 );
-                let value = params
-                    .get("path")
-                    .context("Camera image path or null is required")?;
-                ensure!(
-                    value.is_null() || value.is_string(),
-                    "Camera image path must be a string or null"
-                );
-                let path = value
-                    .as_str()
-                    .map(|p| std::path::absolute(Path::new(p)))
-                    .transpose()?;
+                let source = CameraSource::from_params(params)?;
                 let rotation = crate::camera::mounting_rotation(&item["hardware"]["board"])?;
-                let frame = path
+                let frame = source
+                    .path
                     .as_deref()
                     .map(|path| crate::camera::load(path, rotation))
                     .transpose()?;
@@ -1063,6 +1297,38 @@ impl Runtime {
                         "Running camera input requires a run identifier"
                     );
                     session.qmp.ensure_idle()?;
+                    // Cancel any candidate that has not submitted a selection.
+                    // An in-flight QMP mutation stays protected by ensure_idle.
+                    if source.path.is_none() && source.device.is_none() {
+                        session.close_camera_input()?;
+                    } else {
+                        session.camera_candidate = None;
+                    }
+                    if let Some(device) = &source.device {
+                        let assets = Assets::new(&self.catalog.root)?;
+                        match crate::camera_capture::Capture::start(&assets, device, rotation) {
+                            Ok(capture) => {
+                                session.state["camera_capture"] = capture.status(true);
+                                session.camera_candidate = Some(capture);
+                                let mut change = source.properties();
+                                change["status"] = json!("pending");
+                                change["phase"] = json!("waiting-first-frame");
+                                session.state["camera_change"] = change.clone();
+                                return Ok(change);
+                            }
+                            Err(error) => {
+                                session.state["camera_capture"] = json!({"state":"error","device_id":device,"frames":0,"dropped":0,"last_frame_host_ns":0,"error":error.to_string()});
+                                finish_camera_change(
+                                    &self.catalog,
+                                    &self.id,
+                                    &mut session.state,
+                                    source,
+                                    Err(anyhow::anyhow!(error.to_string())),
+                                );
+                                return Err(error);
+                            }
+                        }
+                    }
                     let generation = session
                         .camera
                         .as_mut()
@@ -1076,19 +1342,19 @@ impl Runtime {
                             frame.as_deref(),
                             0,
                         )?;
-                    if let Err(error) = session.qmp.set(
-                        "x-lisa-camera-source",
-                        json!(generation.to_string()),
-                        &mut session.uart,
-                    ) {
+                    if let Err(error) = session.qmp.set_camera_source(generation, &mut session.uart)
+                    {
                         if error.is::<transport::ControlPending>() {
-                            self.pending_camera =
-                                Some((session.qmp.pending_id().unwrap(), generation, path.clone()));
-                            session.state["camera_change"] =
-                                json!({"status":"pending","path":path});
-                            return Ok(
-                                json!({"status":"pending","path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
-                            );
+                            self.pending_camera = Some((
+                                session.qmp.pending_id().unwrap(),
+                                generation,
+                                source.clone(),
+                            ));
+                            let mut change = source.properties();
+                            change["status"] = json!("pending");
+                            change["phase"] = json!("selecting");
+                            session.state["camera_change"] = change.clone();
+                            return Ok(change);
                         }
                         if session.qmp.pending_id().is_none() {
                             session
@@ -1097,7 +1363,14 @@ impl Runtime {
                                 .unwrap()
                                 .confirmed(generation, false)?;
                         }
-                        session.state["camera_change"] = json!({"status":if session.qmp.pending_id().is_some() { "unknown" } else { "rejected" },"path":path,"error":error.to_string()});
+                        let mut change = source.properties();
+                        change["status"] = json!(if session.qmp.pending_id().is_some() {
+                            "unknown"
+                        } else {
+                            "rejected"
+                        });
+                        change["error"] = json!(error.to_string());
+                        session.state["camera_change"] = change;
                         return Err(error);
                     }
                     session
@@ -1105,11 +1378,12 @@ impl Runtime {
                         .as_mut()
                         .unwrap()
                         .confirmed(generation, true)?;
+                    session.selected_camera(&source, true);
                     finish_camera_change(
                         &self.catalog,
                         &self.id,
                         &mut session.state,
-                        path,
+                        source,
                         Ok(Value::Null),
                     );
                     let mut result = session.state["camera_change"].clone();
@@ -1120,11 +1394,14 @@ impl Runtime {
                 }
                 self.catalog.update(
                     Path::new(item["path"].as_str().unwrap()),
-                    &json!({"camera_image":path}),
+                    &source.settings(),
                 )?;
-                Ok(
-                    json!({"status":"saved","path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
-                )
+                let mut result = source.properties();
+                result["status"] = json!("saved");
+                result["width"] = json!(crate::camera::WIDTH);
+                result["height"] = json!(crate::camera::HEIGHT);
+                result["fit"] = json!("center-crop");
+                Ok(result)
             }
             "audio" => {
                 let session = self.session.as_mut().context("Instance is not running")?;
@@ -1492,7 +1769,10 @@ mod tests {
             &catalog,
             id,
             &mut state,
-            Some(new.clone()),
+            CameraSource {
+                path: Some(new.clone()),
+                device: None,
+            },
             Err(anyhow::anyhow!("rejected")),
         );
         assert_eq!(state["camera_change"]["status"], "rejected");
@@ -1501,19 +1781,37 @@ mod tests {
             catalog.device(id).unwrap()["host"]["camera_image"],
             json!(old)
         );
-        finish_camera_change(&catalog, id, &mut state, Some(new.clone()), Ok(json!({})));
+        finish_camera_change(
+            &catalog,
+            id,
+            &mut state,
+            CameraSource {
+                path: Some(new.clone()),
+                device: None,
+            },
+            Ok(json!({})),
+        );
         assert_eq!(state["camera_change"]["status"], "applied");
         assert_eq!(
             catalog.device(id).unwrap()["host"]["camera_image"],
             json!(new)
         );
-        finish_camera_change(&catalog, id, &mut state, None, Ok(json!({})));
+        finish_camera_change(
+            &catalog,
+            id,
+            &mut state,
+            CameraSource::default(),
+            Ok(json!({})),
+        );
         assert!(catalog.device(id).unwrap()["host"]["camera_image"].is_null());
         finish_camera_change(
             &catalog,
             "missing",
             &mut state,
-            Some(new.clone()),
+            CameraSource {
+                path: Some(new.clone()),
+                device: None,
+            },
             Ok(json!({})),
         );
         assert_eq!(state["camera_change"]["status"], "applied");
@@ -1524,6 +1822,57 @@ mod tests {
                 .contains("not saved")
         );
         assert_eq!(state["camera_image"], json!(new));
+    }
+
+    #[test]
+    fn live_selection_persists_only_after_ack_and_clears_image() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let catalog = Catalog::open(&root, &temp.path().join("library")).unwrap();
+        let item = catalog.create("arcs-mini", None, Some("test")).unwrap();
+        let id = item["id"].as_str().unwrap();
+        let path = Path::new(item["path"].as_str().unwrap());
+        catalog
+            .update(path, &json!({"camera_image":"old.png"}))
+            .unwrap();
+        let source = CameraSource {
+            path: None,
+            device: Some("camera-a".into()),
+        };
+        let mut state = json!({"camera_image":"old.png","camera_capture":{"state":"starting"}});
+        finish_camera_change(
+            &catalog,
+            id,
+            &mut state,
+            source.clone(),
+            Err(anyhow::anyhow!("denied")),
+        );
+        assert_eq!(
+            catalog.device(id).unwrap()["host"]["camera_image"],
+            "old.png"
+        );
+        assert!(catalog.device(id).unwrap()["host"]["camera_device"].is_null());
+        assert_eq!(state["camera_capture"]["state"], "error");
+        finish_camera_change(&catalog, id, &mut state, source, Ok(Value::Null));
+        let saved = catalog.device(id).unwrap();
+        assert_eq!(saved["host"]["camera_device"], "camera-a");
+        assert!(saved["host"]["camera_image"].is_null());
+        assert!(
+            catalog
+                .update(path, &json!({"camera_image":"invalid.png"}))
+                .is_err()
+        );
+        finish_camera_change(
+            &catalog,
+            id,
+            &mut state,
+            CameraSource::default(),
+            Ok(Value::Null),
+        );
+        assert!(catalog.device(id).unwrap()["host"]["camera_device"].is_null());
+        assert!(CameraSource::from_params(&json!({"path":null,"device_id":"camera-a"})).is_err());
+        assert!(CameraSource::from_params(&json!({"device_id":""})).is_err());
+        assert!(CameraSource::from_params(&json!({"path":42})).is_err());
     }
 
     #[test]

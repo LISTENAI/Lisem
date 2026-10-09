@@ -118,6 +118,7 @@ def package(bundle, target):
             (target / 'lisem', macos / 'lisem'),
             (ROOT / '.tools/qemu-build/qemu-system-riscv32', runtime / 'bin/qemu-system-riscv32'),
             (ROOT / '.tools/audio/lisa-audio', runtime / 'bin/lisa-audio'),
+            (ROOT / '.tools/camera/lisa-camera', runtime / 'bin/lisa-camera'),
             (ROOT / '.tools/network/libarcs_slirp.dylib', runtime / 'lib/libarcs_slirp.dylib'),
         ]
         for source, destination in copies:
@@ -153,7 +154,9 @@ def package(bundle, target):
             'CFBundleVersion': '0.2.0', 'NSHighResolutionCapable': True,
             'CFBundleIconFile': 'Lisem.icns',
             'LSMinimumSystemVersion': minimum,
-            'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。'}))
+            'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。',
+            'NSCameraUsageDescription': '将摄像头画面输入模拟设备。',
+            'NSCameraUseContinuityCameraDeviceType': True}))
         subprocess.run(['codesign', '--force', '--sign', '-', str(staged)], check=True, timeout=60)
         subprocess.run(['codesign', '--verify', '--deep', '--strict', str(staged)], check=True, timeout=60)
         # Reject leaked build paths, including panic locations and install names.

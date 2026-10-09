@@ -2,6 +2,7 @@
 //! No window system or host audio device is required by this crate.
 pub mod assets;
 mod camera;
+mod camera_capture;
 mod camera_input;
 pub mod catalog;
 pub mod display;

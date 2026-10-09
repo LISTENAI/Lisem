@@ -44,6 +44,35 @@ impl Assets {
                 "lisa-audio"
             })
     }
+    pub fn camera(&self) -> PathBuf {
+        self.root
+            .join(if self.bundled { "bin" } else { ".tools/camera" })
+            .join("lisa-camera")
+    }
+    pub fn verify_camera(&self) -> Result<()> {
+        ensure!(
+            cfg!(target_os = "macos"),
+            "Host camera capture is unsupported on this platform"
+        );
+        if self.bundled {
+            return self.verify_bundle();
+        }
+        let stamp = storage::read_json(&self.root.join(".tools/camera/build.json"))?;
+        ensure!(
+            stamp["binary_sha256"].as_str() == Some(&storage::sha256(&self.camera())?),
+            "Host camera runtime changed; rebuild"
+        );
+        for (name, digest) in stamp["inputs"]
+            .as_object()
+            .context("Invalid camera build manifest")?
+        {
+            ensure!(
+                digest.as_str() == Some(&storage::sha256(&self.root.join(name))?),
+                "Host camera runtime is stale; rebuild"
+            );
+        }
+        Ok(())
+    }
     pub fn network(&self) -> PathBuf {
         self.root
             .join(if self.bundled {
@@ -129,7 +158,11 @@ impl Assets {
         let files = manifest["files"]
             .as_object()
             .context("Runtime files missing")?;
-        for asset in [self.qemu(), self.audio(), self.network()] {
+        let mut assets = vec![self.qemu(), self.audio(), self.network()];
+        if cfg!(target_os = "macos") {
+            assets.push(self.camera());
+        }
+        for asset in assets {
             let required = asset
                 .strip_prefix(&self.root)?
                 .to_str()

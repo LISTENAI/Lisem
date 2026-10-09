@@ -44,12 +44,15 @@ def component_paths(component):
                 for name in ('lisem', 'lisem-desktop')]
     library = ('arcs_slirp.dll' if os.name == 'nt' else
                'libarcs_slirp.' + ('dylib' if sys.platform == 'darwin' else 'so'))
-    return [f'.tools/qemu-build/qemu-system-riscv32{suffix}',
+    paths = [f'.tools/qemu-build/qemu-system-riscv32{suffix}',
             '.tools/qemu-build/arcs-build.json',
             f'.tools/audio/lisa-audio{suffix}', '.tools/audio/build.json',
             f'.tools/network/{library}',
             '.tools/qemu-10.1.0/COPYING', '.tools/qemu-10.1.0/COPYING.LIB',
             '.tools/network-source/COPYRIGHT', '.tools/network-source/LICENSE']
+    if sys.platform == 'darwin':
+        paths += ['.tools/camera/lisa-camera', '.tools/camera/build.json']
+    return paths
 
 
 def commit_id():
@@ -108,6 +111,8 @@ def native_build(python, system, arch):
         env['CC'] = 'ccache ' + env.get('CC', 'clang')
     run('qemu-build', [python, 'tools/build_qemu.py'], timeout=2400, env=env)
     run('audio-build', [python, 'tools/build_audio.py'])
+    if system == 'darwin':
+        run('camera-build', [python, 'tools/build_camera.py'])
     run('network-build', [python, 'tools/build_network.py'])
     if system == 'linux' and arch == 'x86_64':
         run('qemu-tests', ['make', 'check-qemu', 'PYTHON=' + python])

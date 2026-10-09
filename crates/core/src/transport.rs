@@ -413,6 +413,12 @@ impl Qmp {
     pub fn get(&mut self, name: &str, uart: &mut [Uart]) -> Result<Value> {
         self.call("qom-get", json!({"path":"/machine","property":name}), uart)
     }
+    /// Begin a source selection without spending the normal control timeout in
+    /// a media tick. Recovery retains and finishes the same transaction.
+    pub fn set_camera_source(&mut self, generation: u64, uart: &mut [Uart]) -> Result<()> {
+        self.call_until("qom-set", json!({"path":"/machine","property":"x-lisa-camera-source","value":generation.to_string()}), uart, Instant::now() + Duration::from_millis(1))?;
+        Ok(())
+    }
     pub fn set(&mut self, name: &str, value: Value, uart: &mut [Uart]) -> Result<()> {
         self.call(
             "qom-set",

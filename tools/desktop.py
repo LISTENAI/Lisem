@@ -8,6 +8,7 @@ import sys
 
 from build_qemu import current_build
 from build_audio import current_build as current_audio_build, build as build_audio
+from build_camera import current_build as current_camera_build, build as build_camera
 if sys.platform == 'darwin':
     from package_macos import package
 else:
@@ -69,7 +70,7 @@ def main():
         build_rust(target)
         return
     if args.component == 'package':
-        if not current_build() or not current_audio_build():
+        if not current_build() or not current_audio_build() or not current_camera_build():
             parser.error('Native components do not match this checkout')
         package(bundle, target / 'release')
         print(bundle)
@@ -79,6 +80,8 @@ def main():
             subprocess.run([sys.executable, str(ROOT / 'tools/build_qemu.py')], check=True, timeout=2400)
         if not current_audio_build():
             build_audio()
+        if not current_camera_build():
+            build_camera()
         subprocess.run([sys.executable, str(ROOT / 'tools/build_network.py')], check=True, timeout=600)
         build_rust(target)
         package(bundle, target / 'release')
