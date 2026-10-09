@@ -171,6 +171,12 @@ void arcs_sd_reset(ArcsSoC *soc)
 }
 
 /* Unattached USB device controller. Configuration never creates bus traffic. */
+static bool usb_dma_control(hwaddr off, unsigned size)
+{
+    return size == 4 && off >= 0x204 && off <= 0x254 &&
+           (off - 0x204) % 16 == 0;
+}
+
 static bool usb_valid(hwaddr off, unsigned size)
 {
     return (size == 1 && (off <= 0x19 || (off >= 0x62 && off <= 0x67) ||
@@ -200,6 +206,7 @@ static uint8_t usb_byte(ArcsUSB *s, unsigned off)
 static uint64_t usb_read(void *opaque, hwaddr off, unsigned size)
 {
     ArcsUSB *s = opaque;
+    if (usb_dma_control(off, size)) { return 0; }
     if (!usb_valid(off, size)) { arcs_soc_fail(s->soc, 0x41000000 + off, size, false, 0); }
     uint32_t value = usb_byte(s, off);
     if (size == 2) { value |= (uint32_t)usb_byte(s, off + 1) << 8; }
@@ -209,6 +216,12 @@ static uint64_t usb_read(void *opaque, hwaddr off, unsigned size)
 static void usb_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsUSB *s = opaque;
+    /* Clearing a disabled DMA channel is valid initialization. Enabling DMA
+     * still requires the unimplemented USB bus and transfer engine. */
+    if (usb_dma_control(off, size)) {
+        if (value) { goto fail; }
+        return;
+    }
     if (!usb_valid(off, size)) { goto fail; }
     for (unsigned i = 0; i < size; i++) {
         uint8_t byte = value >> (8 * i);

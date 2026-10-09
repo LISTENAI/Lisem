@@ -50,6 +50,36 @@ def functional(hart):
     try:
         setup(m)
         assert reg_read(m, 0xf0) == [0x9d]
+        assert m.read(BASE + 0x18) & 8
+        m.write(BASE + 0x18, 8)
+        assert not m.read(BASE + 0x18) & 8
+        # Continue an owned SCCB bus with data only, then a standalone STOP.
+        # Zephyr uses the latter instead of folding STOP into its data command.
+        transfer(m, [0x55], stop=False)
+        m.write(BASE + 0x18, 0x3f8)
+        m.write(BASE + 0x24, 0x401)
+        m.write(BASE + 0x20, 0x31)
+        m.write(BASE + 0x28, 1)
+        m.command('clock_step 1000000')
+        assert m.read(BASE + 0x18) & 0xa00 == 0xa00
+        m.write(BASE + 0x18, 0x3f8)
+        m.write(BASE + 0x24, 0x200)
+        m.write(BASE + 0x28, 1)
+        assert m.read(BASE + 0x18) & 0xa00 == 0x800
+        m.command('clock_step 1000000')
+        assert m.read(BASE + 0x18) & 0xa20 == 0x220
+        assert reg_read(m, 0x55) == [0x31]
+        # STOP on an already released bus also completes, without an address
+        # or sensor ACK. A reset before its event cancels the completion.
+        for cancelled in (False, True):
+            m.write(BASE + 0x18, 0x3f8)
+            m.write(BASE + 0x24, 0x200)
+            m.write(BASE + 0x28, 1)
+            if cancelled:
+                m.write(BASE + 0x28, 5)
+            m.command('clock_step 1000000')
+            assert bool(m.read(BASE + 0x18) & 0x200) == (not cancelled)
+            assert not m.read(BASE + 0x18) & 8
         transfer(m, [0xf0, 0x12])
         assert reg_read(m, 0xf0) == [0x9d]  # ID is read-only.
         transfer(m, [0x55, 0, 32, 0, 48])
@@ -62,7 +92,7 @@ def functional(hart):
         assert reg_read(m, 0x55) == [0]
         transfer(m, [0xfe, 0x80])
         assert reg_read(m, 0x55, 4) == [1, 0xe0, 2, 0x80]
-        assert not transfer(m, address=0x50)[0] & 0x400
+        assert not transfer(m, address=0x50)[0] & 0x408
         m.write(0x45000810, 0)
         assert not transfer(m)[0] & 0x400  # Sensor requires MCLK.
         m.write(0x45000810, 1)

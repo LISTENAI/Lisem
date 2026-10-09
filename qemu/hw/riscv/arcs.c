@@ -473,10 +473,13 @@ static void report(void *opaque, const char *status)
         fprintf(f, ",\"cpu_clock_experiment\":[");
         for (unsigned i = 0; i < 2; i++) {
             CPUState *cpu = CPU(&s->soc.cpu[i]);
-            fprintf(f, "%s{\"hz\":%u,\"frontier_ns\":%" PRId64
+            fprintf(f, "%s{\"hz\":%" PRIu64 ",\"hz_numerator\":%" PRIu64
+                    ",\"hz_denominator\":%u,\"frontier_ns\":%" PRId64
                     ",\"phase\":%" PRIu64 ",\"cycles\":%" PRId64 "}",
-                    i ? "," : "", cpu->icount_hz, cpu->icount_time_ns,
-                    cpu->icount_phase, icount_get_cpu_cycles(cpu));
+                    i ? "," : "", cpu->icount_hz / cpu->icount_hz_den,
+                    cpu->icount_hz, cpu->icount_hz_den, cpu->icount_time_ns,
+                    (uint64_t)(cpu->icount_phase / cpu->icount_clock_scale),
+                    icount_get_cpu_cycles(cpu));
         }
         fprintf(f, "]");
     }
@@ -574,8 +577,11 @@ static void backlight(void *opaque)
 {
     ArcsMachine *s = opaque;
     if (s->screen) {
+        uint32_t driven, levels;
+        arcs_gpio_outputs_snapshot(&s->soc.gpio[0], &driven, &levels);
         arcs_st7789_backlight(s->screen, arcs_pinmux_function(&s->soc.pinmux[0], 21, 12) ?
-                              arcs_gpt_duty(&s->soc.gpt, 1) : 0);
+                              arcs_gpt_duty(&s->soc.gpt, 1) :
+                              !!(driven & levels & (1u << 21)));
     }
 }
 

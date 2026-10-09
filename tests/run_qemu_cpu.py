@@ -22,14 +22,17 @@ def main():
             raise SystemExit('RISC-V bare-metal GCC is required')
     OUTPUT.mkdir(parents=True, exist_ok=True)
     for name, marker in [('smoke', b'ARCS CP UART OK\n'), ('dsp', b'ARCS DSP OK\n'),
-                         ('eclic', b'ARCS ECLIC OK\n'), ('qemu_load', b''),
+                         ('eclic', b'ARCS ECLIC OK\n'), ('eclic_mnxti', b''),
+                         ('qemu_load', b''),
+                         ('qemu_cache_info_ap', b''), ('qemu_cache_info_cp', b''),
                          ('qemu_dual', b''), ('qemu_warm', b''), ('qemu_pmp', b''),
                          ('qemu_nor', b''), ('qemu_time', b''), ('qemu_mailbox', b''),
                          ('qemu_wfi_ap', b''), ('qemu_wfi_cp', b''),
                          ('qemu_aon_wdt', b'')]:
         source = OUTPUT / (name + '.S')
         # Only the independent test termination changes. Never applied to LPK.
-        fixture = 'qemu_wfi' if name.startswith('qemu_wfi_') else name
+        fixture = ('qemu_wfi' if name.startswith('qemu_wfi_') else
+                   'qemu_cache_info' if name.startswith('qemu_cache_info_') else name)
         program = (ROOT / 'tests/fixtures' / (fixture + '.S')).read_text()
         if name == 'eclic':
             program = program.replace('    j done', '    ebreak')
@@ -42,7 +45,7 @@ def main():
                         '-T', str(ROOT / 'tests/fixtures' / linker), str(source), '-o', str(elf)],
                        check=True, timeout=30)
         out = OUTPUT / name
-        hart = 0 if name in ('dsp', 'qemu_dual', 'qemu_warm', 'qemu_nor', 'qemu_time', 'qemu_mailbox', 'qemu_wfi_ap') else 1
+        hart = 0 if name in ('dsp', 'qemu_dual', 'qemu_warm', 'qemu_nor', 'qemu_time', 'qemu_mailbox', 'qemu_wfi_ap', 'qemu_cache_info_ap') else 1
         exceptions = 1 if name == 'qemu_pmp' else 0
         subprocess.run([sys.executable, str(ROOT / 'tools/qemu_run.py'), '--probe-elf',
                         str(elf), '--boot-hart', str(hart), '--virtual-ns', '1000000',

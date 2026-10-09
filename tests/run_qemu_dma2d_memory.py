@@ -2,7 +2,7 @@
 """Image DMA: known full-range colors, packing, IRQ edges and cancellation."""
 import json
 import time
-from qemu_test import Machine, ROOT
+from qemu_test import Machine, ROOT, write_bytes
 
 OUTPUT = ROOT / 'artifacts/qemu' / ('dma2d-tests-' + time.strftime('%Y%m%d-%H%M%S'))
 BASE, SOURCE, DEST = 0x45900000, 0x20010000, 0x20020000
@@ -117,6 +117,10 @@ def copy_memory():
             try:
                 setup(m, ch)
                 i = ch - 6
+                for bypass in range(0x1b8, 0x1c8, 4):
+                    assert m.read(BASE + bypass) == 15
+                    m.write(BASE + bypass, 1 << i)
+                    assert m.read(BASE + bypass) == 1 << i
                 width = 1 << width_code
                 m.write(BASE + 0x164, 0xff)  # Bypass color conversion.
                 m.write(BASE + 0x16c, 0)
@@ -140,6 +144,10 @@ def rejection():
         ('unsupported-yuv420', BASE + 0x1ac, 1),
         ('unaligned-input', BASE + 0x114, SOURCE + 1),
         ('mismatched-output', BASE + 0x1e8, 1),
+        ('encode-output-2d', BASE + 0x1b8, 14),
+        ('decode-output-2d', BASE + 0x1bc, 14),
+        ('encode-input-2d', BASE + 0x1c0, 14),
+        ('decode-input-2d', BASE + 0x1c4, 14),
         ('trigger-chain', BASE + 0x1f4, 1)):
         m = Machine(OUTPUT / name)
         try:
@@ -159,8 +167,54 @@ def rejection():
     print('Unsupported formats, address alignment, output length and trigger rejected: PASS')
 
 
+def packed_images():
+    width, height = 12, 12
+    for order in range(4):
+        for divisor in (1, 2, 3):
+            for output_bytes in (3, 4):
+                for swap in (False, True):
+                    ch, i = 6 + order, order
+                    m = Machine(OUTPUT / f'packed-{order}-{divisor}-{output_bytes}-{swap}')
+                    try:
+                        setup(m, ch, swap)
+                        pixels, expected = bytearray(), bytearray()
+                        for row in range(height):
+                            for x in range(0, width, 2):
+                                y, u, v, rgb = COLORS[(row + x // 2) % len(COLORS)]
+                                pairs = ((y, u, y, v), (u, y, v, y),
+                                         (y, v, y, u), (v, y, u, y))
+                                pixels.extend(pairs[order])
+                                for offset in (0, 1):
+                                    if row % divisor == 0 and (x + offset) % divisor == 0:
+                                        expected.extend(rgb if swap else rgb[::-1])
+                                        if output_bytes == 4:
+                                            expected.append(255)
+                        write_bytes(m, SOURCE, pixels)
+                        m.command('memset 0x%x 640 165' % (DEST - 4))
+                        m.write(BASE + 0x2c + 4 * ch, len(pixels) // 4)
+                        m.write(BASE + (0x1e8 + i * 4 if i < 2 else 0x218 + (i - 2) * 4),
+                                len(expected) // 4)
+                        m.write(BASE + 0x1ac, order << (16 + 2 * i))
+                        m.write(BASE + 0x16c, (1 << i) if output_bytes == 3 else 0)
+                        m.write(BASE + 0x1f0, (divisor - 1) << (2 * i))
+                        m.write(BASE + 0x2b4, 1 << i)
+                        for off in (0x18c, 0x190):
+                            m.write(BASE + off + i * 8, height << 16 | width)
+                        m.write(BASE + 4 * ch, 0x300c0a3)
+                        m.command('clock_step 10000')
+                        actual = bytes(m.command('readb 0x%x' % (DEST + n))
+                                       for n in range(len(expected)))
+                        assert actual == expected, (order, divisor, output_bytes, swap)
+                        assert m.read(DEST - 4) == m.read(DEST + len(expected)) == 0xa5a5a5a5
+                        assert m.read(BASE + 0x2ac) == (1 << i | 16 << i)
+                    finally:
+                        m.close()
+    print('Packed YUV422: four orders, RGB/BGR24/32, 1/2/3 decimation and RAM guards: PASS')
+
+
 if __name__ == '__main__':
     functional()
     masks_and_clock()
     copy_memory()
+    packed_images()
     rejection()

@@ -180,6 +180,39 @@ static RISCVException predicate(CPURISCVState *env, int csr)
     return env->arcs_state ? RISCV_EXCP_NONE : RISCV_EXCP_ILLEGAL_INST;
 }
 
+static RISCVException op_mnxti(CPURISCVState *env, int csr,
+                              target_ulong *value, target_ulong new_value,
+                              target_ulong write_mask)
+{
+    ArcsN300State *s = state(env);
+    if ((env->mtvec & 3) != 3 || env->priv != PRV_M) {
+        return RISCV_EXCP_ILLEGAL_INST;
+    }
+    /* Nuclei ISA 16.5.14: the read result is a vector-table slot, while
+     * the RMW target is mstatus. A read without write intent only peeks;
+     * a write claims a non-vectored IRQ above the saved entry level. */
+    int irq = pending(env, MAX(s->threshold, (env->mcause >> 16) & 255));
+    if (irq >= 0 && (s->irq[irq][2] & 1)) {
+        irq = -1;
+    }
+    if (value) {
+        *value = irq < 0 ? 0 : s->mtvt + 4 * irq;
+    }
+    if (write_mask) {
+        /* CSRRSI/CSRRCI operate on the low five mstatus bits. Never use
+         * the returned table address as the old mstatus value. */
+        target_ulong mask = write_mask & 31;
+        env->mstatus = (env->mstatus & ~mask) | (new_value & mask);
+        if (irq >= 0) {
+            s->level = level(s, irq);
+            env->mcause = (env->mcause & ~0xfffu) | irq;
+            clear_edge(env, irq);
+        }
+        update(env);
+    }
+    return RISCV_EXCP_NONE;
+}
+
 static RISCVException read_custom(CPURISCVState *env, int csr, target_ulong *value)
 {
     ArcsN300State *s = state(env);
@@ -188,8 +221,12 @@ static RISCVException read_custom(CPURISCVState *env, int csr, target_ulong *val
     case 0x346: *value = (uint32_t)s->level << 24; break;
     case 0x347: *value = s->threshold; break;
     case 0xfc2: *value = 0x101c4; break;
+    /* LS268x: 32-byte lines, two ways; 16 KiB I-cache / 8 KiB D-cache.
+     * Do not infer the LM_SIZE field from the combined ROM/RAM map. */
+    case 0xfc0: *value = 0x195; break;
+    case 0xfc1: *value = 0x194; break;
     case 0x7f7: *value = 0xe0000027; break;
-    case 0x810: case 0x811: case 0xfc0: case 0xfc1: case 0x7c9:
+    case 0x810: case 0x811: case 0x7c9:
     case 0x7cc: case 0x7eb: case 0x7ee: case 0x7ef: *value = 0; break;
     default: *value = s->csrs[csr - 0x7c0]; break;
     }
@@ -274,6 +311,10 @@ void arcs_n300_init(RISCVCPU *cpu, bool dsp)
         for (unsigned i = 0; i < G_N_ELEMENTS(csrs); i++) {
             riscv_set_csr_ops(csrs[i], &custom);
         }
+        riscv_csr_operations mnxti = {
+            .name = "mnxti", .predicate = predicate, .op = op_mnxti,
+        };
+        riscv_set_csr_ops(0x345, &mnxti);
         riscv_get_csr_ops(CSR_MTVEC, &original_mtvec);
         custom = original_mtvec; custom.write = write_mtvec;
         riscv_set_csr_ops(CSR_MTVEC, &custom);

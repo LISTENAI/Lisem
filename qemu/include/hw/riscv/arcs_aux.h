@@ -20,7 +20,7 @@ typedef struct ArcsI2C {
     unsigned head, count, index, remaining;
     I2CBus *bus;
     QEMUTimer *event;
-    bool active, address_phase, receiving, stop;
+    bool active, address_phase, receiving, stop, stop_only;
     bool (*route_valid)(void *opaque);
     void *route_opaque;
 } ArcsI2C;

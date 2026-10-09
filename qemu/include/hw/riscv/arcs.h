@@ -22,6 +22,7 @@
 #include "hw/riscv/arcs_bluetooth.h"
 #include "hw/riscv/arcs_audio.h"
 #include "hw/riscv/arcs_hsu.h"
+#include "hw/riscv/arcs_aes.h"
 #include "hw/riscv/arcs_trng.h"
 #include "hw/riscv/arcs_jpeg.h"
 #include "hw/riscv/arcs_dma2d.h"
@@ -80,6 +81,7 @@ struct ArcsSoC {
     ArcsAPC apc;
     ArcsCodec codec;
     ArcsHSU hsu;
+    ArcsAES aes;
     ArcsTRNG trng;
     ArcsJPEG jpeg;
     MemoryRegion mailbox_io;

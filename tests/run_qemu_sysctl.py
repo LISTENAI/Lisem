@@ -31,7 +31,11 @@ def functional(hart):
     m = Machine(OUTPUT / ('hart%d' % hart), hart=hart)
     try:
         assert m.read(CMN + 0x10) == 0x13000
-        assert m.read(CMN + 0x14) == 0x1006
+        for offset in (0x14, 0x18, 0x1c):
+            value = m.read(CMN + offset)
+            assert value == 0x11001008
+            assert (value >> 24) & 15 == (value >> 28) & 7 == 1
+            assert not value & ((1 << 23) | 2)  # SPI/UART gates remain off.
         assert m.read(CMN + 4) == m.read(CMN + 12) == 0
         assert m.read(AON + 0x54) == 1
         m.write(AON + 0x98, 0x38)

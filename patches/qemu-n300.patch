@@ -97,7 +97,7 @@
      BQL_LOCK_GUARD();
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
-@@ -499,6 +499,17 @@
+@@ -499,6 +499,19 @@
      int singlestep_enabled;
      int64_t icount_budget;
      int64_t icount_extra;
@@ -107,10 +107,12 @@
 +    int64_t icount_executed;
 +    /* Opt-in fixed-frequency serial TCG experiment; zero Hz keeps legacy. */
 +    int64_t icount_time_ns, icount_slice_end;
-+    uint64_t icount_phase;
++    __uint128_t icount_phase;
 +    int64_t icount_cycle_epoch;
-+    uint64_t icount_cycles, icount_cycle_phase;
-+    uint32_t icount_hz;
++    uint64_t icount_cycles;
++    __uint128_t icount_cycle_phase;
++    uint64_t icount_hz, icount_clock_scale;
++    uint32_t icount_hz_den;
 +    uint32_t icount_max_skew_ns;
      uint64_t random_seed;
      sigjmp_buf jmp_env;
@@ -256,7 +258,7 @@
 @@ -1,5 +1,8 @@
  riscv_ss = ss.source_set()
  riscv_ss.add(files('boot.c'))
-+riscv_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c', 'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c', 'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c', 'arcs_i2c.c', 'arcs_dvp.c', '../i2c/gc0328.c', 'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c', 'arcs_aon_wdt.c', 'arcs_dual_timer.c', 'arcs_bluetooth.c', 'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c', 'arcs_wifi_ap.c', 'arcs_hsu.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c'))
++riscv_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c', 'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c', 'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c', 'arcs_i2c.c', 'arcs_dvp.c', '../i2c/gc0328.c', 'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c', 'arcs_aon_wdt.c', 'arcs_dual_timer.c', 'arcs_bluetooth.c', 'arcs_audio.c', 'arcs_dma2d.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c', 'arcs_wifi_ap.c', 'arcs_hsu.c', 'arcs_aes.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c'))
 +riscv_ss.add(when: 'CONFIG_ARCS', if_true: [dependency('gmodule-2.0'), dependency('libjpeg')])
 +riscv_ss.add(when: 'CONFIG_ARCS', if_true: declare_dependency(link_args: [meson.project_source_root() / 'luna' / (host_machine.system() + '-' + host_machine.cpu_family()) / 'liblisem-luna.a']))
  riscv_ss.add(when: 'CONFIG_RISCV_NUMA', if_true: files('numa.c'))
@@ -409,7 +411,7 @@
  system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
-@@ -42,6 +42,15 @@
+@@ -42,6 +42,17 @@
   * cpus-tcg vCPU thread so the main-loop can see time has moved forward.
   */
  void icount_update(CPUState *cpu);
@@ -422,6 +424,8 @@
 +void icount_clock_finish(CPUState *cpu);
 +int64_t icount_get_cpu_raw(CPUState *cpu);
 +int64_t icount_get_cpu_cycles(CPUState *cpu);
++void icount_clock_set_ratio(CPUState *cpu, uint64_t numerator,
++                            uint32_t denominator);
  
  /* get raw icount value */
  int64_t icount_get_raw(void);

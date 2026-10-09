@@ -333,16 +333,24 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         }
         numerator *= s->hclk_n;
         denominator *= s->hclk_m;
-        if (!numerator || !denominator || numerator % denominator ||
-            numerator / denominator > 1000000000) {
+        if (!numerator || !denominator ||
+            numerator > UINT64_C(1000000000) * denominator) {
             goto unsupported_clock;
         }
-        unsigned hz = numerator / denominator;
-        if (CPU(&io->soc->cpu[0])->icount_hz != hz) {
+        unsigned a = numerator % denominator, b = denominator;
+        while (a) {
+            unsigned remainder = b % a;
+            b = a;
+            a = remainder;
+        }
+        numerator /= b;
+        denominator /= b;
+        CPUState *ap = CPU(&io->soc->cpu[0]);
+        if (ap->icount_hz != numerator || ap->icount_hz_den != denominator) {
             s->hclk_changes++;
         }
         for (unsigned i = 0; i < 2; i++) {
-            icount_clock_set_hz(CPU(&io->soc->cpu[i]), hz);
+            icount_clock_set_ratio(CPU(&io->soc->cpu[i]), numerator, denominator);
         }
     }
     if (camera_hz && camera_hz != arcs_hclk_hz(io->soc)) {
@@ -351,7 +359,7 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     }
     return;
 unsupported_clock:
-    error_report("ARCS experimental HCLK requires an enabled integer SYSPLL or XTAL and an integral 1..1000000000 Hz rate");
+    error_report("ARCS experimental HCLK requires an enabled integer SYSPLL or XTAL and a positive rate up to 1000000000 Hz");
     arcs_soc_fail(io->soc, io->base + off, size, true, value);
 }
 
@@ -375,7 +383,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (off == 0) {
         if (value & 0x4000) { arcs_jpeg_reset(io->soc); }
         if (value & 2) { arcs_gpdma_reset(io->soc); arcs_dma2d_reset(io->soc); }
-        if (value & 4) { arcs_hsu_reset(io->soc); }
+        if (value & 4) { arcs_hsu_reset(io->soc); arcs_aes_reset(io->soc); }
         if (value & 0x40) { arcs_codec_reset(io->soc); }
         if (value & 0x80) { arcs_apc_reset(io->soc); }
         if (value & 0x200) { arcs_dvp_reset(io->soc); }
@@ -383,6 +391,7 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     if (off == 8) {
         arcs_codec_clocks(io->soc, value);
         arcs_hsu_clock(io->soc, value & 0x2000);
+        arcs_aes_clock(io->soc, value & 0x2000);
     }
     io->soc->sysctl.ap_regs[off / 4] = off == 0 ? value & 0x1f0000 : value;
     if (off == 8) { arcs_dma2d_clock(io->soc, value & 0x4000); }
@@ -687,7 +696,9 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         timer_del(s->wdt_timer[i]); wdt_irq(&s->wdt[i]);
     }
     s->common_regs[0x10 / 4] = (24 << 9) | 0x10000;
-    for (unsigned i = 0x14 / 4; i <= 0x1c / 4; i++) { s->common_regs[i] = 0x1006; }
+    /* CMN PERI_CLK_CFG1..3 reset: SPI N/M=1/1, UART N/M=1/2;
+     * both gates disabled, XTAL selected, load strobes clear. */
+    for (unsigned i = 0x14 / 4; i <= 0x1c / 4; i++) { s->common_regs[i] = 0x11001008; }
     memset(s->pll_regs, 0, sizeof(s->pll_regs));
     s->pll_regs[0] = (1 << 21) | (1 << 16) | 1;
     s->pll_regs[1] = (1 << 22) | (1 << 16) | (1 << 5) | 1;
@@ -697,7 +708,8 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         s->pll_regs[0] &= ~3u;
         s->pll_regs[2] &= ~1u;
         s->hclk_n = s->hclk_m = 1;
-        if (CPU(&soc->cpu[0])->icount_hz != 24000000) {
+        if (CPU(&soc->cpu[0])->icount_hz != 24000000 ||
+            CPU(&soc->cpu[0])->icount_hz_den != 1) {
             s->hclk_changes++;
         }
         for (unsigned i = 0; i < 2; i++) {
@@ -727,6 +739,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     arcs_timer_clock(&soc->timer[1], 1000000, true);
     arcs_codec_clocks(soc, 0);
     arcs_hsu_clock(soc, false);
+    arcs_aes_clock(soc, false);
     arcs_trng_clock(soc, false);
     arcs_codec_power(soc, false);
 }

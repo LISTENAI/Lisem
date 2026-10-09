@@ -33,8 +33,9 @@ static int64_t byte_ns(ArcsI2C *s)
 static void schedule(ArcsI2C *s)
 {
     if (s->active && !timer_pending(s->event) &&
-        (s->address_phase || (s->receiving ? s->count < 8 : s->count))) {
-        timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + byte_ns(s));
+        (s->address_phase || s->stop_only || (s->receiving ? s->count < 8 : s->count))) {
+        timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  (s->stop_only ? MAX(1, byte_ns(s) / 9) : byte_ns(s)));
     }
 }
 
@@ -55,7 +56,10 @@ static void byte_event(void *opaque)
     if (s->route_valid && !s->route_valid(s->route_opaque)) {
         arcs_soc_fail(s->soc, 0x46d00028 + 0x100000 * s->index, 4, true, 1);
     }
-    if (s->address_phase) {
+    if (s->stop_only) {
+        s->stop_only = false;
+        complete(s);
+    } else if (s->address_phase) {
         s->address_phase = false;
         int nack = i2c_start_transfer(s->bus, s->regs[0x1c / 4], s->receiving);
         if (nack) {
@@ -63,7 +67,9 @@ static void byte_event(void *opaque)
             complete(s);
             s->head = s->count = 0;
         } else {
-            s->regs[0x18 / 4] |= 0x400;
+            /* Master AddrHit latches when a slave responds to the address,
+             * independently of the last data-byte ACK and completion. */
+            s->regs[0x18 / 4] |= 0x408;
             if (!s->remaining) { complete(s); }
         }
     } else {
@@ -141,19 +147,28 @@ static void i2c_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value == 5) {
             /* Command reset aborts transfer but retains bus timing/config. */
             timer_del(s->event); i2c_end_transfer(s->bus);
-            s->active = false; s->head = s->count = 0;
+            s->active = s->address_phase = s->stop_only = false;
+            s->head = s->count = 0;
             s->regs[0x14 / 4] = s->regs[0x18 / 4] = 0;
         }
         else if (value == 4) { s->head = s->count = 0; }
         else if (value == 1) {
-            if ((s->regs[0x2c / 4] & 5) != 5 || (s->regs[0x24 / 4] & 0x1800) != 0x1800) { goto fail; }
-            if (s->active || (s->regs[0x2c / 4] & 2) || s->regs[0x1c / 4] > 127) { goto fail; }
             uint32_t control = s->regs[0x24 / 4];
+            unsigned address = control & 0x1800;
+            /* A transaction may continue an owned bus without another
+             * START/address, or issue STOP as its own command. */
+            if ((s->regs[0x2c / 4] & 5) != 5 ||
+                (address != 0 && address != 0x1800) ||
+                (!address && control != 0x200 &&
+                 (!i2c_bus_busy(s->bus) || !(control & 0x400)))) { goto fail; }
+            if (s->active || (s->regs[0x2c / 4] & 2) || s->regs[0x1c / 4] > 127) { goto fail; }
             s->remaining = (control & 0x400) ? ((control & 255) ? control & 255 : 256) : 0;
             s->receiving = control & 0x100;
             s->stop = control & 0x200;
-            s->active = s->address_phase = true;
-            s->regs[0x18 / 4] &= ~0x400;
+            s->active = true;
+            s->address_phase = address != 0;
+            s->stop_only = !address && !s->remaining && s->stop;
+            if (address) { s->regs[0x18 / 4] &= ~0x400; }
             if (control & 0x1000) { s->regs[0x18 / 4] |= 0x40; }
             schedule(s);
         } else if (value) { goto fail; }
@@ -175,7 +190,8 @@ static const MemoryRegionOps i2c_ops = {
 void arcs_i2c_reset(ArcsSoC *soc, unsigned index)
 {
     ArcsI2C *s = &soc->i2c[index];
-    timer_del(s->event); i2c_end_transfer(s->bus); s->active = false;
+    timer_del(s->event); i2c_end_transfer(s->bus);
+    s->active = s->address_phase = s->receiving = s->stop = s->stop_only = false;
     memset(s->regs, 0, sizeof(s->regs)); s->regs[0x10 / 4] = 1;
     s->head = s->count = 0; i2c_irq(s);
 }

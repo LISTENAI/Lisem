@@ -144,6 +144,11 @@ def panel():
     m = Machine(OUTPUT / 'panel')
     try:
         connect(m)
+        # ST7789P3 serial initialization leaves RGB565 scanout unchanged.
+        for op, data in ((0xdf, [0x5a, 0x69, 2, 1]), (0xba, [0]),
+                         (0xc4, [0x20]), (0x26, [1]), (0xb0, [0, 0xf0]),
+                         (0xb1, [0xcd, 8, 0x14])):
+            command(m, op, data)
         for op in (0x11, 0x21, 0x29):
             command(m, op)
         command(m, 0x3a, [5])
@@ -170,12 +175,22 @@ def panel():
         m.write(0x46700030, 1 << 23)
         # LSB-first sends reversed bytes, producing a red RGB565 pixel.
         send(m, [0x001f], fmt=0xf0b, frames=1)
-        assert screenshot(m, 'lsb')[239 * 720:239 * 720 + 3] == b'\xff\0\0'
+        lsb_pixels = screenshot(m, 'lsb')
+        assert lsb_pixels[239 * 720:239 * 720 + 3] == b'\xff\0\0'
         m.write(0x47300048, (99 << 16) | 99)
         m.write(0x47300028, 3 | 1 << 19)
         assert screenshot(m, 'half')[239 * 720:239 * 720 + 3] == b'\x7f\0\0'
         m.write(0x47500054, 0)
         assert screenshot(m, 'unrouted-backlight') == bytes(240 * 240 * 3)
+        # The Mini backlight is the same physical pad in GPIO and PWM mode.
+        m.write(0x46700028, (1 << 23) | (1 << 21))
+        m.write(0x46700030, 1 << 21)
+        assert screenshot(m, 'gpio-backlight') == lsb_pixels
+        m.write(0x4670002c, 1 << 21)
+        assert screenshot(m, 'gpio-backlight-off') == bytes(240 * 240 * 3)
+        m.write(0x47500054, 5)
+        m.write(0x46700030, 1 << 21)
+        assert screenshot(m, 'wrong-backlight-route') == bytes(240 * 240 * 3)
         m.write(0x47500054, 12)
         # TE pulses on the existing scan grid and stops while sleeping.
         m.write(0x46700060, 6 << 12)  # GPIO27 rising edge.

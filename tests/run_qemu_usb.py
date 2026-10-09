@@ -18,6 +18,9 @@ def functional(hart):
             m.command('write%s 0x%x %d' % (width, BASE + off, value))
 
         for reset in ('soft', 'module', 'system'):
+            for channel in range(6):
+                write(0x204 + 16 * channel, 0, 'l')
+                assert read(0x204 + 16 * channel, 'l') == 0
             assert read(0) == read(1) == read(14) == read(15) == 0
             assert read(0x60) == 0x80 and read(0x7f) == 0
             write(0, 0xff)
@@ -72,7 +75,8 @@ def rejection():
                 'writeb 0x4100000f 1', 'writeb 0x4100007f 4',
                 'writeb 0x41000012 2', 'writel 0x41000020 1',
                 'writeb 0x41000062 10', 'readb 0x4100001f',
-                'readl 0x41000204', 'readl 0x41000000',
+                'writel 0x41000204 1', 'readl 0x41000260',
+                'readl 0x41000000',
                 'readw 0x41000003', 'readb 0x41000061']
     for i, command in enumerate(commands):
         m = Machine(OUTPUT / ('reject%d' % i))

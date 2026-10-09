@@ -82,8 +82,9 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
         case 0x2c: s->x = s->x_start; s->y = s->y_start; break;
         case 0x34: s->tear = false; qemu_set_irq(s->te, 0); break;
         case 0x2a: case 0x2b: case 0x35: case 0x36: case 0x3a:
-        case 0xb2: case 0xb7: case 0xbb: case 0xc0: case 0xc2: case 0xc3:
-        case 0xc6: case 0xd0: case 0xd6: case 0xe0: case 0xe1: break;
+        case 0x26: case 0xb0: case 0xb1: case 0xb2: case 0xb7: case 0xba:
+        case 0xbb: case 0xc0: case 0xc2: case 0xc3: case 0xc4:
+        case 0xc6: case 0xd0: case 0xd6: case 0xdf: case 0xe0: case 0xe1: break;
         default: fail(s, "unimplemented command", data);
         }
         schedule(s); return 0;
@@ -123,6 +124,18 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     case 0x35:
         if (data) { fail(s, "horizontal TE is not modeled", data); }
         s->tear = true; schedule(s); break;
+    case 0xb0:
+        /* Serial DBI RGB565, MSB first. Other RAM interface/endian modes
+         * require distinct pixel transport and must not silently render. */
+        if (s->count > 2 || s->parameters[0] != 0 ||
+            (s->count == 2 && data != 0xf0)) {
+            fail(s, "unsupported RAM interface", data);
+        }
+        memcpy(s->analog[s->command], s->parameters, s->count);
+        s->analog_count[s->command] = s->count; break;
+    case 0xba:
+        if (s->count != 1 || data != 0) { fail(s, "digital gamma is not modeled", data); }
+        s->analog[s->command][0] = data; s->analog_count[s->command] = 1; break;
     default:
         memcpy(s->analog[s->command], s->parameters, s->count);
         s->analog_count[s->command] = s->count; break;

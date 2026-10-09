@@ -12,6 +12,24 @@
 #define FLASH_BASE 0x47600000
 #define OTP_BASE 0x48600000
 
+/* JESD216 1.0 basic parameters for the functional NOR geometry.  Only
+ * advertise the implemented baseline: 24-bit addressing, 256-byte pages
+ * (implicit in this revision), and 4/32/64 KiB erase.  Unassigned parameter
+ * space reads as erased bytes; it never aliases the mutable NOR contents. */
+static const uint8_t nor_sfdp[] = {
+    0x53, 0x46, 0x44, 0x50, 0x00, 0x01, 0x00, 0xff,
+    0x00, 0x00, 0x01, 0x09, 0x10, 0x00, 0x00, 0xff,
+    0x01, 0x20, 0x00, 0x00, /* DW1: uniform 4 KiB erase, opcode 0x20. */
+    0xff, 0xff, 0xff, 0x07, /* DW2: 128 Mbit minus one. */
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00,
+    0x0c, 0x20, 0x0f, 0x52, /* DW8: 4 KiB and 32 KiB erase. */
+    0x10, 0xd8, 0x00, 0x00, /* DW9: 64 KiB erase. */
+};
+
 void arcs_nor_init(ArcsNOR *chip, hwaddr address, const char *image, bool persist)
 {
     chip->address = address;
@@ -63,7 +81,7 @@ static bool nor_command(ArcsNOR *chip, uint8_t op, uint32_t address,
     static const uint8_t uid[] = { 0x52, 0x45, 0x4e, 0x4f, 0x44, 0x45, 0, 1 };
     *received = 0;
     switch (op) {
-    case 0x05: case 0x35: case 0x15: case 0x9f: case 0x90: case 0x4b:
+    case 0x05: case 0x35: case 0x15: case 0x9f: case 0x90: case 0x4b: case 0x5a:
     case 0x03: case 0x0b: case 0x3b: case 0xbb: case 0x6b: case 0xeb:
         *received = length; break;
     }
@@ -84,6 +102,12 @@ static bool nor_command(ArcsNOR *chip, uint8_t op, uint32_t address,
         break;
     case 0x4b:
         for (unsigned i = 0; i < length; i++) { rx[i] = uid[i % 8]; }
+        break;
+    case 0x5a:
+        for (unsigned i = 0; i < length; i++) {
+            uint32_t offset = (address + i) & 0xffffff;
+            rx[i] = offset < sizeof(nor_sfdp) ? nor_sfdp[offset] : 0xff;
+        }
         break;
     case 0x01: case 0x31: case 0x11:
         if (chip->wel) {
@@ -195,6 +219,15 @@ static bool flash_register(hwaddr off)
     }
 }
 
+static unsigned flash_fifo_bytes(ArcsFlash *s)
+{
+    unsigned bits = ((s->regs[0x10 / 4] >> 8) & 31) + 1;
+    if (bits % 8) {
+        arcs_soc_fail(s->soc, FLASH_BASE + 0x10, 4, true, s->regs[0x10 / 4]);
+    }
+    return s->regs[0x10 / 4] & 0x80 ? 4 : bits / 8;
+}
+
 static uint64_t flash_read(void *opaque, hwaddr off, unsigned size)
 {
     ArcsFlash *s = opaque;
@@ -203,16 +236,20 @@ static uint64_t flash_read(void *opaque, hwaddr off, unsigned size)
     }
     if (off == 0x2c) {
         uint32_t value = 0;
-        for (unsigned i = 0; i < 4 && s->rx_count; i++) {
+        unsigned lanes = flash_fifo_bytes(s);
+        for (unsigned i = 0; i < lanes && s->rx_count; i++) {
             value |= (uint32_t)s->rx[s->rx_head] << (8 * i);
             s->rx_head = (s->rx_head + 1) % sizeof(s->rx); s->rx_count--;
         }
         return value;
     }
     if (off == 0x34) {
-        return (s->tx_count ? 0 : 1u << 22) | MIN(31, (s->tx_count + 3) / 4) << 16 |
-               (s->rx_count ? 0 : 1u << 14) | MIN(31, (s->rx_count + 3) / 4) << 8 |
-               (s->pending || s->rx_count > 124);
+        unsigned lanes = flash_fifo_bytes(s);
+        return (s->tx_count ? 0 : 1u << 22) |
+               MIN(31, (s->tx_count + lanes - 1) / lanes) << 16 |
+               (s->rx_count ? 0 : 1u << 14) |
+               MIN(31, (s->rx_count + lanes - 1) / lanes) << 8 |
+               (s->pending || s->rx_count > 31 * lanes);
     }
     return s->regs[off / 4];
 }
@@ -222,8 +259,11 @@ static void flash_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     ArcsFlash *s = opaque;
     if (size != 4 || !flash_register(off)) { goto fail; }
     if (off == 0x2c) {
-        if (s->tx_count > sizeof(s->tx) - 4) { goto fail; }
-        stl_le_p(s->tx + s->tx_count, value); s->tx_count += 4;
+        unsigned lanes = flash_fifo_bytes(s);
+        if (s->tx_count > sizeof(s->tx) - lanes) { goto fail; }
+        for (unsigned i = 0; i < lanes; i++) {
+            s->tx[s->tx_count++] = value >> (8 * i);
+        }
         if (s->pending) { execute(s); }
         return;
     }

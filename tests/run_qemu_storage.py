@@ -10,7 +10,7 @@ FLASH = 0x47600000
 OTP = 0x48600000
 
 
-def command(m, op, address=0, data=None, length=0, inline=False):
+def command(m, op, address=0, data=None, length=0, inline=False, lanes=4):
     m.write(FLASH + 0x30, 6)
     if inline:
         data = bytes([op]) + (data or b'')
@@ -25,11 +25,11 @@ def command(m, op, address=0, data=None, length=0, inline=False):
     m.write(FLASH + 0x20, control)
     m.write(FLASH + 0x24, 0 if inline else op)
     if data is not None:
-        for off in range(0, len(data), 4):
-            m.write(FLASH + 0x2c, int.from_bytes(data[off:off + 4].ljust(4, b'\xdd'), 'little'))
+        for off in range(0, len(data), lanes):
+            m.write(FLASH + 0x2c, int.from_bytes(data[off:off + lanes].ljust(4, b'\xdd'), 'little'))
     result = b''
-    for _ in range((length + 3) // 4):
-        result += m.read(FLASH + 0x2c).to_bytes(4, 'little')
+    for _ in range((length + lanes - 1) // lanes):
+        result += m.read(FLASH + 0x2c).to_bytes(4, 'little')[:lanes]
     return result[:length]
 
 
@@ -61,6 +61,26 @@ def functional():
         assert command(m, 0x9f, length=9) == b'\xef\x40\x18' * 3
         assert command(m, 0x90, address=1, length=3) == b'\x17\xef\x17'
         assert command(m, 0x4b, length=8) == bytes.fromhex('52454e4f44450001')
+        # Discover geometry through the real opcode/FIFO path, independently
+        # of the mutable Flash bytes.  Exercise offset and boundary reads.
+        sfdp = command(m, 0x5a, length=52)
+        assert sfdp[:8] == b'SFDP\x00\x01\x00\xff'
+        assert sfdp[8:16] == bytes.fromhex('00000109100000ff')
+        assert int.from_bytes(sfdp[20:24], 'little') + 1 == len(original) * 8
+        assert sfdp[16:20] == bytes.fromhex('01200000')
+        assert sfdp[44:52] == bytes.fromhex('0c200f5210d80000')
+        assert command(m, 0x5a, address=7, length=17) == sfdp[7:24]
+        assert command(m, 0x5a, address=50, length=6) == sfdp[50:] + b'\xff' * 4
+        assert command(m, 0x5a, address=0xfffffe, length=6) == b'\xff\xffSFDP'
+        for lanes in (1, 2, 3, 4):
+            m.write(FLASH + 0x10, 0x20000 | ((8 * lanes - 1) << 8))
+            assert command(m, 0x5a, length=52, lanes=lanes) == sfdp
+            command(m, 6, lanes=lanes)
+            payload = bytes(range(1, 14))
+            address = 0x8000 + lanes * 256
+            command(m, 2, address=address, data=payload, lanes=lanes)
+            assert command(m, 3, address=address, length=17, lanes=lanes) == payload + b'\xff' * 4
+        m.write(FLASH + 0x10, 0x20780)
         assert command(m, 3, address=0x1000, length=512) == bytes(range(256)) * 2
         assert command(m, 0x9f, length=3, inline=True) == b'\xef\x40\x18'
         # Only CS0 is populated on Mini; selecting CS1 must not alias it.
@@ -106,6 +126,7 @@ def functional():
         command(m, 0x32, address=255, data=b'\x0f\xff\x0f\xff')
         assert memory(m, 0x300000ff, 1) == b'\x08'
         assert memory(m, 0x30000000, 4) == b'\x56\x04\x12\x00'
+        assert command(m, 0x5a, length=52) == sfdp
         # Pending program completes only after the declared payload arrives.
         command(m, 6)
         m.write(FLASH + 0x3c, 16)

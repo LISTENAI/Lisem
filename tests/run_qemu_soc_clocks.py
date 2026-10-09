@@ -173,7 +173,8 @@ def main():
             assert [gpr[19], gpr[20]] == [0x00220001, 0x00430001], r
             assert r['soc_clock_experiment']['changes'] == 4, r
     for code, hz in ((0, 300000000), (1, 240000000), (2, 200000000),
-                     (3, 150000000), (5, 120000000), (6, 100000000)):
+                     (3, 150000000), (4, Fraction(1200000000, 9)),
+                     (5, 120000000), (6, 100000000)):
         source = f'''
     lui t0, 0x46100
     li t1, 1
@@ -191,7 +192,35 @@ switch:
         r = run(name, source)
         labels = instruction_labels(base.OUTPUT / name / 'probe.elf')
         assert r['virtual_ns'] == oracle(labels, {'switch': hz}, labels['done']), r
-        assert [c['hz'] for c in r['cpu_clock_experiment']] == [hz] * 2, r
+        assert [Fraction(c['hz_numerator'], c['hz_denominator'])
+                for c in r['cpu_clock_experiment']] == [hz] * 2, r
+    # Coprime HCLK divisors must retain oscillator and instruction phases
+    # through repeated switches; rounding each rate to integer Hz drifts.
+    changes, source = {}, '''
+    lui t0, 0x46100
+    li t1, 1
+    sw t1, 8(t0)
+'''
+    for index, divisor in enumerate((31, 7, 29, 1, 31, 7, 29, 1)):
+        label = f'fraction{index}'
+        source += f'''li t1, {0x2200001 | divisor << 16}
+{label}:
+    sw t1, 0(t0)
+    .rept 1001
+    nop
+    .endr
+'''
+        changes[label] = Fraction(300000000, divisor)
+    for hart in (0, 1):
+        for quantum in (1, 7, 1000, 10000):
+            name = f'rational-{hart}-{quantum}'
+            r = run(name, source + FINISH + 'done:\n', hart, quantum,
+                    duration=2000000)
+            labels = instruction_labels(base.OUTPUT / name / 'probe.elf')
+            count = labels['done']
+            assert r['aggregate_instructions'] == count, r
+            assert r['virtual_ns'] == oracle(labels, changes, count), r
+            assert [c['cycles'] for c in r['cpu_clock_experiment']] == [count] * 2, r
     # Both runnable cores share the new source; a leading CPU may differ
     # only within the declared quantum, never inherit the other count.
     for quantum in (1, 7, 1000, 10000):
@@ -252,7 +281,6 @@ resumed:
         'zero-n': 'li t1, 0x02010000\nsw t1, 0(t0)\n',
         'zero-m': 'li t1, 0x02200000\nsw t1, 0(t0)\n',
         'fractional-pll': 'li t1, 0x132\nsw t1, 24(t0)\n',
-        'fractional-hz': 'li t1, 8\nsw t1, 12(t0)\n',
         'unknown-postdiv': 'li t1, 14\nsw t1, 12(t0)\n',
         'zero-pll-n': 'sw zero, 24(t0)\n',
         'clock-stop': 'sw zero, 8(t0)\n',

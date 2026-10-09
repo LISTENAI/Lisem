@@ -246,6 +246,7 @@ static void reset(DeviceState *dev)
     arcs_apc_reset(s);
     arcs_codec_reset(s);
     arcs_hsu_reset(s);
+    arcs_aes_reset(s);
     arcs_trng_reset(s);
     arcs_jpeg_reset(s);
     arcs_jpeg_clock(s, false);
@@ -345,6 +346,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_jpeg_init(s);
     arcs_dvp_init(s);
     arcs_hsu_init(s);
+    arcs_aes_init(s);
     arcs_trng_init(s);
     arcs_sysctl_init(s);
 }

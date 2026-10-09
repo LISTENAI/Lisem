@@ -7,6 +7,7 @@ typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsDMA2DChannel {
     uint32_t control, source, destination, remaining, written, total;
     unsigned width;
+    unsigned image_width, image_divisor, image_format, image_order, image_bytes;
     bool busy, memory, image_rgb, image_swap, half_sent;
 } ArcsDMA2DChannel;
 typedef struct ArcsDMA2D {

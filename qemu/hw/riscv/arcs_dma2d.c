@@ -68,7 +68,7 @@ static uint8_t image_component(int value)
 static void service_memory(ArcsDMA2D *s, unsigned i)
 {
     ArcsDMA2DChannel *c = &s->channel[i];
-    unsigned output_width = c->image_rgb ? 3 : c->width;
+    unsigned output_width = c->image_rgb ? c->image_bytes : c->width;
     for (unsigned item = 0; item < 8 && c->remaining; item++) {
         uint8_t data[4];
         if ((c->source & (c->width - 1)) ||
@@ -80,20 +80,42 @@ static void service_memory(ArcsDMA2D *s, unsigned i)
             arcs_soc_fail(s->soc, BASE + 4 * (i + 6), 4, true, c->control);
         }
         if (c->image_rgb) {
-            int y = data[0] * 256, u = data[1] - 128, v = data[2] - 128;
-            uint8_t r = image_component(y + 359 * v);
-            uint8_t g = image_component(y - 183 * v - 88 * u);
-            uint8_t b = image_component(y + 444 * u);
-            data[0] = c->image_swap ? r : b;
-            data[1] = g;
-            data[2] = c->image_swap ? b : r;
-        }
-        if (address_space_write(&address_space_memory, c->destination,
+            unsigned pixels = c->image_format == 0 ? 2 : 1;
+            unsigned first = c->written * pixels;
+            for (unsigned pixel = 0; pixel < pixels; pixel++) {
+                unsigned x = (first + pixel) % c->image_width;
+                unsigned row = (first + pixel) / c->image_width;
+                if (x % c->image_divisor || row % c->image_divisor) {
+                    continue;
+                }
+                unsigned yi = pixel ? 2 : 0, ui = 1, vi = 3;
+                if (c->image_format == 2) {
+                    yi = 0; ui = 1; vi = 2;
+                } else {
+                    yi ^= c->image_order & 1;
+                    ui ^= (c->image_order & 1) | (c->image_order & 2);
+                    vi ^= (c->image_order & 1) | (c->image_order & 2);
+                }
+                int y = data[yi] * 256, u = data[ui] - 128, v = data[vi] - 128;
+                uint8_t r = image_component(y + 359 * v);
+                uint8_t g = image_component(y - 183 * v - 88 * u);
+                uint8_t b = image_component(y + 444 * u);
+                uint8_t output[4] = {c->image_swap ? r : b, g,
+                                     c->image_swap ? b : r, 255};
+                if (!memory_address(c->destination, output_width, true) ||
+                    address_space_write(&address_space_memory, c->destination,
+                                        MEMTXATTRS_UNSPECIFIED, output,
+                                        output_width) != MEMTX_OK) {
+                    arcs_soc_fail(s->soc, BASE + 4 * (i + 6), 4, true, c->control);
+                }
+                c->destination += output_width;
+            }
+        } else if (address_space_write(&address_space_memory, c->destination,
                                 MEMTXATTRS_UNSPECIFIED, data, output_width) != MEMTX_OK) {
             arcs_soc_fail(s->soc, BASE + 4 * (i + 6), 4, true, c->control);
         }
         if (!(c->control & 0x200)) { c->source += c->width; }
-        if (!(c->control & 0x400)) { c->destination += output_width; }
+        if (!c->image_rgb && !(c->control & 0x400)) { c->destination += output_width; }
         c->remaining--; c->written++; s->bytes += c->width;
         /* Masking IRQ delivery does not discard the sticky event. */
         if (!c->half_sent && c->remaining <= c->total / 2) {
@@ -154,6 +176,9 @@ bool arcs_dma2d_handles(hwaddr off)
     return (off >= 0x18 && off <= 0x24) || (off >= 0x44 && off <= 0x50) ||
            (off >= 0x114 && off <= 0x150) || (off >= 0x164 && off <= 0x16c) ||
            (off >= 0x18c && off <= 0x1b0) || off == 0x1f4 ||
+           (off >= 0x1b8 && off <= 0x1c4) ||
+           (off >= 0x1d8 && off <= 0x1e4) || off == 0x1f0 ||
+           (off >= 0x220 && off <= 0x26c) ||
            off == 0x1e8 || off == 0x1ec ||
            off == 0x218 || off == 0x21c || (off >= 0x2a4 && off <= 0x2b4);
 }
@@ -214,10 +239,14 @@ void arcs_dma2d_write(ArcsSoC *soc, hwaddr off, uint64_t value, unsigned size)
             if ((value & 16) && s->channel[i].busy && !s->channel[i].memory) { goto fail; }
         }
     }
-    if ((off == 0x2b0 && (value & ~(15u << 16))) || (off == 0x2b4 && value)) { goto fail; }
+    if ((off == 0x2b0 && (value & ~(15u << 16))) ||
+        (off == 0x2b4 && (value & ~15u)) ||
+        (off == 0x1f0 && (value & ~255u)) ||
+        (off >= 0x1d8 && off <= 0x1e4 && value)) { goto fail; }
     if ((off == 0x164 && (value & ~255u)) ||
         ((off == 0x168 || off == 0x16c) && (value & ~15u)) ||
-        (off == 0x1ac && (value & ~255u)) || (off == 0x1b0 && value)) { goto fail; }
+        ((off >= 0x1b8 && off <= 0x1c4) && (value & ~15u)) ||
+        (off == 0x1ac && (value & ~0x00ff00ffu)) || (off == 0x1b0 && value)) { goto fail; }
     if (((off >= 0x44 && off <= 0x50) || off == 0x1e8 || off == 0x1ec ||
          off == 0x218 || off == 0x21c) && (value & ~0xfffffu)) { goto fail; }
     if (off >= 0x18 && off <= 0x24) {
@@ -236,10 +265,17 @@ void arcs_dma2d_write(ArcsSoC *soc, hwaddr off, uint64_t value, unsigned size)
             c->memory = ((value >> 4) & 3) == 2;
             c->image_rgb = c->image_swap = false;
             if (!c->remaining || !(value & 1)) { goto fail; }
+            /* The implemented copy/entropy paths bypass the codec's 2D
+             * address generators.  Retain their configuration, but reject
+             * activation until row/column addressing is implemented. */
+            for (unsigned bypass = 0x1b8; bypass <= 0x1c4; bypass += 4) {
+                if (!(R(s, bypass) & bit)) { goto fail; }
+            }
             if (c->memory) {
                 /* Normal software-paced copy, optionally converting packed
                  * Y/U/V/pad words to tightly packed RGB/BGR bytes. */
-                const uint32_t allowed = 0x03000000 | 0x300000 | 0x3c000 | 0x600 | 0xc0 | 0x20 | 15;
+                const uint32_t allowed = 0x03000000 | 0x300000 | 0x80000 |
+                                         0x3c000 | 0x600 | 0xc0 | 0x20 | 15;
                 c->width = 1u << ((value >> 6) & 3);
                 if ((value & ~allowed) || c->width > 4 || (1u << width) != c->width ||
                     R(s, 0x1f4)) { goto fail; }
@@ -250,11 +286,21 @@ void arcs_dma2d_write(ArcsSoC *soc, hwaddr off, uint64_t value, unsigned size)
                     unsigned format = (R(s, 0x1ac) >> (i * 2)) & 3;
                     uint32_t geometry = R(s, 0x18c + i * 8);
                     unsigned w = geometry & 0x1fff, h = (geometry >> 16) & 0x1fff;
-                    if (format != 2 || c->width != 4 || !(R(s, 0x16c) & bit) ||
+                    c->image_width = w;
+                    c->image_format = format;
+                    c->image_order = (R(s, 0x1ac) >> (16 + 2 * i)) & 3;
+                    c->image_divisor = 1 + ((R(s, 0x1f0) >> (2 * i)) & 3);
+                    c->image_bytes = R(s, 0x16c) & bit ? 3 : 4;
+                    unsigned pixels = format == 0 ? 2 : 1;
+                    if ((format != 0 && format != 2) || c->width != 4 ||
                         (value & 0x600) || (geometry & 0xe000e000u) || !w || !h ||
-                        w * h != c->total || R(s, 0x190 + i * 8) != geometry ||
-                        (uint64_t)R(s, out_len[i]) * c->width != (uint64_t)c->total * 3) { goto fail; }
-                } else if ((R(s, 0x16c) & bit) || c->image_swap) { goto fail; }
+                        w % pixels || w % c->image_divisor || h % c->image_divisor ||
+                        c->image_divisor > 3 || w * h != c->total * pixels ||
+                        R(s, 0x190 + i * 8) != geometry ||
+                        (uint64_t)R(s, out_len[i]) * c->width !=
+                        (uint64_t)(w / c->image_divisor) * (h / c->image_divisor) *
+                        c->image_bytes) { goto fail; }
+                }
             } else {
                 /* ECS still uses the observed equal-count peripheral-flow
                  * contract; image transforms and half IRQ are uncalibrated. */
@@ -291,6 +337,9 @@ void arcs_dma2d_reset(ArcsSoC *soc)
         s->channel[i].control = R(s, 4 * (i + 6)) = 0x03028080;
     }
     R(s, 0x164) = 255; R(s, 0x168) = 15;
+    for (unsigned bypass = 0x1b8; bypass <= 0x1c4; bypass += 4) {
+        R(s, bypass) = 15;
+    }
     s->remaining_ns = 0;
     s->pending = 0; s->bytes = s->blocks = 0; s->servicing = false;
     irq(s);
