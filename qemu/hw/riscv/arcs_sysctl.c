@@ -6,7 +6,50 @@
 #include "system/cpus.h"
 #include "system/runstate.h"
 #include "qemu/error-report.h"
+#include "qemu/units.h"
 #include "exec/icount.h"
+
+static int64_t calendar_now(ArcsSysctl *s)
+{
+    return s->calendar_epoch +
+           (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->calendar_started) / 1000000000;
+}
+
+static void calendar_irq(ArcsSoC *soc)
+{
+    ArcsSysctl *s = &soc->sysctl;
+    arcs_soc_irq(soc, 34, ((s->calendar_pending & 1) && s->calendar_interval_enabled) ||
+                          ((s->calendar_pending & 2) && s->calendar_alarm_enabled));
+}
+
+static void calendar_arm(ArcsSoC *soc)
+{
+    static const unsigned periods[] = {0, 1, 60, 3600};
+    ArcsSysctl *s = &soc->sysctl;
+    int64_t now = calendar_now(s), next = INT64_MAX;
+    unsigned period = periods[s->calendar_regs[0] & 3];
+    if (s->calendar_interval_enabled && period) { next = now + period - now % period; }
+    if (s->calendar_alarm_enabled && s->calendar_alarm > now) {
+        next = MIN(next, s->calendar_alarm);
+    }
+    timer_del(s->calendar_event);
+    if (next != INT64_MAX) {
+        timer_mod(s->calendar_event, s->calendar_started +
+                  (next - s->calendar_epoch) * INT64_C(1000000000));
+    }
+}
+
+static void calendar_expire(void *opaque)
+{
+    static const unsigned periods[] = {0, 1, 60, 3600};
+    ArcsSoC *soc = opaque;
+    ArcsSysctl *s = &soc->sysctl;
+    int64_t now = calendar_now(s);
+    unsigned period = periods[s->calendar_regs[0] & 3];
+    if (s->calendar_interval_enabled && period && !(now % period)) { s->calendar_pending |= 1; }
+    if (s->calendar_alarm_enabled && now == s->calendar_alarm) { s->calendar_pending |= 2; }
+    calendar_irq(soc); calendar_arm(soc);
+}
 
 static void calendar_reset(ArcsSoC *soc)
 {
@@ -15,6 +58,23 @@ static void calendar_reset(ArcsSoC *soc)
     s->calendar_epoch = 946684800; /* 2000-01-01T00:00:00Z, never host time. */
     s->calendar_started = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->calendar_wakeup = false;
+    s->calendar_alarm_enabled = s->calendar_interval_enabled = false;
+    s->calendar_pending = 0;
+    s->calendar_weekday = 6;
+    s->calendar_alarm = 0;
+    timer_del(s->calendar_event);
+    calendar_irq(soc);
+}
+
+static void request_chip_reset(ArcsSoC *soc, uint32_t status, bool aon_wdt)
+{
+    ArcsSysctl *s = &soc->sysctl;
+    s->reset_status = status;
+    if (aon_wdt) {
+        s->aon_wdt_reset_cause = 0x20000;
+    }
+    s->warm_reset = true;
+    qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
 }
 
 static uint64_t calendar_read(void *opaque, hwaddr off, unsigned size)
@@ -25,7 +85,12 @@ static uint64_t calendar_read(void *opaque, hwaddr off, unsigned size)
         arcs_soc_fail(io->soc, io->base + off, size, false, 0);
     }
     if (off == 4) { return 0; } /* Synchronous load commands. */
-    if (off == 8) { return s->calendar_wakeup ? 0x100 : 0; }
+    if (off == 8) {
+        return s->calendar_pending | (s->calendar_wakeup ? 0x100 : 0) |
+               (s->calendar_interval_enabled ? 0x1000 : 0) |
+               ((s->calendar_pending & 1) ? 0x10000 : 0) |
+               (s->calendar_alarm_enabled ? 0x100000 : 0);
+    }
     if (off == 0x14 || off == 0x18) {
         int64_t seconds = (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->calendar_started) / 1000000000;
         GDateTime *date = g_date_time_new_from_unix_utc(s->calendar_epoch + seconds);
@@ -33,7 +98,7 @@ static uint64_t calendar_read(void *opaque, hwaddr off, unsigned size)
         uint32_t value = off == 0x14 ?
             (g_date_time_get_hour(date) << 16) | (g_date_time_get_minute(date) << 8) |
             g_date_time_get_second(date) :
-            ((g_date_time_get_day_of_week(date) % 7) << 24) |
+            (((s->calendar_weekday + (s->calendar_epoch % 86400 + seconds) / 86400) % 7) << 24) |
             ((g_date_time_get_year(date) - 2000) << 16) |
             (g_date_time_get_month(date) << 8) | g_date_time_get_day_of_month(date);
         g_date_time_unref(date);
@@ -48,9 +113,9 @@ static void calendar_write(void *opaque, hwaddr off, uint64_t value, unsigned si
     ArcsSysctl *s = &io->soc->sysctl;
     if (size != 4 || (off & 3) || off > 0x24) { goto fail; }
     switch (off) {
-    case 0: s->calendar_regs[0] = value & 3; return;
+    case 0: s->calendar_regs[0] = value & 3; calendar_arm(io->soc); return;
     case 4:
-        if (value & 0x10020) { goto fail; } /* Alarms/periodic IRQ not modeled. */
+        if (value & ~0x30371u) { goto fail; }
         if (value & 1) {
             uint32_t lo = s->calendar_regs[3], hi = s->calendar_regs[4];
             if ((lo & 63) > 59) { goto fail; }
@@ -58,9 +123,26 @@ static void calendar_write(void *opaque, hwaddr off, uint64_t value, unsigned si
                 (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
             if (!date) { goto fail; }
             s->calendar_epoch = g_date_time_to_unix(date);
+            s->calendar_weekday = (hi >> 24) & 7;
+            if (s->calendar_weekday > 6) { g_date_time_unref(date); goto fail; }
             g_date_time_unref(date);
             s->calendar_started = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
+        if (value & 0x10) {
+            uint32_t lo = s->calendar_regs[7], hi = s->calendar_regs[8];
+            GDateTime *date = g_date_time_new_utc(2000 + ((hi >> 16) & 127),
+                (hi >> 8) & 15, hi & 31, (lo >> 16) & 31, (lo >> 8) & 63, lo & 63);
+            if (!date) { goto fail; }
+            s->calendar_alarm = g_date_time_to_unix(date);
+            g_date_time_unref(date);
+        }
+        if (value & 0x20) { s->calendar_alarm_enabled = true; }
+        if (value & 0x40) { s->calendar_alarm_enabled = false; }
+        if (value & 0x100) { s->calendar_pending &= ~2u; }
+        if (value & 0x200) { s->calendar_pending &= ~1u; }
+        if (value & 0x10000) { s->calendar_interval_enabled = true; }
+        if (value & 0x20000) { s->calendar_interval_enabled = false; }
+        calendar_irq(io->soc); calendar_arm(io->soc);
         return;
     case 0xc: case 0x10: case 0x1c: case 0x20: s->calendar_regs[off / 4] = value; return;
     case 0x24: s->calendar_regs[off / 4] = value & 0x7ffffff; return;
@@ -82,10 +164,42 @@ static bool common_register(hwaddr offset)
     }
 }
 
+static void remap_update(ArcsSoC *soc)
+{
+    ArcsSysctl *s = &soc->sysctl;
+    unsigned target = (s->common_regs[0x8c / 4] >> 4) & 1;
+    uint32_t bases = s->common_regs[0x80 / 4];
+    uint64_t physical = (uint64_t)((bases >> (target * 16)) & 0xffff) << 16;
+    uint64_t device_base = target ? 0x30000000 : 0x28000000;
+    uint32_t offsets[] = {0, s->common_regs[0x88 / 4] & 0x7fff,
+                         (s->common_regs[0x88 / 4] >> 16) & 0x7fff,
+                         s->common_regs[0x84 / 4] & 0x7fff};
+    memory_region_transaction_begin();
+    for (unsigned kind = 0; kind < 2; kind++) {
+        for (unsigned region = 0; region < 4; region++) {
+            MemoryRegion *alias = &s->remap[kind][region];
+            uint64_t address = physical + ((uint64_t)offsets[region] << 12);
+            bool enabled = kind == target && address >= device_base &&
+                           address - device_base < 16 * MiB;
+            memory_region_set_enabled(alias, false);
+            if (enabled) {
+                uint64_t offset = address - device_base;
+                memory_region_set_alias_offset(alias, offset);
+                memory_region_set_size(alias, 16 * MiB - offset);
+                memory_region_set_enabled(alias, true);
+            }
+        }
+    }
+    memory_region_transaction_commit();
+}
+
 static uint64_t common_read(void *opaque, hwaddr off, unsigned size)
 {
     ArcsConfigIO *io = opaque;
     ArcsSysctl *s = &io->soc->sysctl;
+    if (off >= 0x80 && off < 0x90 && !(off & (size - 1))) {
+        return s->common_regs[(off & ~3u) / 4] >> ((off & 3) * 8);
+    }
     if (size == 4 && !(off & 3)) {
         if (off == 4 || off == 12) { return 0; }
         if (off == 0x70) { return s->cp_entry; }
@@ -100,13 +214,23 @@ static void common_write(void *opaque, hwaddr off, uint64_t value, unsigned size
     ArcsConfigIO *io = opaque;
     ArcsSoC *soc = io->soc;
     ArcsSysctl *s = &soc->sysctl;
+    if (off >= 0x80 && off < 0x90 && !(off & (size - 1))) {
+        unsigned word = (off & ~3u) / 4, shift = (off & 3) * 8;
+        uint32_t mask = (size == 4 ? UINT32_MAX : (1u << (size * 8)) - 1) << shift;
+        uint32_t combined = (s->common_regs[word] & ~mask) | ((value << shift) & mask);
+        if (word == 0x8c / 4 && (combined & 15)) { goto fail; }
+        s->common_regs[word] = combined;
+        remap_update(soc);
+        return;
+    }
     if (size != 4 || (off & 3)) { goto fail; }
     if (off == 0x70) { s->cp_entry = value; return; }
     if (off == 4) {
         if (value != 0xcafe000a) { goto fail; }
         if (s->common_regs[8 / 4] & 0x404) {
-            s->warm_reset = true;
-            qemu_system_reset_request(SHUTDOWN_CAUSE_GUEST_RESET);
+            /* The reset strobe is a domain control pulse.  The SDK records
+             * its cause only for the dedicated AON software-reset register. */
+            request_chip_reset(soc, 0, false);
         } else {
             CPUState *cp = CPU(&soc->cpu[1]);
             if (cp->icount_hz) {
@@ -304,9 +428,8 @@ static void wdt_expire(void *opaque)
     ArcsSysctl *s = &io->soc->sysctl;
     unsigned i = wdt_index(io);
     if (s->wdt_reset_stage[i]) {
-        error_report("ARCS watchdog reset routing is not yet connected (hart=%u)", i);
-        io->soc->report(io->soc->report_opaque, "unsupported-watchdog-reset");
-        exit(1);
+        request_chip_reset(io->soc, 1u << (i ? 16 : 19), false);
+        return;
     }
     s->wdt_expired[i] = true;
     wdt_irq(io);
@@ -368,6 +491,7 @@ static bool aon_storage(hwaddr off)
     case 0x94: case 0x98: case 0xa0: case 0xc4: case 0xc8:
     case 0x100: case 0x104: case 0x108: case 0x114: case 0x124: case 0x140:
     case 0x168: case 0x16c: case 0x170: case 0x174: case 0x178:
+    case 0x190:
         return true;
     default: return false;
     }
@@ -416,6 +540,12 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     uint32_t *reg = off < sizeof(s->aon_regs) ? &s->aon_regs[off / 4] : NULL;
     if (off >= 0x168 && off <= 0x178) { *reg = value; return; }
     switch (off) {
+    case 0x190:
+        /* Analog trim source selectors retain intent; ideal analog rails
+         * have no settling or voltage model. Memory redundancy remains
+         * unsupported rather than claiming that fuse loading completed. */
+        if (value & ~0x3ffu) { goto fail; }
+        *reg = value; return;
     case 0x2c: if (value & 1) { goto fail; } *reg = value & 14; return;
     case 0x50: *reg = value & 1; return;
     case 0x54: *reg &= value; return;
@@ -455,6 +585,10 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     case 0xc0:
         arcs_codec_power(soc, value & 0x4000);
         *reg = value & 0x3fdf80; return;
+    case 0x58:
+        if (value != 0xcafe000a) { goto fail; }
+        request_chip_reset(soc, 1u << 1, false);
+        return;
     case 0xc4: *reg = value & 0x7ffffbf4; return;
     case 0x100: *reg = value & 0xffff; return;
     case 0x104:
@@ -487,6 +621,17 @@ static const MemoryRegionOps calendar_ops = CONFIG_OPS(calendar_read, calendar_w
 void arcs_sysctl_init(ArcsSoC *soc)
 {
     ArcsSysctl *s = &soc->sysctl;
+    static const hwaddr virtual_bases[] = {0x08000000, 0x10000000, 0x18000000, 0x1c000000};
+    MemoryRegion *targets[] = {&soc->psram.chip->ram, &soc->flash.chips[0]->rom};
+    for (unsigned kind = 0; kind < 2; kind++) {
+        for (unsigned region = 0; region < 4; region++) {
+            g_autofree char *name = g_strdup_printf("arcs-remap-%u-%u", kind, region);
+            MemoryRegion *alias = &s->remap[kind][region];
+            memory_region_init_alias(alias, OBJECT(soc), name, targets[kind], 0, 16 * MiB);
+            memory_region_set_enabled(alias, false);
+            memory_region_add_subregion_overlap(get_system_memory(), virtual_bases[region], alias, kind);
+        }
+    }
     ArcsConfigIO *blocks[] = { &s->common, &s->pll, &s->aon, &s->ap, &s->calendar };
     const char *names[] = { "arcs-common", "arcs-pll", "arcs-aon", "arcs-ap-config", "arcs-calendar" };
     const uint32_t bases[] = { 0x46000000, 0x46100000, 0x48000000, 0x45800000, 0x46400000 };
@@ -504,7 +649,10 @@ void arcs_sysctl_init(ArcsSoC *soc)
         memory_region_add_subregion(get_system_memory(), io->base, &io->io);
         s->wdt_timer[i] = timer_new_ns(QEMU_CLOCK_VIRTUAL, wdt_expire, io);
     }
+    s->calendar_event = timer_new_ns(QEMU_CLOCK_VIRTUAL, calendar_expire, soc);
     arcs_aon_timer_init(soc);
+    arcs_aon_wdt_init(soc);
+    arcs_dual_timer_init(soc);
     s->rc_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, rc_complete, soc);
 }
 
@@ -513,8 +661,11 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     ArcsSysctl *s = &soc->sysctl;
     calendar_reset(soc);
     arcs_aon_timer_reset(soc);
+    arcs_aon_wdt_reset(soc);
+    arcs_dual_timer_reset(soc);
     arcs_aon_timer_clock(soc, false);
     memset(s->common_regs, 0, sizeof(s->common_regs));
+    remap_update(soc);
     s->cp_entry = 0x00200000;
     memset(s->ap_regs, 0, sizeof(s->ap_regs));
     memset(s->wdt_control, 0, sizeof(s->wdt_control));
@@ -543,8 +694,22 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         }
     }
     /* Scratch and the TSF clock domain survive a common/AP warm reset. */
+    uint32_t scratch = s->aon_regs[0x168 / 4];
+    uint32_t tsf_lo = s->aon_regs[0x128 / 4];
+    uint32_t tsf_hi = s->aon_regs[0x12c / 4];
+    bool preserve_aon = s->warm_reset;
     memset(s->aon_regs, 0, 0x168);
-    s->aon_regs[0x54 / 4] = s->warm_reset ? 0 : 1;
+    if (preserve_aon) {
+        s->aon_regs[0x168 / 4] = scratch;
+        s->aon_regs[0x128 / 4] = tsf_lo;
+        s->aon_regs[0x12c / 4] = tsf_hi;
+    }
+    s->aon_regs[0x190 / 4] = 0;
+    s->aon_regs[0x54 / 4] = s->reset_status ? s->reset_status :
+                             (s->warm_reset ? 0 : 1);
+    s->aon_wdt.cause = s->aon_wdt_reset_cause;
+    s->reset_status = 0;
+    s->aon_wdt_reset_cause = 0;
     s->warm_reset = s->rc_done = false;
     timer_del(s->rc_timer);
     rc_irq(soc);

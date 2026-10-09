@@ -256,7 +256,7 @@
 @@ -1,5 +1,8 @@
  riscv_ss = ss.source_set()
  riscv_ss.add(files('boot.c'))
-+riscv_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c', 'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c', 'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c', 'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c', 'arcs_bluetooth.c', 'arcs_audio.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c', 'arcs_wifi_ap.c', 'arcs_hsu.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c'))
++riscv_ss.add(when: 'CONFIG_ARCS', if_true: files('arcs.c', 'arcs_soc.c', 'arcs_uart.c', 'arcs_gpio.c', 'arcs_sysctl.c', 'arcs_psram.c', 'arcs_storage.c', 'arcs_dma.c', 'arcs_spi.c', 'arcs_mailbox.c', 'arcs_luna.c', 'arcs_aux.c', 'arcs_rf.c', 'arcs_wifi.c', 'arcs_wifi_dma.c', 'arcs_aon_timer.c', 'arcs_aon_wdt.c', 'arcs_dual_timer.c', 'arcs_bluetooth.c', 'arcs_audio.c', 'arcs_wifi_tx.c', 'arcs_wifi_rx.c', 'arcs_wifi_ap.c', 'arcs_hsu.c', 'arcs_trng.c', 'arcs_network.c', 'arcs_jpeg.c'))
 +riscv_ss.add(when: 'CONFIG_ARCS', if_true: [dependency('gmodule-2.0'), dependency('libjpeg')])
 +riscv_ss.add(when: 'CONFIG_ARCS', if_true: declare_dependency(link_args: [meson.project_source_root() / 'luna' / (host_machine.system() + '-' + host_machine.cpu_family()) / 'liblisem-luna.a']))
  riscv_ss.add(when: 'CONFIG_RISCV_NUMA', if_true: files('numa.c'))

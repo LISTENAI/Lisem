@@ -25,7 +25,8 @@ def main():
                          ('eclic', b'ARCS ECLIC OK\n'), ('qemu_load', b''),
                          ('qemu_dual', b''), ('qemu_warm', b''), ('qemu_pmp', b''),
                          ('qemu_nor', b''), ('qemu_time', b''), ('qemu_mailbox', b''),
-                         ('qemu_wfi_ap', b''), ('qemu_wfi_cp', b'')]:
+                         ('qemu_wfi_ap', b''), ('qemu_wfi_cp', b''),
+                         ('qemu_aon_wdt', b'')]:
         source = OUTPUT / (name + '.S')
         # Only the independent test termination changes. Never applied to LPK.
         fixture = 'qemu_wfi' if name.startswith('qemu_wfi_') else name

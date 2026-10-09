@@ -213,7 +213,10 @@ static RISCVException write_custom(CPURISCVState *env, int csr, target_ulong val
                      csr == 0x7eb ? s->csrs[4] : csr == 0x7ee ? env->mcause : env->mepc, ra);
         break;
     case 0x7c6: case 0x7c7: case 0x7c8: case 0x7ca: case 0x7cb:
-    case 0x7f5: case 0x7f6: s->csrs[csr - 0x7c0] = value; break;
+    /* Device and non-cacheable region attributes retain their architectural
+     * state. Guest memory already uses coherent, uncached QEMU accesses. */
+    case 0x7f3: case 0x7f4: case 0x7f5: case 0x7f6:
+        s->csrs[csr - 0x7c0] = value; break;
     default: return RISCV_EXCP_ILLEGAL_INST;
     }
     return RISCV_EXCP_NONE;
@@ -258,7 +261,7 @@ void arcs_n300_init(RISCVCPU *cpu, bool dsp)
         static const int csrs[] = {
             0x307, 0x346, 0x347, 0x7c4, 0x7c6, 0x7c7, 0x7c8, 0x7c9,
             0x7ca, 0x7cb, 0x7cc, 0x7d0, 0x7eb, 0x7ec, 0x7ee, 0x7ef,
-            0x7f5, 0x7f6, 0x7f7, 0x810, 0x811, 0xfc0, 0xfc1, 0xfc2,
+            0x7f3, 0x7f4, 0x7f5, 0x7f6, 0x7f7, 0x810, 0x811, 0xfc0, 0xfc1, 0xfc2,
         };
         riscv_csr_operations custom = {
             .name = "arcs-n300", .predicate = predicate,

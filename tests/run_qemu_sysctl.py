@@ -34,6 +34,9 @@ def functional(hart):
         assert m.read(CMN + 0x14) == 0x1006
         assert m.read(CMN + 4) == m.read(CMN + 12) == 0
         assert m.read(AON + 0x54) == 1
+        m.write(AON + 0x98, 0x38)
+        m.write(AON + 0x190, 4)
+        assert m.read(AON + 0x190) == 4
         m.write(0x45800000, 0x1f0000)
         assert m.read(0x45800000) == 0x1f0000
         m.write(0x45800008, 0x100)

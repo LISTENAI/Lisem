@@ -115,12 +115,17 @@ def main():
                 ('address', ['readl 0x%x' % base])):
             reject('%x-%s' % (base, name), commands)
         for setting in range(8):
-            # W1C does not cancel the second stage or postpone its boundary.
-            reject('%x-reset%d' % (base, setting), [
-                unlock, 'writel 0x%x 0x%x' % (base + 0x10, 9 | setting << 8),
-                'clock_step 2000000', 'writel 0x%x 1' % (base + 0x1c),
-                'clock_step %d' % ((128 << setting) * 31250 - 1),
-                'clock_step 1'], 'unsupported-watchdog-reset')
+            # Reset routing is a real chip reset.  Verify the latched cause
+            # instead of treating the reset as an unsupported process exit.
+            m = Machine(OUTPUT / ('%x-reset%d' % (base, setting)), budget_ns=300000000000000)
+            try:
+                write(m, base, 0x10, 9 | setting << 8)
+                step(m, 2000000)
+                m.write(base + 0x1c, 1)
+                step(m, (128 << setting) * 31250)
+                assert m.read(0x48000054) == (1 << (19 if base == BASES[0] else 16))
+            finally:
+                m.close()
     print('Protection, clock/mode rejection and all reset-stage boundaries: PASS')
 
 

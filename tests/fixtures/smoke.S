@@ -33,6 +33,18 @@ _start:
     bne t0, t1, fail
     csrw mtvec, zero
 
+    /* SDK device/non-cacheable region attributes are machine CSRs. */
+    li t0, 0xfff80000
+    csrw 0x7f4, t0
+    csrr t1, 0x7f4
+    bne t0, t1, fail
+    li t0, 0x28080001
+    csrw 0x7f3, t0
+    csrr t1, 0x7f3
+    bne t0, t1, fail
+    csrw 0x7f3, zero
+    csrw 0x7f4, zero
+
     li t0, 0x46A00000
     li t1, 88
     sw t1, 8(t0) /* Disabled TX must emit nothing. */

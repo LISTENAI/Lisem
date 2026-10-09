@@ -17,6 +17,9 @@ static void dma_irq(ArcsGPDMA *s)
         if ((s->regs[0x28 / 4] & 16) && !(s->channel[ch].control & 0x200000)) { enabled |= 1u << (ch + 6); }
     }
     arcs_soc_irq(s->soc, 19, !!(s->pending & enabled));
+    uint32_t image_enabled = (s->regs[0x2a4 / 4] & 1 ? 15 : 0) |
+                             (s->regs[0x2a4 / 4] & 16 ? 240 : 0);
+    arcs_soc_irq(s->soc, 77, !!(s->image_pending & image_enabled));
 }
 
 static bool ready(ArcsGPDMA *s, ArcsAudioChannel *c)
@@ -27,7 +30,7 @@ static bool ready(ArcsGPDMA *s, ArcsAudioChannel *c)
 static void schedule(ArcsGPDMA *s, int64_t now)
 {
     if (s->servicing || timer_pending(s->event)) { return; }
-    for (unsigned i = 0; i < 6; i++) {
+    for (unsigned i = 0; i < 10; i++) {
         if (ready(s, &s->channel[i])) {
             s->deadline = now + 1000; timer_mod(s->event, s->deadline); return;
         }
@@ -36,6 +39,7 @@ static void schedule(ArcsGPDMA *s, int64_t now)
 
 static unsigned address_offset(unsigned ch, unsigned part)
 {
+    if (ch >= 6) { return 0x114 + 16 * (ch - 6) + 4 * part; }
     return ch == 4 && part == 3 ? 0x100 : (ch == 5 ? 0x104 : 0x54 + 16 * ch) + 4 * part;
 }
 
@@ -62,12 +66,18 @@ static bool data_address(uint32_t address, unsigned size, bool write)
             (!write && address >= 0x45002800 && end <= 0x45003000));
 }
 
+static uint8_t image_component(int value)
+{
+    /* Full-range BT.601, signed floor at the eight-bit fractional boundary. */
+    return MIN(255, MAX(0, value >= 0 ? value / 256 : -((-value + 255) / 256)));
+}
+
 static void service(void *opaque)
 {
     ArcsGPDMA *s = opaque;
     int64_t deadline = s->deadline;
     s->servicing = true;
-    for (unsigned ch = 0; ch < 6; ch++) {
+    for (unsigned ch = 0; ch < 10; ch++) {
         ArcsAudioChannel *c = &s->channel[ch];
         if (!ready(s, c)) { continue; }
         unsigned burst = c->mode == 2 ? 8 : 1u << ((c->control >> (c->mode == 0 ? 14 : 16)) & 3);
@@ -75,26 +85,43 @@ static void service(void *opaque)
          * after its first item. End of block always yields before reloading. */
         for (unsigned item = 0; item < burst && c->busy; item++) {
             uint8_t data[4];
+            unsigned output_width = c->image_rgb ? 3 : c->width;
             if (!data_address(c->source, c->width, false) ||
-                !data_address(c->destination, c->width, true)) {
+                !(c->image_rgb ?
+                  (data_address(c->destination, 1, true) &&
+                   data_address(c->destination + 2, 1, true)) :
+                  data_address(c->destination, c->width, true))) {
                 arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
             }
             if (address_space_read(&address_space_memory, c->source, MEMTXATTRS_UNSPECIFIED,
-                                   data, c->width) != MEMTX_OK ||
-                address_space_write(&address_space_memory, c->destination, MEMTXATTRS_UNSPECIFIED,
-                                    data, c->width) != MEMTX_OK) {
+                                   data, c->width) != MEMTX_OK) {
+                arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+            }
+            if (c->image_rgb) {
+                int y = data[0] * 256, u = data[1] - 128, v = data[2] - 128;
+                uint8_t r = image_component(y + 359 * v);
+                uint8_t g = image_component(y - 183 * v - 88 * u);
+                uint8_t b = image_component(y + 444 * u);
+                data[0] = c->image_swap ? r : b;
+                data[1] = g;
+                data[2] = c->image_swap ? b : r;
+            }
+            if (address_space_write(&address_space_memory, c->destination, MEMTXATTRS_UNSPECIFIED,
+                                    data, output_width) != MEMTX_OK) {
                 arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
             }
             if (!(c->control & 0x200)) { c->source += c->width; }
-            if (!(c->control & 0x400)) { c->destination += c->width; }
+            if (!(c->control & 0x400)) { c->destination += output_width; }
             c->remaining--; s->bytes += c->width;
             if (!c->half_sent && c->remaining <= c->total / 2) {
-                if (!(c->control & 0x200000)) { s->pending |= 1u << (ch + 6); }
+                if (ch >= 6) { s->image_pending |= 1u << (ch - 2); }
+                else if (!(c->control & 0x200000)) { s->pending |= 1u << (ch + 6); }
                 c->half_sent = true;
             }
             if (!c->remaining) {
                 c->completed_slot = c->slot;
-                if (!(c->control & 0x100000)) { s->pending |= 1u << ch; }
+                if (ch >= 6) { s->image_pending |= 1u << (ch - 6); }
+                else if (!(c->control & 0x100000)) { s->pending |= 1u << ch; }
                 s->blocks++;
                 if ((c->control & 0x2000) && !c->stop_after_block) {
                     if (c->control & 0x1800) { c->slot ^= 1; }
@@ -110,9 +137,11 @@ static void service(void *opaque)
 static bool dma_valid(hwaddr off, unsigned size)
 {
     return size == 4 && !(off & 3) &&
-        (off <= 0x14 || off == 0x28 || (off >= 0x2c && off <= 0x40) ||
+        (off <= 0x24 || off == 0x28 || (off >= 0x2c && off <= 0x50) ||
          (off >= 0x54 && off <= 0x9c) || (off >= 0x100 && off <= 0x110) ||
-         (off >= 0x154 && off <= 0x160) || off == 0x1b4 || off == 0x1f8 || off == 0x1fc ||
+         (off >= 0x114 && off <= 0x16c) || (off >= 0x18c && off <= 0x1b4) ||
+         off == 0x1e8 || off == 0x1ec || off == 0x1f4 || off == 0x1f8 || off == 0x1fc ||
+         off == 0x218 || off == 0x21c || (off >= 0x2a4 && off <= 0x2b0) ||
          (off >= 0x200 && off <= 0x214) || off == 0x270 || (off >= 0x274 && off <= 0x288));
 }
 
@@ -120,7 +149,8 @@ static uint64_t dma_read(void *opaque, hwaddr off, unsigned size)
 {
     ArcsGPDMA *s = opaque;
     if (!dma_valid(off, size)) { goto fail; }
-    if (off == 0x154 || off == 0x1b4) { return 0; }
+    if (off == 0x154 || off == 0x1b4 || off == 0x2a8) { return 0; }
+    if (off == 0x2ac) { return s->image_pending; }
     if (off == 0x158) {
         uint32_t val = s->pending;
         for (unsigned ch = 0; ch < 6; ch++) {
@@ -130,7 +160,7 @@ static uint64_t dma_read(void *opaque, hwaddr off, unsigned size)
     }
     if (off == 0x1fc) {
         unsigned ch = (s->regs[0x1f8 / 4] >> 4) & 15;
-        if (ch >= 6) { goto fail; }
+        if (ch >= 10) { goto fail; }
         ArcsAudioChannel *c = &s->channel[ch];
         switch (s->regs[0x1f8 / 4] & 15) {
         case 0: return c->remaining | (c->busy ? 1u << 22 : 0) |
@@ -156,32 +186,56 @@ static void dma_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsGPDMA *s = opaque;
     if (!dma_valid(off, size) || s->servicing) { goto fail; }
+    if (off == 0x2a8) { s->image_pending &= ~(value & 255); dma_irq(s); return; }
+    if (off == 0x2ac) { return; }
     if (off == 0x154) { s->pending &= ~(value & 0xfff); dma_irq(s); return; }
     if (off == 0x158 || off == 0x1fc) { return; }
     if (off == 0x1b4) {
-        if (value & ~63u) { goto fail; }
-        for (unsigned ch = 0; ch < 6; ch++) {
+        if (value & ~1023u) { goto fail; }
+        for (unsigned ch = 0; ch < 10; ch++) {
             if (value & (1u << ch)) {
                 memset(&s->channel[ch], 0, sizeof(s->channel[ch])); s->regs[ch] = 0;
-                s->pending &= ~((1u << ch) | (1u << (ch + 6)));
+                if (ch < 6) { s->pending &= ~((1u << ch) | (1u << (ch + 6))); }
+                else { s->image_pending &= ~((1u << (ch - 6)) | (1u << (ch - 2))); }
             }
         }
         dma_irq(s); return;
     }
     s->regs[off / 4] = value;
-    if (off < 0x18) {
+    if (off < 0x28) {
         unsigned ch = off / 4;
         ArcsAudioChannel *c = &s->channel[ch];
         c->control = s->regs[ch] = value & ~6u;
         if (!(value & 1) || (value & 12) == 12) { c->busy = false; }
         else if (value & 4) { c->stop_after_block = true; }
         if (value & 2) {
-            if (!(value & 1) || (value & 0x0c0c0000)) { goto fail; }
+            uint32_t unsupported = ch < 6 ? 0x0c0c0000 : 0x0c040000;
+            if (!(value & 1) || (value & unsupported)) { goto fail; }
             c->mode = (value >> 4) & 3; c->width = 1u << ((value >> 6) & 3);
             unsigned destination_width = 1u << ((s->regs[0x270 / 4] >> (2 * ch)) & 3);
             if (c->mode > 2 || c->width > 4 || destination_width != c->width) { goto fail; }
             c->slot = c->completed_slot = 0; c->stop_after_block = false; c->busy = true;
             load_block(s, ch);
+            if (ch >= 6) {
+                unsigned i = ch - 6, bit = 1u << i;
+                c->image_rgb = !(s->regs[0x164 / 4] & (bit << 4));
+                c->image_swap = s->regs[0x2b0 / 4] & (bit << 16);
+                if (c->mode != 2 || (value & 0x3800) || s->regs[0x1f4 / 4] ||
+                    (s->regs[0x2b0 / 4] & ~(15u << 16))) { goto fail; }
+                if (c->image_rgb) {
+                    unsigned format = (s->regs[0x1ac / 4] >> (i * 2)) & 3;
+                    unsigned geometry = s->regs[(0x18c + i * 8) / 4];
+                    unsigned width = geometry & 0x1fff, height = (geometry >> 16) & 0x1fff;
+                    unsigned out_off = i < 2 ? 0x1e8 + i * 4 : 0x218 + (i - 2) * 4;
+                    if (format != 2 || c->width != 4 || !(s->regs[0x16c / 4] & bit) ||
+                        !(s->regs[0x168 / 4] & bit) || !(s->regs[0x164 / 4] & bit) ||
+                        !width || !height || width * height != c->total ||
+                        s->regs[(0x190 + i * 8) / 4] != geometry ||
+                        (uint64_t)s->regs[out_off / 4] * destination_width != (uint64_t)c->total * 3) {
+                        goto fail;
+                    }
+                }
+            }
         }
     }
     dma_irq(s); schedule(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)); return;
@@ -199,10 +253,11 @@ void arcs_gpdma_reset(ArcsSoC *soc)
 {
     ArcsGPDMA *s = &soc->gpdma;
     assert(!s->servicing);
-    timer_del(s->event); s->pending = 0; s->bytes = s->blocks = 0;
+    timer_del(s->event); s->pending = s->image_pending = 0; s->bytes = s->blocks = 0;
     memset(s->regs, 0, sizeof(s->regs)); memset(s->channel, 0, sizeof(s->channel));
-    for (unsigned ch = 0; ch < 6; ch++) { s->channel[ch].control = s->regs[ch] = 0x03028080; }
-    s->regs[0x270 / 4] = 0xaaa; dma_irq(s);
+    for (unsigned ch = 0; ch < 10; ch++) { s->channel[ch].control = s->regs[ch] = 0x03028080; }
+    s->regs[0x164 / 4] = 0xff; s->regs[0x168 / 4] = 15;
+    s->regs[0x270 / 4] = 0xaaaaa; dma_irq(s);
 }
 
 static unsigned mode(ArcsAPC *s, unsigned ch) { return (s->regs[3 + ch / 2] >> (ch % 2 * 16 + 1)) & 3; }

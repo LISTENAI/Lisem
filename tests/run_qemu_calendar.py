@@ -16,7 +16,8 @@ def check(m, date):
 
 def load(m, date):
     m.write(BASE + 0xc, date.hour << 16 | date.minute << 8 | date.second)
-    m.write(BASE + 0x10, (date.year - 2000) << 16 | date.month << 8 | date.day)
+    m.write(BASE + 0x10, ((date.weekday() + 1) % 7) << 24 |
+            (date.year - 2000) << 16 | date.month << 8 | date.day)
     m.write(BASE + 4, 1)
     assert m.read(BASE + 4) == 0
 
@@ -71,7 +72,6 @@ def functional():
 
 def rejection():
     for name, commands in (
-        ('alarm', [(BASE + 4, 0x20)]), ('periodic', [(BASE + 4, 0x10000)]),
         ('invalid-date', [(BASE + 0x10, 100 << 16 | 2 << 8 | 29), (BASE + 4, 1)]),
         ('invalid-second', [(BASE + 0x10, 0x101), (BASE + 0xc, 60), (BASE + 4, 1)]),
         ('readonly', [(BASE + 0x14, 0)]), ('unknown', [(BASE + 0x28, 0)])):
@@ -88,7 +88,44 @@ def rejection():
             assert json.loads((m.directory / 'report.json').read_text())['status'] == 'unsupported-mmio'
         finally:
             m.close()
-    print('Calendar alarms, periodic interrupts, malformed dates and registers rejected: PASS')
+    print('Calendar malformed dates and registers rejected: PASS')
+
+
+def interrupts():
+    for hart in (0, 1):
+        m = Machine(OUTPUT / ('interrupts%d' % hart), hart=hart, budget_ns=10**15)
+        try:
+            pending = lambda: m.command('readb 0xe0021088') & 1
+            date = dt.datetime(2024, 2, 29, 23, 59, 59)
+            load(m, date)
+            m.write(BASE, 2)  # Minute boundary, also crosses date/month.
+            m.write(BASE + 4, 0x10000)
+            m.write(BASE + 0x1c, 0)
+            m.write(BASE + 0x20, 24 << 16 | 3 << 8 | 1)
+            m.write(BASE + 4, 0x30)
+            m.command('clock_step 999999999')
+            assert m.read(BASE + 8) & 3 == 0 and not pending()
+            m.command('clock_step 1')
+            assert m.read(BASE + 8) & 3 == 3 and pending()
+            check(m, date + dt.timedelta(seconds=1))
+            m.write(BASE + 4, 0x200)
+            assert m.read(BASE + 8) & 3 == 2 and pending()
+            m.write(BASE + 4, 0x100)
+            assert m.read(BASE + 8) & 3 == 0 and not pending()
+            m.write(BASE, 1)
+            m.command('clock_step 1000000000')
+            assert pending()
+            m.write(BASE + 4, 0x20000)  # Mask retains pending source.
+            assert m.read(BASE + 8) & 1 and not pending()
+            m.write(BASE + 4, 0x10000)
+            assert pending()
+            m.qmp_command('system_reset')
+            assert not pending() and m.read(BASE + 8) == 0
+            m.command('clock_step 2000000000')
+            assert not pending()
+        finally:
+            m.close()
+    print('Calendar alarm/interval boundaries, IRQ mask, independent W1C and reset: PASS')
 
 
 def button():
@@ -117,5 +154,6 @@ def button():
 
 if __name__ == '__main__':
     functional()
+    interrupts()
     rejection()
     button()
