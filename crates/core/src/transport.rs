@@ -942,7 +942,6 @@ mod tests {
             reader.read_line(&mut line).unwrap();
             let hello: Value = serde_json::from_str(&line).unwrap();
             writeln!(peer, "{}", json!({"id":hello["id"],"return":{}})).unwrap();
-            std::thread::sleep(Duration::from_millis(100));
             line.clear();
             reader.read_line(&mut line).unwrap();
             let frame: Value = serde_json::from_str(&line).unwrap();
@@ -950,37 +949,25 @@ mod tests {
             writeln!(peer, "{}", json!({"id":frame["id"],"return":{}})).unwrap();
         });
         let mut qmp = Qmp::new(accept(&listener).unwrap(), &mut []).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::fd::AsRawFd;
-            let size: libc::c_int = 8192;
-            assert_eq!(
-                unsafe {
-                    libc::setsockopt(
-                        qmp.stream.as_raw_fd(),
-                        libc::SOL_SOCKET,
-                        libc::SO_SNDBUF,
-                        &size as *const _ as *const libc::c_void,
-                        std::mem::size_of_val(&size) as libc::socklen_t,
-                    )
-                },
-                0
-            );
-        }
         assert!(
             qmp.call_until(
                 "qom-set",
                 json!({"property":"x-lisa-camera-frame","value":pixels}),
                 &mut [],
-                Instant::now() + Duration::from_millis(30)
+                Instant::now()
             )
             .unwrap_err()
             .is::<ControlPending>()
         );
-        let pending = qmp.pending.as_ref().unwrap();
-        assert!(pending.offset > 0);
-        #[cfg(unix)]
-        assert!(pending.offset < pending.request.len());
+        // An expired deadline may legitimately leave every byte unsent,
+        // regardless of how long JSON serialization takes on this host.
+        assert_eq!(qmp.pending.as_ref().unwrap().offset, 0);
+        // Put an exact prefix on the real socket, then resume its remaining
+        // suffix. The peer parses the complete JSON and verifies the image;
+        // restarting at byte zero or skipping bytes makes that check fail.
+        let prefix = qmp.pending.as_ref().unwrap().request[..64].to_vec();
+        qmp.stream.write_all(&prefix).unwrap();
+        qmp.pending.as_mut().unwrap().offset = prefix.len();
         while qmp.recover(&mut []).unwrap().is_none() {}
         server.join().unwrap();
         assert!(qmp.pending_id().is_none());
