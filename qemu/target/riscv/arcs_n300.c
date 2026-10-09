@@ -71,6 +71,7 @@ void arcs_n300_irq(CPURISCVState *env, unsigned irq, bool value)
 {
     ArcsN300State *s = state(env);
     assert(irq < 80);
+    unsigned previous = s->irq[irq][0];
     unsigned trigger = (s->irq[irq][2] >> 1) & 3;
     if (!(trigger & 1)) {
         s->irq[irq][0] = value ^ !!(trigger & 2);
@@ -79,7 +80,10 @@ void arcs_n300_irq(CPURISCVState *env, unsigned irq, bool value)
         s->irq[irq][0] = 1;
     }
     s->line[irq] = value;
-    update(env);
+    /* Configuration, CSR and trap changes update arbitration themselves.
+     * Repeated peripheral levels only need arbitration if pending changes;
+     * still recompute pending so software-cleared level IRQs reassert. */
+    if (s->irq[irq][0] != previous) { update(env); }
 }
 
 static void clear_edge(CPURISCVState *env, unsigned irq)

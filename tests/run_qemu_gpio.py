@@ -67,6 +67,20 @@ def main():
                 assert m.read(base + 0x64) == 1
                 m.input(first, not active)
                 assert m.read(base + 0x64) == 0
+            # Repeated ECLIC input must preserve edge latches, but must also
+            # restore software-cleared pending on a still-active level line.
+            m.write(base + 0x54, 2); m.write(base + 0x50, 1)
+            m.input(first, 1)
+            for trigger in (0, 2, 6):
+                m.command('writeb 0x%x %d' % (irq_pending + 2, trigger))
+                m.command('writeb 0x%x 0' % irq_pending)
+                m.write(base + 0x50, 1)  # Send the identical high input again.
+                assert m.command('readb 0x%x' % irq_pending) == (trigger == 0)
+                m.input(first, 0)
+                assert m.command('readb 0x%x' % irq_pending) == (trigger == 6)
+                m.input(first, 1)
+                assert m.command('readb 0x%x' % irq_pending) == 1
+            m.command('writeb 0x%x 0' % (irq_pending + 2))
             m.write(base + 0x54, 0)
         m.write(0x481000fc, 0x12345678)
         assert m.read(0x481000fc) == 0x12345678

@@ -45,6 +45,12 @@ def capture(hart):
         m.command('clock_step 1')
         assert m.read(DVP + 0x38) & 0x80
         assert m.command('readb 0xe0021040') == 1
+        # MMIO still presents the asserted level before the next pixel. A
+        # software-cleared ECLIC pending bit must be restored by that input.
+        m.command('writeb 0xe0021040 0')
+        assert m.command('readb 0xe0021040') == 0
+        assert m.read(DVP + 0x38) & 0x80
+        assert m.command('readb 0xe0021040') == 1
         m.write(DVP + 0x2c, 0x80)
         assert not m.command('readb 0xe0021040')
         m.command('clock_step 1000000')

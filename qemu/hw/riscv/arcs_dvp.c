@@ -119,6 +119,7 @@ void arcs_dvp_sync(ArcsSoC *soc)
     ArcsDVP *s = &soc->dvp;
     if (!s->capturing || s->phase != PIXELS) { return; }
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->deadline > now) { signals(s); return; }
     while (s->phase == PIXELS && s->deadline < now) { arrive_word(s); }
     /* The old per-word timer was inserted by its predecessor. If DMA was
      * already queued at that point, it must still run first at equal time.
