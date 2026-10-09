@@ -353,6 +353,14 @@ impl Catalog {
         if saved["board"]["id"] == "arcs-mini" && saved["board"]["camera"].is_null() {
             saved["board"]["camera"] = board["camera"].clone();
         }
+        // Older camera descriptors predate the board mounting direction.
+        if saved["board"]["id"] == "arcs-mini" {
+            if let Some(camera) = saved["board"]["camera"].as_object_mut() {
+                camera
+                    .entry("rotation_clockwise")
+                    .or_insert_with(|| board["camera"]["rotation_clockwise"].clone());
+            }
+        }
         let expected = json!({"board":board,"chip":chip});
         let saved = hardware_identity(saved);
         let expected_identity = hardware_identity(expected.clone());

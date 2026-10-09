@@ -1,5 +1,7 @@
 //! A source-independent, bounded latest-frame channel. Still images and future
 //! live producers share slots; only changing sources needs a QMP transaction.
+//! Pixels are in sensor coordinates: all producers must first use camera::adapt
+//! with the board mounting rotation. GC0328 crop/mirror/flip remain downstream.
 use crate::shared::Mapping;
 use anyhow::{Context, Result, ensure};
 use std::sync::atomic::{AtomicU64, Ordering};

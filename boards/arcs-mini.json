@@ -53,6 +53,7 @@
   "version": 1,
   "camera": {
     "model": "gc0328",
+    "rotation_clockwise": 90,
     "width": 640,
     "height": 480,
     "label": "GC0328 · 640 × 480"

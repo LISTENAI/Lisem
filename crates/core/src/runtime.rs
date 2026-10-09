@@ -297,7 +297,10 @@ impl Session {
         );
         let camera_frame = item["host"]["camera_image"]
             .as_str()
-            .map(|path| crate::camera::load(Path::new(path)))
+            .map(|path| {
+                let rotation = crate::camera::mounting_rotation(&item["hardware"]["board"])?;
+                crate::camera::load(Path::new(path), rotation)
+            })
             .transpose()?;
         let assets = Assets::new(&catalog.root)?;
         assets.verify_qemu()?;
@@ -1049,7 +1052,11 @@ impl Runtime {
                     .as_str()
                     .map(|p| std::path::absolute(Path::new(p)))
                     .transpose()?;
-                let frame = path.as_deref().map(crate::camera::load).transpose()?;
+                let rotation = crate::camera::mounting_rotation(&item["hardware"]["board"])?;
+                let frame = path
+                    .as_deref()
+                    .map(|path| crate::camera::load(path, rotation))
+                    .transpose()?;
                 if let Some(session) = self.session.as_mut() {
                     ensure!(
                         params["run"].is_string(),

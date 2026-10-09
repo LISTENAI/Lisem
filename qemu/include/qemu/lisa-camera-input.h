@@ -6,6 +6,9 @@
 
 /* Shared with crates/core/src/camera_input.rs. Native-endian, lock-free u64
  * atomics: QEMU and its local host source have the same architecture.
+ * RGB is in sensor coordinates; host producers apply the board mounting
+ * rotation and aspect-preserving crop through the common source adapter first.
+ * GC0328 register crop/mirror/flip are applied afterwards, not in this ABI.
  * Owners: 0 free, 1 producer, 2 reader. Metadata and pixels both require
  * ownership. The producer pins a pending source's first frame until QMP
  * confirms selection; its active source can publish through the other two

@@ -126,6 +126,31 @@ fn camera_descriptor_enriches_existing_mini_without_changing_storage() {
             .unwrap()["host"]["camera_image"]
             .is_null()
     );
+    let mut legacy_camera = described["hardware"].clone();
+    legacy_camera["board"]["camera"]
+        .as_object_mut()
+        .unwrap()
+        .remove("rotation_clockwise");
+    metadata["hardware"] = legacy_camera;
+    storage::write_json(&path.join("device.json"), &metadata).unwrap();
+    let oriented = catalog.describe(&path).unwrap();
+    assert_eq!(
+        oriented["hardware"]["board"]["camera"]["rotation_clockwise"],
+        90
+    );
+    assert_eq!(
+        storage::sha256(&path.join("flash.bin")).unwrap(),
+        flash_hash
+    );
+    assert_eq!(storage::sha256(&path.join("otp.bin")).unwrap(), otp_hash);
+    for invalid in [json!(false), json!("gc0328"), json!(42)] {
+        let mut malformed = oriented["hardware"].clone();
+        malformed["board"]["camera"] = invalid;
+        assert!(catalog.check_hardware(&malformed).is_err());
+    }
+    let mut explicit = oriented["hardware"].clone();
+    explicit["board"]["camera"]["rotation_clockwise"] = json!(0);
+    assert!(catalog.check_hardware(&explicit).is_err());
     let mut changed = described["hardware"].clone();
     changed["board"]["camera"]["model"] = json!("different-sensor");
     assert!(catalog.check_hardware(&changed).is_err());
