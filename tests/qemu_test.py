@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
-                 network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None):
+                 network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -36,6 +36,9 @@ class Machine:
         env.pop('ARCS_QEMU_AUDIO_INPUT', None)
         env.pop('ARCS_QEMU_AUDIO_FORMAT', None)
         env.pop('ARCS_QEMU_HOST_AUDIO', None)
+        env.pop('ARCS_QEMU_CAMERA_SHM', None)
+        if camera_input is not None:
+            env['ARCS_QEMU_CAMERA_SHM'] = camera_input
         if host_audio is not None:
             env['ARCS_QEMU_HOST_AUDIO'] = str(host_audio)
         env.pop('ARCS_QEMU_DESKTOP', None)

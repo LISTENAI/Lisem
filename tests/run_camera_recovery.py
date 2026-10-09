@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise delayed camera control and input cleanup with an isolated ROM instance."""
 import argparse
+import ctypes
+import errno
 import json
 import os
 from pathlib import Path
@@ -51,6 +53,7 @@ def main():
         item = cli('create', '--board', 'arcs-mini')
         identifier = item['id']
         pid = None
+        region_names = []
 
         def command(method, **params):
             endpoint = json.loads((Path(item['path']) / 'runtime.json').read_text())
@@ -85,6 +88,8 @@ def main():
             cli('start', identifier, '--seconds', '120', '--timeout', '150')
             state = cli('status', identifier)['runtime']['session']
             pid = state['qemu']['pid']
+            region_names = json.loads((Path(item['path']) / 'ipc.json').read_text())
+            assert len(region_names) >= 2, region_names
             run = state['output']
             cli('button', identifier, 'function', 'press')
             pause_after_snapshot()
@@ -116,8 +121,19 @@ def main():
             state = command('stop')['result']['session']
             assert state['finished'] and state['camera_change']['status'] == 'unknown', state
             pid = None
+            # A fresh run restores the selected static source through the same
+            # short source transaction; unexpected QEMU exit also frees maps.
+            cli('start', identifier, '--seconds', '120', '--timeout', '150')
+            state = cli('status', identifier)['runtime']['session']
+            assert state['camera_input']['source_state'] == 'still'
+            region_names += json.loads((Path(item['path']) / 'ipc.json').read_text())
+            os.kill(state['qemu']['pid'], signal.SIGKILL)
+            deadline = time.monotonic() + 10
+            while not command('status')['result']['session']['finished']:
+                assert time.monotonic() < deadline, 'QEMU exit was not observed'
+                time.sleep(.05)
             print('Original ROM: PNG recovery, retained release/cancel, stale cancellation, '
-                  'clear and stop during pending control: PASS')
+                  'clear, pending stop, restart and unexpected QEMU exit: PASS')
         finally:
             if pid:
                 try:
@@ -126,6 +142,15 @@ def main():
                     pass
             cli('stop', identifier, check=False)
             cli('shutdown', identifier, check=False)
+            assert not (Path(item['path']) / 'ipc.json').exists()
+            libc = ctypes.CDLL(None, use_errno=True)
+            libc.shm_open.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_uint]
+            for name in region_names:
+                fd = libc.shm_open(('/' + name).encode(), os.O_RDWR, 0)
+                error = ctypes.get_errno()
+                if fd >= 0:
+                    os.close(fd)
+                assert fd < 0 and error == errno.ENOENT, 'Product leaked mapping: ' + name
 
 
 if __name__ == '__main__':

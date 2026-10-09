@@ -1,6 +1,5 @@
 //! Bounded host image decoding; QEMU receives only one RGB888 sensor frame.
 use anyhow::{Context, Result, ensure};
-use base64::Engine;
 use image::{ImageReader, imageops::sample_bilinear};
 use std::{
     fs::File,
@@ -12,7 +11,7 @@ pub const WIDTH: u32 = 640;
 pub const HEIGHT: u32 = 480;
 const MAX_FILE: u64 = 32 * 1024 * 1024;
 
-pub fn load(path: &Path) -> Result<String> {
+pub fn load(path: &Path) -> Result<Vec<u8>> {
     let file = File::open(path).context("Cannot open camera image")?;
     ensure!(
         file.metadata()?.len() <= MAX_FILE,
@@ -57,7 +56,7 @@ pub fn load(path: &Path) -> Result<String> {
         // A nonempty source and pixel-center coordinates guarantee valid samples.
         sample_bilinear(&source, u, v).unwrap()
     });
-    Ok(base64::engine::general_purpose::STANDARD.encode(frame.as_raw()))
+    Ok(frame.into_raw())
 }
 
 #[cfg(test)]
@@ -71,9 +70,7 @@ mod tests {
             image::RgbImage::from_pixel(8, 4, image::Rgb([70, 120, 200]))
                 .save(&path)
                 .unwrap();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(load(&path).unwrap())
-                .unwrap();
+            let bytes = load(&path).unwrap();
             assert_eq!(bytes.len(), (WIDTH * HEIGHT * 3) as usize);
             assert!(bytes.chunks_exact(3).all(|p| p[0].abs_diff(70) < 3
                 && p[1].abs_diff(120) < 3
@@ -92,9 +89,7 @@ mod tests {
             }
         });
         source.save(&path).unwrap();
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(load(&path).unwrap())
-            .unwrap();
+        let bytes = load(&path).unwrap();
         assert!(bytes.chunks_exact(3).all(|p| p == [0, 255, 0]));
     }
     #[test]
@@ -105,9 +100,7 @@ mod tests {
             image::RgbImage::from_pixel(width, height, image::Rgb([20, 40, 60]))
                 .save(&path)
                 .unwrap();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(load(&path).unwrap())
-                .unwrap();
+            let bytes = load(&path).unwrap();
             assert_eq!(bytes.len(), (WIDTH * HEIGHT * 3) as usize);
             assert!(bytes.chunks_exact(3).all(|p| p == [20, 40, 60]));
         }

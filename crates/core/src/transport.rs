@@ -396,7 +396,9 @@ impl Qmp {
             offset: 0,
             expires: Instant::now() + Duration::from_secs(30),
             recoverable: method == "qom-get"
-                || (method == "qom-set" && args["property"] == "x-lisa-camera-frame"),
+                || (method == "qom-set"
+                    && ["x-lisa-camera-frame", "x-lisa-camera-source"]
+                        .contains(&args["property"].as_str().unwrap_or_default())),
         });
         let result = self.finish(uart, deadline);
         if let Err(error) = &result

@@ -22,6 +22,7 @@
 #include "system/qtest.h"
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
+#include "qemu/lisa-camera-input.h"
 
 #define TYPE_ARCS_MACHINE MACHINE_TYPE_NAME("arcs-mini")
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsMachine, ARCS_MACHINE)
@@ -32,6 +33,12 @@ struct ArcsMachine {
     ArcsNOR flash;
     DeviceState *screen;
     DeviceState *camera;
+    LisaMapping camera_mapping;
+    QEMUTimer *camera_poll;
+    uint64_t camera_generation, camera_sequence, camera_repeated;
+    uint64_t camera_frame_index, camera_latched_frame;
+    uint64_t camera_host_ns, camera_received_ns, camera_skipped;
+    unsigned camera_source_state;
     QEMUTimer *deadline;
     QEMUTimer *power_button;
     QEMUTimer *boot_pin;
@@ -82,6 +89,7 @@ static void desktop_init(ArcsMachine *s);
 static void desktop_capture(ArcsMachine *s);
 static void button_cancel(ArcsMachine *s, const char *reason, bool release);
 static char *button_sequence_get(Object *obj, Error **errp);
+static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp);
 
 static void reset_radio(ArcsMachine *s)
 {
@@ -653,6 +661,7 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
 {
     ArcsMachine *s = opaque;
     if (!camera_clock(s)) { return false; }
+    if (s->camera_generation && camera_input_receive(s, s->camera_generation, errp) < 0) { return false; }
     for (unsigned pin = 10; pin <= 20; pin++) {
         if (!arcs_pinmux_function(&s->soc.pinmux[0], pin, 16)) {
             error_setg(errp, "GC0328 DVP pins are not routed to the receiver"); return false;
@@ -685,12 +694,114 @@ static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
         error_setg(errp, "Unsupported GC0328 line/frame timing"); return false;
     }
     frame->sample = camera_sample; frame->opaque = s->camera;
+    if (s->camera_generation) {
+        if (s->camera_latched_frame == s->camera_frame_index) { s->camera_repeated++; }
+        else { s->camera_skipped += s->camera_frame_index - s->camera_latched_frame - 1; }
+        s->camera_latched_frame = s->camera_frame_index;
+        LisaCameraInput *p = s->camera_mapping.address;
+        __atomic_store_n(&p->consumed, s->camera_latched_frame, __ATOMIC_RELEASE);
+        __atomic_store_n(&p->skipped, s->camera_skipped, __ATOMIC_RELEASE);
+    }
     return true;
+}
+
+/* Media publications never run through the monitor. A bounded reader locks
+ * the latest complete slot; the sensor copies its pending scene at SOF. */
+static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp)
+{
+    LisaCameraInput *p = s->camera_mapping.address;
+    if (!p) { return 0; }
+    int best = -1;
+    uint64_t sequence = generation == s->camera_generation ? s->camera_sequence : 0;
+    /* Even selection metadata is accessed only with reader ownership. A
+     * pending new generation cannot hide the active source's other slots. */
+    for (unsigned slot = 0; slot < 3; slot++) {
+        uint64_t expected = 0;
+        if (!__atomic_compare_exchange_n(&p->owners[slot], &expected, 2, false,
+                                         __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) { continue; }
+        LisaCameraFrame *frame = &p->frames[slot];
+        if (frame->generation == generation && frame->sequence > sequence) {
+            if (best >= 0) { __atomic_store_n(&p->owners[best], 0, __ATOMIC_RELEASE); }
+            best = slot; sequence = frame->sequence;
+        } else { __atomic_store_n(&p->owners[slot], 0, __ATOMIC_RELEASE); }
+    }
+    if (best < 0) { return 0; }
+    LisaCameraFrame *frame = &p->frames[best];
+    int result = 1;
+    if (frame->state > 3 || ((frame->state == 1 || frame->state == 2) && !frame->frame_index) ||
+        (generation == s->camera_generation && frame->frame_index < s->camera_frame_index)) {
+        error_setg(errp, "Invalid camera source state"); result = -1; goto out;
+    }
+    if (frame->state == 1 || frame->state == 2) {
+        if (!gc0328_set_frame(s->camera, frame->rgb, LISA_CAMERA_BYTES, errp)) {
+            result = -1; goto out;
+        }
+    } else { gc0328_clear_frame(s->camera); }
+    s->camera_sequence = frame->sequence;
+    s->camera_frame_index = frame->frame_index;
+    s->camera_host_ns = frame->host_ns;
+    s->camera_received_ns = g_get_monotonic_time() * 1000;
+    s->camera_source_state = frame->state;
+out:
+    __atomic_store_n(&p->owners[best], 0, __ATOMIC_RELEASE);
+    return result;
+}
+
+static void camera_input_poll(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    if (s->camera_generation) {
+        Error *error = NULL;
+        int changed = camera_input_receive(s, s->camera_generation, &error);
+        if (error) { error_report_err(error); exit(1); }
+        if (changed > 0) { arcs_dvp_source_changed(&s->soc); }
+    }
+    /* Wake an idle receiver after a live source reconnects. Host polling does
+     * not advance guest time; each new frame is still latched at sensor SOF. */
+    timer_mod(s->camera_poll, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
+}
+
+static void camera_source_set(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    uint64_t generation;
+    if (!s->camera_mapping.address) { error_setg(errp, "Camera shared input is not configured"); return; }
+    if (!*value || strspn(value, "0123456789") != strlen(value) ||
+        qemu_strtou64(value, NULL, 10, &generation) || !generation ||
+        generation <= s->camera_generation) {
+        error_setg(errp, "Camera source generation is invalid or stale"); return;
+    }
+    int result = camera_input_receive(s, generation, errp);
+    if (result < 0) { return; }
+    if (!result) { error_setg(errp, "Camera source has no complete published frame"); return; }
+    s->camera_generation = generation;
+    s->camera_latched_frame = 0;
+    s->camera_skipped = s->camera_repeated = 0;
+    LisaCameraInput *p = s->camera_mapping.address;
+    __atomic_store_n(&p->consumed, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&p->skipped, 0, __ATOMIC_RELEASE);
+    arcs_dvp_source_changed(&s->soc);
+}
+
+static char *camera_input_status(ArcsMachine *s)
+{
+    LisaCameraInput *p = s->camera_mapping.address;
+    const char *states[] = {"none", "still", "live", "disconnected"};
+    return g_strdup_printf("{\"generation\":%" PRIu64 ",\"sequence\":%" PRIu64
+        ",\"received_frame\":%" PRIu64 ",\"sampled_frame\":%" PRIu64
+        ",\"source_state\":\"%s\",\"captured_host_ns\":%" PRIu64
+        ",\"received_host_ns\":%" PRIu64 ",\"skipped_frames\":%" PRIu64
+        ",\"repeated_frames\":%" PRIu64 ",\"producer_dropped_frames\":%" PRIu64 "}",
+        s->camera_generation, s->camera_sequence, s->camera_frame_index, s->camera_latched_frame,
+        states[s->camera_source_state],
+        s->camera_host_ns, s->camera_received_ns, s->camera_skipped, s->camera_repeated,
+        p ? __atomic_load_n(&p->dropped, __ATOMIC_ACQUIRE) : 0);
 }
 
 static void camera_frame_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->camera_mapping.address) { error_setg(errp, "Shared camera input owns this run"); return; }
     if (!*value) { gc0328_clear_frame(s->camera); return; }
     const size_t bytes = 640 * 480 * 3, encoded = bytes / 3 * 4;
     if (strlen(value) != encoded || strspn(value,
@@ -719,6 +830,16 @@ static void connect_camera(ArcsMachine *s)
     qdev_connect_gpio_out_named(DEVICE(&s->soc), "pad-out", 26,
                                qemu_allocate_irq(camera_pad, s, 0));
     object_property_add_str(OBJECT(s), "x-lisa-camera-frame", NULL, camera_frame_set);
+    object_property_add_str(OBJECT(s), "x-lisa-camera-source", NULL, camera_source_set);
+    const char *name = getenv("ARCS_QEMU_CAMERA_SHM");
+    if (name) {
+        LisaCameraInput *p = lisa_named_mapping(name, sizeof(*p), true, &s->camera_mapping);
+        if (!p) { perror("Create camera input map"); exit(1); }
+        p->width = 640; p->height = 480; p->stride = 640 * 3; p->bytes = LISA_CAMERA_BYTES;
+        __atomic_store_n(&p->magic, LISA_CAMERA_MAGIC, __ATOMIC_RELEASE);
+        s->camera_poll = timer_new_ms(QEMU_CLOCK_REALTIME, camera_input_poll, s);
+        timer_mod(s->camera_poll, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 16);
+    }
     camera_clock_changed(s);
 }
 
@@ -924,14 +1045,15 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     }
     desktop_capture(s);
     g_autofree char *sequence = button_sequence_get(obj, errp);
-    return g_strdup_printf("{\"backend\":\"qemu\",\"button_sequence\":%s,"
+    g_autofree char *camera = camera_input_status(s);
+    return g_strdup_printf("{\"backend\":\"qemu\",\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":{\"function\":%s}},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ","
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        sequence, s->desktop_pressed ? "true" : "false",
+        camera, sequence, s->desktop_pressed ? "true" : "false",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
         ((ArcsN300State *)s->soc.cpu[1].env.arcs_state)->exceptions,
@@ -1097,9 +1219,17 @@ static void machine_class_init(ObjectClass *klass, const void *data)
     mc->default_ram_size = 0x1000000;
 }
 
+static void machine_finalize(Object *obj)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->camera_poll) { timer_free(s->camera_poll); }
+    lisa_mapping_close(&s->camera_mapping);
+}
+
 static const TypeInfo machine_type = {
     .name = TYPE_ARCS_MACHINE, .parent = TYPE_MACHINE,
     .instance_size = sizeof(ArcsMachine), .class_init = machine_class_init,
+    .instance_finalize = machine_finalize,
 };
 static void register_types(void) { type_register_static(&machine_type); }
 type_init(register_types)

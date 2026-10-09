@@ -18,6 +18,27 @@ pub struct Mapping {
 unsafe impl Send for Mapping {}
 unsafe impl Sync for Mapping {}
 impl Mapping {
+    #[cfg(all(test, unix))]
+    pub(crate) fn anonymous(length: usize) -> Self {
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                -1,
+                0,
+            )
+        };
+        assert_ne!(pointer, libc::MAP_FAILED);
+        Self {
+            pointer: pointer.cast(),
+            length,
+        }
+    }
+    pub(crate) fn as_mut_ptr(&mut self) -> *mut u8 {
+        self.pointer
+    }
     pub fn open(name: &str, length: usize) -> Result<Self> {
         ensure!(valid_name(name), "Invalid shared memory name");
         ensure!(

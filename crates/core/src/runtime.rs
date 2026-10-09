@@ -263,6 +263,7 @@ impl Audio {
 pub struct Session {
     process: Process,
     qmp: Qmp,
+    camera: Option<crate::camera_input::Input>,
     uart: Vec<Uart>,
     audio: Option<Audio>,
     stdout: Option<PipeLog>,
@@ -329,6 +330,10 @@ impl Session {
         } else {
             PathBuf::from(regions.allocate()?)
         };
+        let camera_shared = item["hardware"]["board"]["camera"]
+            .is_object()
+            .then(|| regions.allocate())
+            .transpose()?;
         fs::create_dir_all(output.join("live"))?;
         let mut command = crate::process::command(assets.qemu());
         backend.configure(
@@ -340,6 +345,9 @@ impl Session {
             options.capture.is_some(),
         );
         command.stdin(Stdio::null());
+        if let Some(name) = &camera_shared {
+            command.env("ARCS_QEMU_CAMERA_SHM", name);
+        }
         if options.capture.is_some() {
             command
                 .stdout(File::create(output.join("qemu.log"))?)
@@ -437,6 +445,10 @@ impl Session {
         let qemu_identity = json!({"version":qemu_version,"sha256":qemu_sha256,
             "pid":process.child.id()});
         let display = Display::open(&framebuffer)?;
+        let camera = camera_shared
+            .as_deref()
+            .map(crate::camera_input::Input::open)
+            .transpose()?;
         if options.capture.is_some() {
             storage::write_json(
                 &output.join("run.json"),
@@ -448,6 +460,7 @@ impl Session {
             pending_releases: BTreeMap::new(),
             pending_cancel: false,
             qmp,
+            camera,
             uart,
             audio,
             stdout,
@@ -468,9 +481,21 @@ impl Session {
             backend,
         };
         if let Some(frame) = camera_frame {
+            let generation = session
+                .camera
+                .as_mut()
+                .context("Camera input map is missing")?
+                .prepare(crate::camera_input::SourceState::Still, Some(&frame), 0)?;
+            session.qmp.set(
+                "x-lisa-camera-source",
+                json!(generation.to_string()),
+                &mut session.uart,
+            )?;
             session
-                .qmp
-                .set("x-lisa-camera-frame", json!(frame), &mut session.uart)?;
+                .camera
+                .as_mut()
+                .unwrap()
+                .confirmed(generation, true)?;
         }
         session.state["camera_image"] = item["host"]["camera_image"].clone();
         session.capture()?;
@@ -697,7 +722,7 @@ pub struct Runtime {
     last_state: Value,
     last_frame: Option<Frame>,
     last_uart: Vec<transport::Output>,
-    pending_camera: Option<(u64, Option<PathBuf>)>,
+    pending_camera: Option<(u64, u64, Option<PathBuf>)>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -735,9 +760,14 @@ impl Runtime {
                 if self
                     .pending_camera
                     .as_ref()
-                    .is_some_and(|(pending, _)| *pending == id)
+                    .is_some_and(|(pending, _, _)| *pending == id)
                 {
-                    let (_, path) = self.pending_camera.take().unwrap();
+                    let (_, generation, path) = self.pending_camera.take().unwrap();
+                    session
+                        .camera
+                        .as_mut()
+                        .context("Camera input map is missing")?
+                        .confirmed(generation, result.is_ok())?;
                     finish_camera_change(&self.catalog, &self.id, &mut session.state, path, result);
                 }
             }
@@ -1026,23 +1056,48 @@ impl Runtime {
                         "Running camera input requires a run identifier"
                     );
                     session.qmp.ensure_idle()?;
+                    let generation = session
+                        .camera
+                        .as_mut()
+                        .context("Camera input map is missing")?
+                        .prepare(
+                            if frame.is_some() {
+                                crate::camera_input::SourceState::Still
+                            } else {
+                                crate::camera_input::SourceState::Clear
+                            },
+                            frame.as_deref(),
+                            0,
+                        )?;
                     if let Err(error) = session.qmp.set(
-                        "x-lisa-camera-frame",
-                        json!(frame.unwrap_or_default()),
+                        "x-lisa-camera-source",
+                        json!(generation.to_string()),
                         &mut session.uart,
                     ) {
                         if error.is::<transport::ControlPending>() {
                             self.pending_camera =
-                                Some((session.qmp.pending_id().unwrap(), path.clone()));
+                                Some((session.qmp.pending_id().unwrap(), generation, path.clone()));
                             session.state["camera_change"] =
                                 json!({"status":"pending","path":path});
                             return Ok(
                                 json!({"status":"pending","path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
                             );
                         }
+                        if session.qmp.pending_id().is_none() {
+                            session
+                                .camera
+                                .as_mut()
+                                .unwrap()
+                                .confirmed(generation, false)?;
+                        }
                         session.state["camera_change"] = json!({"status":if session.qmp.pending_id().is_some() { "unknown" } else { "rejected" },"path":path,"error":error.to_string()});
                         return Err(error);
                     }
+                    session
+                        .camera
+                        .as_mut()
+                        .unwrap()
+                        .confirmed(generation, true)?;
                     finish_camera_change(
                         &self.catalog,
                         &self.id,
