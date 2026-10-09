@@ -208,6 +208,38 @@ impl Drop for Uart {
     }
 }
 
+const QMP_CAPACITY: usize = 2 * 1024 * 1024;
+const QMP_TIMEOUT: Duration = Duration::from_secs(3);
+
+fn write_control(
+    writer: &mut impl Write,
+    request: &[u8],
+    deadline: Instant,
+    mut pump: impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let mut offset = 0;
+    while offset < request.len() {
+        ensure!(Instant::now() < deadline, "QEMU control request timed out");
+        pump()?;
+        let end = request.len().min(offset + 65536);
+        match writer.write(&request[offset..end]) {
+            Ok(0) => bail!("QEMU control connection closed during request"),
+            Ok(written) => offset += written,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub struct Qmp {
     stream: TcpStream,
     buffer: Vec<u8>,
@@ -216,18 +248,22 @@ pub struct Qmp {
 impl Qmp {
     pub fn new(stream: TcpStream, uart: &mut [Uart]) -> Result<Self> {
         stream.set_read_timeout(Some(Duration::from_millis(10)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_write_timeout(Some(Duration::from_millis(10)))?;
         let mut qmp = Self {
             stream,
             buffer: Vec::new(),
             sequence: 0,
         };
-        ensure!(qmp.read(uart)?.get("QMP").is_some(), "Missing QMP greeting");
+        ensure!(
+            qmp.read(uart, Instant::now() + QMP_TIMEOUT)?
+                .get("QMP")
+                .is_some(),
+            "Missing QMP greeting"
+        );
         qmp.call("qmp_capabilities", json!({}), uart)?;
         Ok(qmp)
     }
-    fn read(&mut self, uart: &mut [Uart]) -> Result<Value> {
-        let deadline = Instant::now() + Duration::from_secs(3);
+    fn read(&mut self, uart: &mut [Uart], deadline: Instant) -> Result<Value> {
         loop {
             if let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
                 let line: Vec<_> = self.buffer.drain(..=end).collect();
@@ -248,21 +284,31 @@ impl Qmp {
                     ) => {}
                 Err(e) => return Err(e.into()),
             }
-            ensure!(
-                self.buffer.len() <= 2 * 1024 * 1024,
-                "QMP response too large"
-            );
+            ensure!(self.buffer.len() <= QMP_CAPACITY, "QMP response too large");
         }
     }
     pub fn call(&mut self, method: &str, args: Value, uart: &mut [Uart]) -> Result<Value> {
         self.sequence += 1;
-        writeln!(
-            self.stream,
-            "{}",
-            json!({"execute":method,"arguments":args,"id":self.sequence})
-        )?;
+        // Formatting Value directly into a socket performs many small writes;
+        // write_fmt cannot resume a partially sent value after backpressure.
+        let mut request =
+            serde_json::to_vec(&json!({"execute":method,"arguments":args,"id":self.sequence}))?;
+        request.push(b'\n');
+        ensure!(request.len() <= QMP_CAPACITY, "QMP request too large");
+        let deadline = Instant::now() + QMP_TIMEOUT;
+        if let Err(error) = write_control(&mut self.stream, &request, deadline, || {
+            for port in &mut *uart {
+                port.pump()?;
+            }
+            Ok(())
+        }) {
+            // A partial JSON request cannot be safely reused by a later command.
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+            return Err(error);
+        }
         loop {
-            let reply = self.read(uart)?;
+            ensure!(Instant::now() < deadline, "QEMU control response timed out");
+            let reply = self.read(uart, deadline)?;
             if reply.get("event").is_some() {
                 continue;
             }
@@ -544,6 +590,154 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert_eq!(std::fs::read(log).unwrap(), expected);
+    }
+
+    #[test]
+    fn control_write_resumes_short_writes_and_transient_errors_with_one_deadline() {
+        struct Fragmented {
+            bytes: Vec<u8>,
+            attempts: usize,
+        }
+        impl Write for Fragmented {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.attempts += 1;
+                match self.attempts % 5 {
+                    1 => Err(std::io::ErrorKind::WouldBlock.into()),
+                    2 => Err(std::io::ErrorKind::TimedOut.into()),
+                    3 => Err(std::io::ErrorKind::Interrupted.into()),
+                    _ => {
+                        let count = bytes.len().min(71);
+                        self.bytes.extend_from_slice(&bytes[..count]);
+                        Ok(count)
+                    }
+                }
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut writer = Fragmented {
+            bytes: Vec::new(),
+            attempts: 0,
+        };
+        let expected: Vec<_> = (0..900).map(|i| i as u8).collect();
+        let mut pumps = 0;
+        write_control(
+            &mut writer,
+            &expected,
+            Instant::now() + Duration::from_secs(1),
+            || {
+                pumps += 1;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(writer.bytes, expected);
+        assert_eq!(pumps, writer.attempts);
+        let error = write_control(&mut writer, b"later", Instant::now(), || Ok(())).unwrap_err();
+        assert!(error.to_string().contains("request timed out"));
+        assert_eq!(writer.bytes, expected);
+
+        struct Blocked;
+        impl Write for Blocked {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::WouldBlock.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let start = Instant::now();
+        assert!(
+            write_control(
+                &mut Blocked,
+                b"blocked",
+                start + Duration::from_millis(20),
+                || Ok(())
+            )
+            .is_err()
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn qmp_large_frame_survives_tcp_backpressure_while_draining_uart() {
+        use std::io::{BufRead, BufReader};
+        let qmp_listener = listener().unwrap();
+        let uart_listener = listener().unwrap();
+        let qmp_address = qmp_listener.local_addr().unwrap();
+        let uart_address = uart_listener.local_addr().unwrap();
+        let pixels = "A".repeat(640 * 480 * 4);
+        let expected = pixels.clone();
+        let serial_bytes: Vec<_> = (0..512 * 1024).map(|i| (i * 31) as u8).collect();
+        let sent = serial_bytes.clone();
+        let server = std::thread::spawn(move || {
+            let mut qmp = TcpStream::connect(qmp_address).unwrap();
+            qmp.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            qmp.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut serial = TcpStream::connect(uart_address).unwrap();
+            serial
+                .set_write_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            writeln!(qmp, "{{\"QMP\":{{}}}}").unwrap();
+            let mut line = String::new();
+            BufReader::new(qmp.try_clone().unwrap())
+                .read_line(&mut line)
+                .unwrap();
+            let request: Value = serde_json::from_str(&line).unwrap();
+            writeln!(qmp, "{}", json!({"return":{},"id":request["id"]})).unwrap();
+            // Hold off control reads while UART output becomes available, then
+            // consume the frame in fragments. A blocked writer must still pump UART.
+            serial.write_all(&sent).unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            let mut frame = Vec::new();
+            while !frame.ends_with(b"\n") {
+                let mut chunk = [0; 4096];
+                let count = qmp.read(&mut chunk).unwrap();
+                assert!(count > 0);
+                frame.extend_from_slice(&chunk[..count]);
+                assert!(frame.len() <= QMP_CAPACITY);
+                std::thread::sleep(Duration::from_micros(100));
+            }
+            let request: Value = serde_json::from_slice(&frame).unwrap();
+            assert_eq!(request["execute"], "qom-set");
+            assert_eq!(request["arguments"]["property"], "x-lisa-camera-frame");
+            assert_eq!(request["arguments"]["value"], expected);
+            writeln!(qmp, "{{\"event\":\"RESET\"}}").unwrap();
+            let reply = format!("{}\n", json!({"return":{},"id":request["id"]}));
+            qmp.write_all(&reply.as_bytes()[..3]).unwrap();
+            qmp.write_all(&reply.as_bytes()[3..]).unwrap();
+        });
+        let temporary = tempfile::tempdir().unwrap();
+        let log = temporary.path().join("uart.bin");
+        let mut uart = [Uart::new(accept(&uart_listener).unwrap(), Some(&log)).unwrap()];
+        let mut qmp = Qmp::new(accept(&qmp_listener).unwrap(), &mut uart).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let size: libc::c_int = 8192;
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        qmp.stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUF,
+                        &size as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&size) as libc::socklen_t,
+                    )
+                },
+                0
+            );
+        }
+        qmp.set("x-lisa-camera-frame", json!(pixels), &mut uart)
+            .unwrap();
+        server.join().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while std::fs::metadata(&log).unwrap().len() < serial_bytes.len() as u64 {
+            assert!(Instant::now() < deadline);
+            uart[0].pump().unwrap();
+        }
+        assert_eq!(std::fs::read(log).unwrap(), serial_bytes);
     }
 
     #[test]
