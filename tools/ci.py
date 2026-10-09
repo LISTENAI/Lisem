@@ -10,7 +10,6 @@ import re
 import subprocess
 import sys
 import tarfile
-import time
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,18 +20,9 @@ def run(name, command, timeout=1800, env=None):
     directory.mkdir(parents=True, exist_ok=True)
     print(name, flush=True)
     path = directory / (name + '.log')
-    started = time.monotonic()
-    try:
-        with path.open('wb') as log:
-            result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
-                                    timeout=timeout, env=env)
-    finally:
-        elapsed = time.monotonic() - started
-        print(f'{name}: {elapsed:.2f}s', flush=True)
-        summary = os.environ.get('GITHUB_STEP_SUMMARY')
-        if summary:
-            with open(summary, 'a', encoding='utf-8') as stream:
-                stream.write(f'| {name} | {elapsed:.2f} s |\n')
+    with path.open('wb') as log:
+        result = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                                timeout=timeout, env=env)
     if result.returncode:
         content = path.read_text(errors='replace')
         # Emit only bounded identifiers and numeric statuses, never raw logs.
@@ -137,10 +127,6 @@ def main():
             'x86_64': 'x86_64'}[platform.machine().lower()]
     assert args.target == f'{system}-{arch}', 'Native runner does not match package target'
     python = sys.executable
-    summary = os.environ.get('GITHUB_STEP_SUMMARY')
-    if summary:
-        with open(summary, 'a', encoding='utf-8') as stream:
-            stream.write(f'### {args.target}: {args.phase}\n\n| Phase | Time |\n| --- | ---: |\n')
     if args.phase in ('all', 'tests'):
         unit_tests(python)
         if args.phase == 'tests':
