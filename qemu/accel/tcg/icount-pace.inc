@@ -77,3 +77,57 @@ static bool icount_pace_defer_warp(int64_t deadline)
     timer_del(icount_pace_timer);
     return false;
 }
+
+/* Keep a halted per-core machine's event progression on its TCG thread.
+ * This is the same no-sleep warp as icount_start_warp_timer(), without a
+ * round trip through the host I/O loop for every peripheral deadline. The
+ * caller returns to the normal RR loop, which releases BQL and runs the
+ * usual deadline handler before executing any guest instruction. */
+bool icount_clock_idle_advance(void)
+{
+    static unsigned local_warps;
+    static int64_t batch_start;
+    assert(bql_locked());
+    if (!icount_clock_quantum || icount_sleep || qtest_enabled() ||
+        replay_mode != REPLAY_MODE_NONE || !runstate_is_running() ||
+        qemu_reset_requested_get() != SHUTDOWN_CAUSE_NONE ||
+        !all_cpu_threads_idle()) {
+        local_warps = 0;
+        return false;
+    }
+    CPUState *cpu;
+    CPU_FOREACH(cpu) {
+        if (cpu->stopped || cpu->stop || cpu->unplug ||
+            cpu->singlestep_enabled || !cpu_work_list_empty(cpu)) {
+            local_warps = 0;
+            return false;
+        }
+    }
+    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                                ~QEMU_TIMER_ATTR_EXTERNAL);
+    /* A disabled virtual clock returns -1 from the all-list query.
+     * A zero deadline may belong to another AioContext. Let its owner
+     * run instead of repeatedly rediscovering an event we cannot service. */
+    if (deadline <= 0 || icount_pace_defer_warp(deadline)) {
+        local_warps = 0;
+        return false;
+    }
+    if (!local_warps) {
+        batch_start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    } else if (local_warps >= 128 || (!(local_warps & 7) &&
+               qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - batch_start >= 1000000)) {
+        /* Bound host I/O/BH/realtime latency even during a long WFI. */
+        local_warps = 0;
+        return false;
+    }
+    local_warps++;
+    if (deadline > 0) {
+        seqlock_write_lock(&timers_state.vm_clock_seqlock,
+                          &timers_state.vm_clock_lock);
+        qatomic_set_i64(&timers_state.qemu_icount_bias,
+                       timers_state.qemu_icount_bias + deadline);
+        seqlock_write_unlock(&timers_state.vm_clock_seqlock,
+                            &timers_state.vm_clock_lock);
+    }
+    return true;
+}

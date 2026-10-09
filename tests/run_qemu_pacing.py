@@ -172,9 +172,18 @@ def main():
         if fixture == 'qemu_wfi':
             code = code.replace('addi s3, t0, 10', 'li t2, 10000\nadd s3, t0, t2')
         pair(fixture, code, (300000000, 37000000, 10000), status='probe-pass')
+    # Repeated WFI wakeups exercise idle event advancement, rather than
+    # only one final budget timer. Output, IRQs and retired work must remain
+    # identical with host pacing enabled or disabled.
+    wakeups = '#define ebreak li t6, 0xf0000000; sw a0, 0(t6); 9: j 9b\n' + (
+        ROOT / 'tests/fixtures/qemu_wfi.S').read_text()
+    wakeups = wakeups.replace('li t0, 17', 'li t0, 1025')
+    pair('idle-wakeups', wakeups, (300000000, 37000000, 10000),
+         status='probe-pass')
     pair('hclk', SWITCHES + 'j .\n', None, duration=50000000,
          extra=['--soc-clock-experiment', '10000'])
     controlled('qmp-pause')
+    controlled('dual-idle-pause', probe='dual-idle')
     controlled('qmp-reset', reset=True)
     controlled('host-stall', stall=True)
     controlled('qmp-quit', quit_early=True)

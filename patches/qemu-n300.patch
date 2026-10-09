@@ -661,3 +661,45 @@
                                        include_directories: include_directories('.'))
    host_dsosuf = '.dll'
  elif host_os == 'darwin'
+--- a/include/exec/icount.h
++++ b/include/exec/icount.h
+@@ -46,6 +46,7 @@
+ void icount_clock_set_hz(CPUState *cpu, uint32_t hz);
+ void icount_clock_enable_pacing(void);
+ void icount_clock_pace(void);
++bool icount_clock_idle_advance(void);
+ int64_t icount_clock_audio_epoch(void);
+ int64_t icount_clock_budget(CPUState *cpu, int64_t deadline);
+ void icount_clock_finish(CPUState *cpu);
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -292,6 +292,9 @@
+         }
+ 
+         if (icount_enabled() && all_cpu_threads_idle()) {
++            if (icount_clock_idle_advance()) {
++                continue;
++            }
+             /*
+              * When all cpus are sleeping (e.g in WFI), to avoid a deadlock
+              * in the main_loop, wake it up in order to start the warp timer.
+--- a/accel/tcg/tcg-accel-ops-rr.c
++++ b/accel/tcg/tcg-accel-ops-rr.c
+@@ -233,6 +233,9 @@
+              * waking up the I/O thread and waiting for completion.
+              */
+             icount_handle_deadline();
++            if (!all_cpu_threads_idle()) {
++                rr_start_kick_timer();
++            }
+ 
+             cpu_budget = icount_percpu_budget(cpu_count);
+         }
+@@ -292,6 +295,7 @@
+         }
+ 
+         if (icount_enabled() && all_cpu_threads_idle()) {
++            rr_stop_kick_timer();
+             if (icount_clock_idle_advance()) {
+                 continue;
+             }
