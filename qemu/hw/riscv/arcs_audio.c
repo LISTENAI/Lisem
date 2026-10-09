@@ -34,6 +34,14 @@ static void schedule(ArcsGPDMA *s, int64_t now)
     }
 }
 
+static void cancel_if_idle(ArcsGPDMA *s)
+{
+    for (unsigned ch = 0; ch < 6; ch++) {
+        if (s->channel[ch].busy) { return; }
+    }
+    timer_del(s->event);
+}
+
 static unsigned address_offset(unsigned ch, unsigned part)
 {
     return ch == 4 && part == 3 ? 0x100 : (ch == 5 ? 0x104 : 0x54 + 16 * ch) + 4 * part;
@@ -173,11 +181,15 @@ static void dma_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         arcs_dma2d_clear(s->soc, value & 0x3c0);
         for (unsigned ch = 0; ch < 6; ch++) {
             if (value & (1u << ch)) {
-                memset(&s->channel[ch], 0, sizeof(s->channel[ch])); s->regs[ch] = 0;
+                /* CH_CLR resets the transfer state, not the programmed
+                 * channel. The SDK's Stop -> Start sequence reuses CTRL. */
+                uint32_t control = s->regs[ch];
+                memset(&s->channel[ch], 0, sizeof(s->channel[ch]));
+                s->channel[ch].control = control;
                 s->pending &= ~((1u << ch) | (1u << (ch + 6)));
             }
         }
-        dma_irq(s); return;
+        cancel_if_idle(s); dma_irq(s); return;
     }
     s->regs[off / 4] = value;
     if (off < 0x18) {
@@ -195,7 +207,8 @@ static void dma_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             load_block(s, ch);
         }
     }
-    dma_irq(s); schedule(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)); return;
+    cancel_if_idle(s); dma_irq(s);
+    schedule(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL)); return;
 fail:
     arcs_soc_fail(s->soc, DMA_BASE + off, size, true, value);
 }

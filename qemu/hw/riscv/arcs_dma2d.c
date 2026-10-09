@@ -188,7 +188,11 @@ void arcs_dma2d_clear(ArcsSoC *soc, uint32_t channels)
     if (!(channels & 0x3c0)) { return; }
     for (unsigned i = 0; i < 4; i++) {
         if (channels & (1u << (i + 6))) {
-            memset(&s->channel[i], 0, sizeof(s->channel[i])); R(s, 4 * (i + 6)) = 0;
+            /* Clearing a channel cancels its in-flight transfer while
+             * retaining the configuration for a subsequent START pulse. */
+            uint32_t control = R(s, 4 * (i + 6));
+            memset(&s->channel[i], 0, sizeof(s->channel[i]));
+            s->channel[i].control = control;
             s->pending &= ~((1u << i) | (16u << i));
         }
     }

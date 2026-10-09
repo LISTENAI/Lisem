@@ -84,6 +84,47 @@ def capture(hart):
         print('Hart %d: original image bytes, gated DMA, guards, SOF/EOF W1C, immutable frame, reset: PASS' % hart)
     finally: m.close()
 
+def restart_channel_four(hart):
+    m = Machine(OUTPUT / ('restart-ch4-hart%d' % hart), hart=hart)
+    try:
+        configure(m); image(m)
+        ch = 4
+        control = 0x5000c281
+        m.write(DMA + 0x94, 0x45001000)
+        m.write(DMA + 0x9c, RAM)
+        m.write(DMA + 0x3c, 8)
+        m.write(DMA + 0x270, 2 << (2 * ch))
+        m.write(DMA + 0x28, 17)
+        m.write(DMA + 4 * ch, control)
+        # SDK Stop preserves configuration, then Start_Normal reuses CTRL.
+        # Alternate a completed frame with a capture cancelled before pixels.
+        for cancelled in (False, True, False, True, False):
+            for i in range(9): m.write(RAM + 4*i, 0xa5a5a5a5)
+            m.write(DMA + 4 * ch, m.read(DMA + 4 * ch) & ~0x100000 | 3)
+            m.write(DVP + 0x20, 1)
+            m.command('clock_step %d' % (1 if cancelled else 1000000))
+            if not cancelled:
+                assert [m.read(RAM + 4*i) for i in range(8)] == [0xf800f800] * 8
+                assert m.read(DMA + 0x158) & (1 << ch)
+            # GPDMA_Stop: immediate stop, block mask, interrupt W1C, CH_CLR.
+            stopped = m.read(DMA + 4 * ch) | 0x10000c
+            m.write(DMA + 4 * ch, stopped)
+            m.write(DMA + 0x154, 1 << ch)
+            m.write(DMA + 0x1b4, 1 << ch)
+            assert m.read(DMA + 4 * ch) == stopped & ~6
+            m.write(DMA + 0x1f8, ch << 4)
+            assert m.read(DMA + 0x1fc) == 0
+            assert not m.read(DMA + 0x158) & ((1 << ch) | (1 << (ch + 6)))
+            m.write(DVP + 0x20, 0)
+            m.write(DVP + 0x2c, 0x7ff)
+            m.command('clock_step 1000000')
+            if cancelled:
+                assert [m.read(RAM + 4*i) for i in range(8)] == [0xa5a5a5a5] * 8
+            assert m.read(RAM + 32) == 0xa5a5a5a5
+        print('Hart %d: camera channel4 Stop/clear/Start reuses configuration, cancels stale pixels and captures again: PASS' % hart)
+    finally: m.close()
+
+
 def fifo_and_gates():
     m = Machine(OUTPUT / 'fifo-gates')
     try:
@@ -271,6 +312,8 @@ def arrival_order():
 
 
 if __name__ == '__main__':
+    restart_channel_four(0)
+    restart_channel_four(1)
     arrival_order()
     sampling_edges()
     capture(0)

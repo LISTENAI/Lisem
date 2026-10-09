@@ -187,11 +187,24 @@ def dma_channels(hart):
                 assert bytes(m.command('readb 0x%x' % (dst+n)) for n in range(len(data))) == data
                 assert m.command('readb 0x%x' % (dst+len(data))) == 0xa5
                 m.write(DMA + 0x154, 0xfff); assert not irq(m, 19)
-                # Reset at 999 ns cancels a not-yet-serviced transfer.
+                # CH_CLR cancels a pending transfer, preserving its settings.
                 m.command('writeb 0x%x 0xa5' % dst)
                 m.write(DMA + ch * 4, 0x23 | (width_code << 6)); step(m, 999)
-                m.write(DMA + 0x1b4, 1 << ch); step(m, 1001)
+                control = m.read(DMA + ch * 4)
+                m.write(DMA + 0x1b4, 1 << ch)
+                assert m.read(DMA + ch * 4) == control
+                m.write(DMA + 0x1f8, ch << 4)
+                assert m.read(DMA + 0x1fc) == 0
+                # The next START is a read/modify/write, without Configure.
+                # It must receive a full fresh burst delay, not the old 1 ns.
+                m.write(DMA + ch * 4, m.read(DMA + ch * 4) | 3)
+                step(m, 999)
                 assert m.command('readb 0x%x' % dst) == 0xa5 and not irq(m, 19)
+                step(m, 4001)
+                assert bytes(m.command('readb 0x%x' % (dst+n)) for n in range(len(data))) == data
+                assert m.read(DMA + 0x158) & (1 << ch)
+                m.write(DMA + 0x1b4, 1 << ch)
+                assert not irq(m, 19)
         print('Hart %d: all six GPDMA channels, 3 widths, real bytes/guards, burst timing, half/done IRQ and cancellation: PASS' % hart)
     finally: m.close()
 

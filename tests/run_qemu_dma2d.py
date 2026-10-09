@@ -70,7 +70,12 @@ def cancellation():
             first = memory(m, 128)
             assert first[:32] == expected[:32] and first[32:] == b'\xa5' * 480
             if mode == 'stop': m.write(DMA + 24, m.read(DMA + 24) | 4)
-            elif mode == 'clear': m.write(DMA + 0x1b4, 1 << 6)
+            elif mode == 'clear':
+                control = m.read(DMA + 24)
+                m.write(DMA + 0x1b4, 1 << 6)
+                assert m.read(DMA + 24) == control
+                m.write(DMA + 0x1f8, 6 << 4)
+                assert m.read(DMA + 0x1fc) == 0
             elif mode == 'reset': m.write(AP, 2)
             elif mode == 'codec-stop': m.write(BASE + 0x800, 0)
             elif mode == 'codec-clock': m.write(AP + 12, 0)
