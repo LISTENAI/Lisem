@@ -944,6 +944,16 @@ impl Desktop {
                         cx,
                     ));
                 if d.hardware["board"]["camera"].is_object() {
+                    let change = &self.state.data["session"]["camera_change"];
+                    let pending = change["status"] == "pending";
+                    let camera_notice = change["error"].as_str().unwrap_or_else(|| {
+                        match change["status"].as_str() {
+                            Some("pending") => "正在确认图片切换结果…",
+                            Some("applied") => "图片输入已更新",
+                            Some("unknown") => "未能确认图片切换结果",
+                            _ => "保持比例，居中裁切至 640 × 480；重新上电时读取原文件",
+                        }
+                    });
                     body = body
                         .child(info(
                             "摄像头图片",
@@ -951,9 +961,7 @@ impl Desktop {
                                 .as_str()
                                 .unwrap_or("未选择，采集等待输入"),
                         ))
-                        .child(caption(
-                            "保持比例，居中裁切至 640 × 480；重新上电时读取原文件",
-                        ))
+                        .child(caption(camera_notice))
                         .child(
                             div()
                                 .flex()
@@ -962,7 +970,7 @@ impl Desktop {
                                     "选择图片…",
                                     "camera",
                                     Action::Camera,
-                                    idle,
+                                    idle && !pending,
                                     false,
                                     cx,
                                 ))
@@ -970,7 +978,7 @@ impl Desktop {
                                     "清除图片",
                                     "clear-camera",
                                     Action::ClearCamera,
-                                    idle && d.host["camera_image"].is_string(),
+                                    idle && !pending && d.host["camera_image"].is_string(),
                                     false,
                                     cx,
                                 )),

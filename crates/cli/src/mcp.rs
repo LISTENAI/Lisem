@@ -283,7 +283,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Camera>(
             "lisem_camera_input",
-            "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) for a board camera. Preserves aspect ratio, center-crops to 640x480. Can set before power-on or replace during a run. Null path clears input; capture then waits without producing synthetic frames. Requires run while powered on.",
+            "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) for a board camera. Preserves aspect ratio, center-crops to 640x480. Can set before power-on or replace during a run. Null path clears input; capture then waits without producing synthetic frames. Requires run while powered on. A status of pending means the outcome is not confirmed: do not retry; poll lisem_status runtime.session.camera_change for applied, rejected or unknown. An applied result can include a configuration persistence error.",
             false,
         ),
         definition::<Audio>(

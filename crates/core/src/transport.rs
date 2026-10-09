@@ -214,17 +214,19 @@ const QMP_TIMEOUT: Duration = Duration::from_secs(3);
 fn write_control(
     writer: &mut impl Write,
     request: &[u8],
+    offset: &mut usize,
     deadline: Instant,
     mut pump: impl FnMut() -> Result<()>,
 ) -> Result<()> {
-    let mut offset = 0;
-    while offset < request.len() {
-        ensure!(Instant::now() < deadline, "QEMU control request timed out");
+    while *offset < request.len() {
+        if Instant::now() >= deadline {
+            return Err(ControlPending.into());
+        }
         pump()?;
-        let end = request.len().min(offset + 65536);
-        match writer.write(&request[offset..end]) {
+        let end = request.len().min(*offset + 65536);
+        match writer.write(&request[*offset..end]) {
             Ok(0) => bail!("QEMU control connection closed during request"),
-            Ok(written) => offset += written,
+            Ok(written) => *offset += written,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error)
                 if matches!(
@@ -240,10 +242,28 @@ fn write_control(
     Ok(())
 }
 
+/// The command may still complete; it must never be retried implicitly.
+#[derive(Debug)]
+pub struct ControlPending;
+impl std::fmt::Display for ControlPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QEMU control response pending; outcome is not yet confirmed")
+    }
+}
+impl std::error::Error for ControlPending {}
+
+struct PendingControl {
+    request: Vec<u8>,
+    offset: usize,
+    expires: Instant,
+    recoverable: bool,
+}
+
 pub struct Qmp {
     stream: TcpStream,
     buffer: Vec<u8>,
     sequence: u64,
+    pending: Option<PendingControl>,
 }
 impl Qmp {
     pub fn new(stream: TcpStream, uart: &mut [Uart]) -> Result<Self> {
@@ -253,6 +273,7 @@ impl Qmp {
             stream,
             buffer: Vec::new(),
             sequence: 0,
+            pending: None,
         };
         ensure!(
             qmp.read(uart, Instant::now() + QMP_TIMEOUT)?
@@ -269,7 +290,9 @@ impl Qmp {
                 let line: Vec<_> = self.buffer.drain(..=end).collect();
                 return Ok(serde_json::from_slice(&line)?);
             }
-            ensure!(Instant::now() < deadline, "QEMU control response timed out");
+            if Instant::now() >= deadline {
+                return Err(ControlPending.into());
+            }
             for port in &mut *uart {
                 port.pump()?;
             }
@@ -287,37 +310,103 @@ impl Qmp {
             ensure!(self.buffer.len() <= QMP_CAPACITY, "QMP response too large");
         }
     }
-    pub fn call(&mut self, method: &str, args: Value, uart: &mut [Uart]) -> Result<Value> {
-        self.sequence += 1;
-        // Formatting Value directly into a socket performs many small writes;
-        // write_fmt cannot resume a partially sent value after backpressure.
-        let mut request =
-            serde_json::to_vec(&json!({"execute":method,"arguments":args,"id":self.sequence}))?;
-        request.push(b'\n');
-        ensure!(request.len() <= QMP_CAPACITY, "QMP request too large");
-        let deadline = Instant::now() + QMP_TIMEOUT;
-        if let Err(error) = write_control(&mut self.stream, &request, deadline, || {
-            for port in &mut *uart {
-                port.pump()?;
-            }
-            Ok(())
-        }) {
-            // A partial JSON request cannot be safely reused by a later command.
-            let _ = self.stream.shutdown(std::net::Shutdown::Both);
-            return Err(error);
-        }
+    pub fn ensure_idle(&self) -> Result<()> {
+        ensure!(
+            self.pending.is_none(),
+            "Previous QEMU control command is still pending; new command was not sent"
+        );
+        Ok(())
+    }
+    pub fn pending_id(&self) -> Option<u64> {
+        self.pending.as_ref().map(|_| self.sequence)
+    }
+    fn finish(&mut self, uart: &mut [Uart], deadline: Instant) -> Result<Value> {
+        let pending = self.pending.as_mut().expect("pending control command");
+        write_control(
+            &mut self.stream,
+            &pending.request,
+            &mut pending.offset,
+            deadline,
+            || {
+                for port in &mut *uart {
+                    port.pump()?;
+                }
+                Ok(())
+            },
+        )?;
         loop {
-            ensure!(Instant::now() < deadline, "QEMU control response timed out");
+            // Check even with buffered events: an event flood remains bounded.
+            if Instant::now() >= deadline {
+                return Err(ControlPending.into());
+            }
             let reply = self.read(uart, deadline)?;
             if reply.get("event").is_some() {
                 continue;
             }
             ensure!(reply["id"] == self.sequence, "Unexpected QMP response ID");
+            self.pending = None;
             if let Some(error) = reply.get("error") {
                 bail!("{}", error["desc"].as_str().unwrap_or("QMP error"));
             }
             return Ok(reply["return"].clone());
         }
+    }
+    /// Resume the original transaction without admitting another command.
+    /// A timeout retains both the partial request and partial reply.
+    pub fn recover(&mut self, uart: &mut [Uart]) -> Result<Option<(u64, Result<Value>)>> {
+        let Some(pending) = &self.pending else {
+            return Ok(None);
+        };
+        ensure!(
+            pending.recoverable,
+            "QEMU control mutation outcome is unknown; runtime must stop to release controls"
+        );
+        ensure!(
+            Instant::now() < pending.expires,
+            "QEMU control recovery timed out; command outcome remains unknown"
+        );
+        let id = self.sequence;
+        let deadline = (Instant::now() + Duration::from_millis(10)).min(pending.expires);
+        match self.finish(uart, deadline) {
+            Err(error) if error.is::<ControlPending>() => Ok(None),
+            result if self.pending.is_none() => Ok(Some((id, result))),
+            Err(error) => Err(error),
+            Ok(_) => unreachable!(),
+        }
+    }
+    pub fn call(&mut self, method: &str, args: Value, uart: &mut [Uart]) -> Result<Value> {
+        self.call_until(method, args, uart, Instant::now() + QMP_TIMEOUT)
+    }
+    fn call_until(
+        &mut self,
+        method: &str,
+        args: Value,
+        uart: &mut [Uart],
+        deadline: Instant,
+    ) -> Result<Value> {
+        self.ensure_idle()?;
+        let sequence = self.sequence + 1;
+        let mut request =
+            serde_json::to_vec(&json!({"execute":method,"arguments":args,"id":sequence}))?;
+        request.push(b'\n');
+        ensure!(request.len() <= QMP_CAPACITY, "QMP request too large");
+        self.sequence = sequence;
+        self.pending = Some(PendingControl {
+            request,
+            offset: 0,
+            expires: Instant::now() + Duration::from_secs(30),
+            recoverable: method == "qom-get"
+                || (method == "qom-set" && args["property"] == "x-lisa-camera-frame"),
+        });
+        let result = self.finish(uart, deadline);
+        if let Err(error) = &result
+            && !error.is::<ControlPending>()
+            && self.pending.is_some()
+        {
+            // A broken connection/protocol cannot safely accept later commands.
+            let _ = self.stream.shutdown(std::net::Shutdown::Both);
+        }
+        result
     }
     pub fn get(&mut self, name: &str, uart: &mut [Uart]) -> Result<Value> {
         self.call("qom-get", json!({"path":"/machine","property":name}), uart)
@@ -625,6 +714,7 @@ mod tests {
         write_control(
             &mut writer,
             &expected,
+            &mut 0,
             Instant::now() + Duration::from_secs(1),
             || {
                 pumps += 1;
@@ -634,9 +724,32 @@ mod tests {
         .unwrap();
         assert_eq!(writer.bytes, expected);
         assert_eq!(pumps, writer.attempts);
-        let error = write_control(&mut writer, b"later", Instant::now(), || Ok(())).unwrap_err();
-        assert!(error.to_string().contains("request timed out"));
+        let error =
+            write_control(&mut writer, b"later", &mut 0, Instant::now(), || Ok(())).unwrap_err();
+        assert!(error.to_string().contains("outcome is not yet confirmed"));
         assert_eq!(writer.bytes, expected);
+        let mut offset = 123;
+        let mut resumed = Fragmented {
+            bytes: expected[..offset].to_vec(),
+            attempts: 0,
+        };
+        assert!(
+            write_control(&mut resumed, &expected, &mut offset, Instant::now(), || Ok(
+                ()
+            ))
+            .is_err()
+        );
+        assert_eq!(offset, 123);
+        write_control(
+            &mut resumed,
+            &expected,
+            &mut offset,
+            Instant::now() + Duration::from_secs(1),
+            || Ok(()),
+        )
+        .unwrap();
+        assert_eq!(resumed.bytes, expected);
+        assert_eq!(offset, expected.len());
 
         struct Blocked;
         impl Write for Blocked {
@@ -652,6 +765,7 @@ mod tests {
             write_control(
                 &mut Blocked,
                 b"blocked",
+                &mut 0,
                 start + Duration::from_millis(20),
                 || Ok(())
             )
@@ -738,6 +852,150 @@ mod tests {
             uart[0].pump().unwrap();
         }
         assert_eq!(std::fs::read(log).unwrap(), serial_bytes);
+    }
+
+    #[test]
+    fn qmp_recovers_late_partial_reply_and_rejection_without_resending() {
+        use std::io::{BufRead, BufReader};
+        for rejected in [false, true] {
+            let listener = listener().unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut peer = TcpStream::connect(address).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                let mut reader = BufReader::new(peer.try_clone().unwrap());
+                writeln!(peer, "{{\"QMP\":{{}}}}").unwrap();
+                for command in 0..3 {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    let request: Value = serde_json::from_str(&line).unwrap();
+                    let reply = if command == 1 && rejected {
+                        json!({"id":request["id"],"error":{"desc":"test rejection"}})
+                    } else {
+                        json!({"id":request["id"],"return":command})
+                    };
+                    let reply = format!("{reply}\n");
+                    if command == 1 {
+                        writeln!(peer, "{{\"event\":\"RESET\"}}").unwrap();
+                        peer.write_all(&reply.as_bytes()[..5]).unwrap();
+                        std::thread::sleep(Duration::from_millis(100));
+                        peer.write_all(&reply.as_bytes()[5..]).unwrap();
+                    } else {
+                        peer.write_all(reply.as_bytes()).unwrap();
+                    }
+                }
+            });
+            let mut qmp = Qmp::new(accept(&listener).unwrap(), &mut []).unwrap();
+            let error = qmp
+                .call_until(
+                    "qom-set",
+                    json!({"property":"x-lisa-camera-frame"}),
+                    &mut [],
+                    Instant::now() + Duration::from_millis(30),
+                )
+                .unwrap_err();
+            assert!(error.is::<ControlPending>());
+            let id = qmp.pending_id().unwrap();
+            assert!(
+                qmp.call("must-not-send", json!({}), &mut [])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("not sent")
+            );
+            let completed = loop {
+                if let Some(completed) = qmp.recover(&mut []).unwrap() {
+                    break completed;
+                }
+            };
+            assert_eq!(completed.0, id);
+            if rejected {
+                assert_eq!(completed.1.unwrap_err().to_string(), "test rejection");
+            } else {
+                assert_eq!(completed.1.unwrap(), 1);
+            }
+            assert_eq!(qmp.call("next", json!({}), &mut []).unwrap(), 2);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn qmp_resumes_partial_camera_request_and_bounds_recovery() {
+        use std::io::{BufRead, BufReader};
+        let listener = listener().unwrap();
+        let address = listener.local_addr().unwrap();
+        let pixels = "A".repeat(640 * 480 * 4);
+        let expected = pixels.clone();
+        let server = std::thread::spawn(move || {
+            let mut peer = TcpStream::connect(address).unwrap();
+            peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut reader = BufReader::new(peer.try_clone().unwrap());
+            writeln!(peer, "{{\"QMP\":{{}}}}").unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let hello: Value = serde_json::from_str(&line).unwrap();
+            writeln!(peer, "{}", json!({"id":hello["id"],"return":{}})).unwrap();
+            std::thread::sleep(Duration::from_millis(100));
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let frame: Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(frame["arguments"]["value"], expected);
+            writeln!(peer, "{}", json!({"id":frame["id"],"return":{}})).unwrap();
+        });
+        let mut qmp = Qmp::new(accept(&listener).unwrap(), &mut []).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let size: libc::c_int = 8192;
+            assert_eq!(
+                unsafe {
+                    libc::setsockopt(
+                        qmp.stream.as_raw_fd(),
+                        libc::SOL_SOCKET,
+                        libc::SO_SNDBUF,
+                        &size as *const _ as *const libc::c_void,
+                        std::mem::size_of_val(&size) as libc::socklen_t,
+                    )
+                },
+                0
+            );
+        }
+        assert!(
+            qmp.call_until(
+                "qom-set",
+                json!({"property":"x-lisa-camera-frame","value":pixels}),
+                &mut [],
+                Instant::now() + Duration::from_millis(30)
+            )
+            .unwrap_err()
+            .is::<ControlPending>()
+        );
+        let pending = qmp.pending.as_ref().unwrap();
+        assert!(pending.offset > 0);
+        #[cfg(unix)]
+        assert!(pending.offset < pending.request.len());
+        while qmp.recover(&mut []).unwrap().is_none() {}
+        server.join().unwrap();
+        assert!(qmp.pending_id().is_none());
+        qmp.pending = Some(PendingControl {
+            request: vec![],
+            offset: 0,
+            expires: Instant::now(),
+            recoverable: true,
+        });
+        assert!(
+            qmp.recover(&mut [])
+                .unwrap_err()
+                .to_string()
+                .contains("outcome remains unknown")
+        );
+        qmp.pending.as_mut().unwrap().expires = Instant::now() + Duration::from_secs(30);
+        qmp.pending.as_mut().unwrap().recoverable = false;
+        assert!(
+            qmp.recover(&mut [])
+                .unwrap_err()
+                .to_string()
+                .contains("runtime must stop to release controls")
+        );
     }
 
     #[test]

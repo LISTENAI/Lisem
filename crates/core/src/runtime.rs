@@ -281,6 +281,8 @@ pub struct Session {
     finished: bool,
     stopped: bool,
     backend: Backend,
+    pending_releases: BTreeMap<String, String>,
+    pending_cancel: bool,
 }
 impl Session {
     fn start(catalog: &Catalog, item: &Value, options: Options) -> Result<Self> {
@@ -443,6 +445,8 @@ impl Session {
         }
         let mut session = Self {
             process,
+            pending_releases: BTreeMap::new(),
+            pending_cancel: false,
             qmp,
             uart,
             audio,
@@ -596,9 +600,13 @@ impl Session {
         } else if self.started.elapsed().as_secs() >= self.options.timeout {
             self.state["error"] = json!("Host time budget reached");
             self.stop()?;
-        } else if Instant::now() >= self.capture_at
+        } else if self.qmp.pending_id().is_none()
+            && Instant::now() >= self.capture_at
             && let Err(error) = self.capture()
         {
+            if error.is::<transport::ControlPending>() {
+                return Ok(());
+            }
             // QMP closes before the process handle becomes signalled on Windows.
             // Let normal exit collect the report and drain the last DAC frames.
             let deadline = Instant::now() + Duration::from_millis(100);
@@ -651,6 +659,36 @@ impl Drop for Session {
     }
 }
 
+fn finish_camera_change(
+    catalog: &Catalog,
+    id: &str,
+    state: &mut Value,
+    path: Option<PathBuf>,
+    result: Result<Value>,
+) {
+    match result {
+        Ok(_) => {
+            state["camera_image"] = json!(path);
+            let saved = catalog.device(id).and_then(|item| {
+                catalog.update(
+                    Path::new(item["path"].as_str().unwrap()),
+                    &json!({"camera_image":path}),
+                )
+            });
+            state["camera_change"] = match saved {
+                Ok(_) => json!({"status":"applied","path":path}),
+                Err(error) => {
+                    json!({"status":"applied","path":path,"error":format!("Camera input applied but configuration was not saved: {error}")})
+                }
+            };
+        }
+        Err(error) => {
+            state["camera_change"] =
+                json!({"status":"rejected","path":path,"error":error.to_string()})
+        }
+    }
+}
+
 pub struct Runtime {
     catalog: Catalog,
     id: String,
@@ -659,6 +697,7 @@ pub struct Runtime {
     last_state: Value,
     last_frame: Option<Frame>,
     last_uart: Vec<transport::Output>,
+    pending_camera: Option<(u64, Option<PathBuf>)>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -683,12 +722,46 @@ impl Runtime {
             last_state: Value::Null,
             last_frame: None,
             last_uart: Vec::new(),
+            pending_camera: None,
             ports,
             shutdown: false,
         })
     }
     pub fn tick(&mut self) -> Result<()> {
         if let Some(session) = &mut self.session {
+            if !session.finished
+                && let Some((id, result)) = session.qmp.recover(&mut session.uart)?
+            {
+                if self
+                    .pending_camera
+                    .as_ref()
+                    .is_some_and(|(pending, _)| *pending == id)
+                {
+                    let (_, path) = self.pending_camera.take().unwrap();
+                    finish_camera_change(&self.catalog, &self.id, &mut session.state, path, result);
+                }
+            }
+            if !session.finished && session.qmp.pending_id().is_none() {
+                if session.pending_cancel {
+                    session.qmp.set(
+                        "x-lisa-button-sequence",
+                        json!("cancel"),
+                        &mut session.uart,
+                    )?;
+                    session.pending_cancel = false;
+                }
+                while let Some((button, property)) = session
+                    .pending_releases
+                    .first_key_value()
+                    .map(|(button, property)| (button.clone(), property.clone()))
+                {
+                    session
+                        .qmp
+                        .set(&property, json!(false), &mut session.uart)?;
+                    session.state["controls"]["buttons"][&button] = json!(false);
+                    session.pending_releases.remove(&button);
+                }
+            }
             session.tick()?;
         }
         for (&channel, port) in &mut self.ports {
@@ -701,6 +774,11 @@ impl Runtime {
         }
         if self.session.as_ref().is_some_and(|s| s.finished) {
             let mut session = self.session.take().unwrap();
+            if self.pending_camera.take().is_some() {
+                session.state["camera_change"]["status"] = json!("unknown");
+                session.state["camera_change"]["error"] =
+                    json!("Runtime ended before camera input outcome could be confirmed");
+            }
             self.last_uart = session.uart.iter().map(Uart::observer).collect();
             self.last_frame = session.frame();
             self.last_state = session.state.clone();
@@ -790,6 +868,11 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    if self.pending_camera.take().is_some() {
+                        session.state["camera_change"]["status"] = json!("unknown");
+                        session.state["camera_change"]["error"] =
+                            json!("Runtime stopped before camera input outcome could be confirmed");
+                    }
                     self.last_uart = session.uart.iter().map(Uart::observer).collect();
                     self.last_frame = session.frame();
                     self.last_state = session.state.clone();
@@ -816,6 +899,17 @@ impl Runtime {
                 let pressed = params["pressed"]
                     .as_bool()
                     .context("A button requires an explicit pressed state")?;
+                if !pressed && session.qmp.pending_id().is_some() {
+                    // Preserve GUI/connection cleanup while a camera transfer
+                    // owns QMP. The run owns this bounded release latch.
+                    session.pending_releases.insert(
+                        params["button"].as_str().unwrap().to_owned(),
+                        property.to_owned(),
+                    );
+                    bail!(
+                        "Button release is pending QEMU control recovery; completion is not yet confirmed"
+                    );
+                }
                 session
                     .qmp
                     .set(property, json!(pressed), &mut session.uart)?;
@@ -835,7 +929,25 @@ impl Runtime {
                 session
                     .qmp
                     .set("x-lisa-button-sequence", json!(command), &mut session.uart)?;
-                session.button_sequence()
+                match session.button_sequence() {
+                    Ok(state) => Ok(state),
+                    Err(error) => {
+                        // The sequence was submitted, but its identifier was not
+                        // delivered to the owner. Cancel before admitting input.
+                        if session.qmp.pending_id().is_some() {
+                            session.pending_cancel = true;
+                        } else {
+                            session.qmp.set(
+                                "x-lisa-button-sequence",
+                                json!("cancel"),
+                                &mut session.uart,
+                            )?;
+                        }
+                        Err(error.context(
+                            "Button sequence identity was not confirmed; cancellation requested",
+                        ))
+                    }
+                }
             }
             "button_sequence_status" | "button_sequence_cancel" => {
                 ensure!(
@@ -846,6 +958,19 @@ impl Runtime {
                     .as_u64()
                     .filter(|id| *id > 0)
                     .context("A positive sequence identifier is required")?;
+                if method == "button_sequence_cancel"
+                    && let Some(session) = &mut self.session
+                    && session.qmp.pending_id().is_some()
+                {
+                    ensure!(
+                        session.state["button_sequence"]["sequence"].as_u64() == Some(expected),
+                        "The request belongs to an earlier button sequence"
+                    );
+                    session.pending_cancel = true;
+                    bail!(
+                        "Button sequence cancellation is pending QEMU control recovery; completion is not yet confirmed"
+                    );
+                }
                 let state = if let Some(session) = &mut self.session {
                     session.button_sequence()?
                 } else {
@@ -900,19 +1025,43 @@ impl Runtime {
                         params["run"].is_string(),
                         "Running camera input requires a run identifier"
                     );
-                    session.qmp.set(
+                    session.qmp.ensure_idle()?;
+                    if let Err(error) = session.qmp.set(
                         "x-lisa-camera-frame",
                         json!(frame.unwrap_or_default()),
                         &mut session.uart,
-                    )?;
-                    session.state["camera_image"] = json!(path);
+                    ) {
+                        if error.is::<transport::ControlPending>() {
+                            self.pending_camera =
+                                Some((session.qmp.pending_id().unwrap(), path.clone()));
+                            session.state["camera_change"] =
+                                json!({"status":"pending","path":path});
+                            return Ok(
+                                json!({"status":"pending","path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
+                            );
+                        }
+                        session.state["camera_change"] = json!({"status":if session.qmp.pending_id().is_some() { "unknown" } else { "rejected" },"path":path,"error":error.to_string()});
+                        return Err(error);
+                    }
+                    finish_camera_change(
+                        &self.catalog,
+                        &self.id,
+                        &mut session.state,
+                        path,
+                        Ok(Value::Null),
+                    );
+                    let mut result = session.state["camera_change"].clone();
+                    result["width"] = json!(crate::camera::WIDTH);
+                    result["height"] = json!(crate::camera::HEIGHT);
+                    result["fit"] = json!("center-crop");
+                    return Ok(result);
                 }
                 self.catalog.update(
                     Path::new(item["path"].as_str().unwrap()),
                     &json!({"camera_image":path}),
                 )?;
                 Ok(
-                    json!({"path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
+                    json!({"status":"saved","path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
                 )
             }
             "audio" => {
@@ -1259,6 +1408,60 @@ mod tests {
         bytes.extend((samples.len() as u32).to_le_bytes());
         bytes.extend(samples);
         bytes
+    }
+
+    #[test]
+    fn camera_confirmation_persists_only_acknowledged_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let catalog = Catalog::open(&root, &temp.path().join("library")).unwrap();
+        let item = catalog.create("arcs-mini", None, Some("test")).unwrap();
+        let id = item["id"].as_str().unwrap();
+        let old = temp.path().join("old.png");
+        let new = temp.path().join("new.png");
+        catalog
+            .update(
+                Path::new(item["path"].as_str().unwrap()),
+                &json!({"camera_image":old}),
+            )
+            .unwrap();
+        let mut state = json!({"camera_image":old,"camera_change":{"status":"pending","path":new}});
+        finish_camera_change(
+            &catalog,
+            id,
+            &mut state,
+            Some(new.clone()),
+            Err(anyhow::anyhow!("rejected")),
+        );
+        assert_eq!(state["camera_change"]["status"], "rejected");
+        assert_eq!(state["camera_image"], json!(old));
+        assert_eq!(
+            catalog.device(id).unwrap()["host"]["camera_image"],
+            json!(old)
+        );
+        finish_camera_change(&catalog, id, &mut state, Some(new.clone()), Ok(json!({})));
+        assert_eq!(state["camera_change"]["status"], "applied");
+        assert_eq!(
+            catalog.device(id).unwrap()["host"]["camera_image"],
+            json!(new)
+        );
+        finish_camera_change(&catalog, id, &mut state, None, Ok(json!({})));
+        assert!(catalog.device(id).unwrap()["host"]["camera_image"].is_null());
+        finish_camera_change(
+            &catalog,
+            "missing",
+            &mut state,
+            Some(new.clone()),
+            Ok(json!({})),
+        );
+        assert_eq!(state["camera_change"]["status"], "applied");
+        assert!(
+            state["camera_change"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("not saved")
+        );
+        assert_eq!(state["camera_image"], json!(new));
     }
 
     #[test]

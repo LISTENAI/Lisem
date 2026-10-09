@@ -62,7 +62,11 @@ QEMU 从受理时刻按虚拟时间执行每次按下和松开，不依赖 MCP �
 `lisem_camera_input` 接受 `id`、图片 `path`；`path=null` 清除输入。运行中必须
 携带当前 `run`，下电时保存来源用于下次启动。它不代替固件拍照：之后通过
 真实按键输入触发业务，并观察 UART 或画面确认采集结果。选图、下电、复位
-都不清除 Flash/OTP；没有场景时不伪造空白帧或采集成功。
+都不清除 Flash/OTP；没有场景时不伪造空白帧或采集成功。控制超时不等于换图
+失败：返回 `status=pending` 表示请求尚未完成；
+`runtime.session.camera_change` 的 `pending` 表示尚待确认，最终为
+`applied`、`rejected` 或 `unknown`；`path` 是请求来源，`error` 提供失败或
+持久化错误。等待期间不要重试；只有确认应用后才更新实例的图片配置。
 
 串口观察使用每路 64 KiB 的内存历史，不消耗终端数据。每次返回至多 16 KiB；
 用返回的 `cursor` 继续读取。`lost` 表示较早的字节已过期，`hex` 保留精确

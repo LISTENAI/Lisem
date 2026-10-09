@@ -16,6 +16,10 @@
 运行 CPU 探针需要 RISC-V bare-metal GCC，`CROSS_COMPILE` 指定工具链前缀。
 应用固件只作为外部测试输入，不提交其源码、微程序或实例副本。
 
+`python3 tests/run_camera_recovery.py --binary /path/to/lisem` 在 POSIX 上用独立
+原 ROM 实例注入 QEMU 暂停，验证图片输入待确认后的恢复、松键、序列取消、
+过期序列拒绝和待确认时下电。`--root` 可指定运行资源目录；测试不联网。
+
 QEMU 和音频构建记录输入/产物哈希，启动前拒绝过期模型。上游源码和下载
 缓存放 `.tools/`，生成物放 `artifacts/`。不得在生成目录修改源码后交付。
 
