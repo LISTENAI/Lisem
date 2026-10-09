@@ -211,8 +211,18 @@ impl Manager {
                 self.runs.insert(id, result["session"]["output"].clone());
                 self.status()
             }
-            "stop" | "reset" | "reset_download" | "button" | "serial" | "uart_write"
-            | "screenshot" | "audio" | "uart_read" => {
+            "stop"
+            | "reset"
+            | "reset_download"
+            | "button"
+            | "serial"
+            | "uart_write"
+            | "screenshot"
+            | "audio"
+            | "uart_read"
+            | "button_sequence"
+            | "button_sequence_status"
+            | "button_sequence_cancel" => {
                 let value = self.worker(&id)?.call(method, params)?;
                 if ["reset", "reset_download"].contains(&method) {
                     self.runs.insert(id, value["session"]["output"].clone());

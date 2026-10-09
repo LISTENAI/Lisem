@@ -100,6 +100,26 @@ struct Button {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ButtonSequence {
+    id: String,
+    run: String,
+    button: String,
+    /// Number of presses, 1..32.
+    count: u64,
+    /// Each hold in virtual milliseconds, 1..60000.
+    hold_ms: u64,
+    /// Released interval in virtual milliseconds; positive for repeated presses.
+    gap_ms: u64,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SequenceControl {
+    id: String,
+    run: String,
+    sequence: u64,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Uart {
     id: String,
     channel: u8,
@@ -212,7 +232,22 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Button>(
             "lisem_button",
-            "Press or release a board-declared button. For a hold, call pressed=true, wait, then pressed=false.",
+            "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
+            false,
+        ),
+        definition::<ButtonSequence>(
+            "lisem_button_sequence",
+            "Schedule 1..32 presses on QEMU virtual time, at most 60000 ms total and within the run budget. Returns a sequence identifier and state; poll lisem_button_sequence_status. Rejects overlapping sequences and a manually held button. Final release is automatic; reset/power-off cancel. Manual input cancels then takes control.",
+            false,
+        ),
+        definition::<SequenceControl>(
+            "lisem_button_sequence_status",
+            "Read the latest sequence: running/completed/cancelled/interrupted, completed press count and virtual timestamps. Older sequence or run identifiers are rejected. Completion means input delivery, not firmware success.",
+            true,
+        ),
+        definition::<SequenceControl>(
+            "lisem_button_sequence_cancel",
+            "Cancel this sequence and release its button. Completed/cancelled sequences are unchanged; stale identifiers cannot cancel newer input.",
             false,
         ),
         definition::<Uart>(
@@ -298,6 +333,21 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
             )?
         }
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_button_sequence" => call(
+            manager,
+            "button_sequence",
+            arguments::<ButtonSequence>(value)?,
+        )?,
+        "lisem_button_sequence_status" => call(
+            manager,
+            "button_sequence_status",
+            arguments::<SequenceControl>(value)?,
+        )?,
+        "lisem_button_sequence_cancel" => call(
+            manager,
+            "button_sequence_cancel",
+            arguments::<SequenceControl>(value)?,
+        )?,
         "lisem_uart" => call(manager, "serial", arguments::<Uart>(value)?)?,
         "lisem_uart_read" => call(manager, "uart_read", arguments::<ReadUart>(value)?)?,
         "lisem_uart_write" => {

@@ -97,6 +97,28 @@ enum Action {
         #[arg(value_parser=["press","release"])]
         state: String,
     },
+    /// Schedule button presses on virtual time; returns the sequence identifier.
+    ButtonSequence {
+        id: String,
+        button: String,
+        #[arg(long)]
+        run: String,
+        #[arg(long, default_value_t = 1)]
+        count: u64,
+        #[arg(long)]
+        hold_ms: u64,
+        #[arg(long, default_value_t = 80)]
+        gap_ms: u64,
+    },
+    /// Read or cancel the latest button sequence, rejecting stale identifiers.
+    ButtonSequenceStatus {
+        id: String,
+        sequence: u64,
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        cancel: bool,
+    },
     /// Save the current device display as PNG.
     Screenshot { id: String, output: PathBuf },
     /// Enable or disable a persistent host UART endpoint.
@@ -257,6 +279,13 @@ fn run() -> Result<i32> {
         )?,
         Action::Button { id, button, state } => manager.call(
             "button", json!({"id": id, "button": button, "pressed": state == "press"}),
+        )?,
+        Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
+            "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
+        )?,
+        Action::ButtonSequenceStatus { id, sequence, run, cancel } => manager.call(
+            if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
+            json!({"id":id,"run":run,"sequence":sequence}),
         )?,
         Action::Screenshot { id, output } => manager.call(
             "screenshot", json!({"id": id, "path": absolute(&output)?}),

@@ -67,7 +67,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
     parser.add_argument('--lpk', type=Path)
+    parser.add_argument('--triple-click-log', help='With --lpk, verify a three-click UART marker after boot')
     args = parser.parse_args()
+    if args.triple_click_log and not args.lpk:
+        parser.error('--triple-click-log requires --lpk')
     with tempfile.TemporaryDirectory(prefix='lisem-mcp-') as temporary:
         data = Path(temporary) / 'library'
         client = Client(args.binary.resolve(), data)
@@ -75,7 +78,7 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 18 and 'lisem_screenshot' in names
+            assert len(names) == 21 and 'lisem_screenshot' in names
             assert all(tool['inputSchema'].get('additionalProperties') is False for tool in definitions)
             assert client.rpc('tools/call', {'name': 'missing', 'arguments': {}})['error']
             client.tool('lisem_create', {'board': 'missing'}, error=True)
@@ -98,6 +101,30 @@ def main():
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
             client.tool('lisem_button', {'id': identifier, 'run': 'stale', 'button': 'function', 'pressed': True}, error=True)
+            buttons = {'id': identifier, 'run': run, 'button': 'function', 'count': 3, 'hold_ms': 80, 'gap_ms': 80}
+            client.tool('lisem_button_sequence', dict(buttons, run='stale'), error=True)
+            for invalid in ({'count': 0}, {'count': 33}, {'hold_ms': 0}, {'gap_ms': 0}, {'hold_ms': 60000}):
+                client.tool('lisem_button_sequence', dict(buttons, **invalid), error=True)
+            sequence = client.tool('lisem_button_sequence', buttons)
+            control = {'id': identifier, 'run': run, 'sequence': sequence['sequence']}
+            deadline = time.monotonic() + 10
+            while sequence['status'] == 'running':
+                assert time.monotonic() < deadline
+                sequence = client.tool('lisem_button_sequence_status', control)
+                time.sleep(.01)
+            assert sequence['status'] == 'completed' and sequence['completed'] == 3 and not sequence['pressed']
+            assert 400_000_000 <= sequence['finished_ns'] - sequence['started_ns'] < 401_000_000
+            sequence = client.tool('lisem_button_sequence', dict(buttons, count=1, hold_ms=5000))
+            client.tool('lisem_button_sequence_cancel', control, error=True)
+            control['sequence'] = sequence['sequence']
+            client.tool('lisem_button_sequence', buttons, error=True)
+            client.tool('lisem_button', {'id': identifier, 'run': run, 'button': 'function', 'pressed': False})
+            sequence = client.tool('lisem_button_sequence_status', control)
+            assert sequence['status'] == 'cancelled' and sequence['reason'] == 'manual-input' and not sequence['pressed']
+            sequence = client.tool('lisem_button_sequence', dict(buttons, count=1, hold_ms=5000))
+            control['sequence'] = sequence['sequence']
+            sequence = client.tool('lisem_button_sequence_cancel', control)
+            assert sequence['status'] == 'cancelled' and not sequence['pressed']
             cursor = 0
             time.sleep(.15)
             request = struct.pack('<BBHI', 0, 8, 36, 0) + bytes.fromhex('07071220') + b'\x55' * 32
@@ -127,36 +154,65 @@ def main():
             observer.close()
             observer = None
             assert client.tool('lisem_status', {'id': identifier})['runtime']['session']['finished'] is False
+            sequence = client.tool('lisem_button_sequence', dict(buttons, count=1, hold_ms=5000))
+            control['sequence'] = sequence['sequence']
             client.tool('lisem_reset', {'id': identifier, 'run': run, 'download': True})
             status = client.tool('lisem_status', {'id': identifier})
             assert status['runtime']['serial']['0'] == port
             newer = status['runtime']['session']['output']
             assert newer != run
             client.tool('lisem_uart_read', {'id': identifier, 'run': run, 'channel': 0}, error=True)
+            client.tool('lisem_button_sequence_cancel', control, error=True)
+            client.tool('lisem_button_sequence_status', control, error=True)
+            assert status['runtime']['session']['button_sequence']['status'] == 'idle'
+            sequence = client.tool('lisem_button_sequence', dict(buttons, run=newer, count=1, hold_ms=5000))
+            stopped_control = {'id': identifier, 'run': newer, 'sequence': sequence['sequence']}
+            client.tool('lisem_power_off', {'id': identifier, 'run': newer})
+            sequence = client.tool('lisem_button_sequence_status', stopped_control)
+            assert sequence['status'] == 'cancelled' and not sequence['pressed']
             if args.lpk:
                 client.tool('lisem_power_off', {'id': identifier, 'run': newer})
                 started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 12, 'timeout': 60})
                 newer = started['session']['output']
-                pressed = released = False
+                pressed = triple = False
+                application_uart, application_cursor = bytearray(), 0
                 deadline = time.monotonic() + 75
                 while True:
                     state = client.tool('lisem_status', {'id': identifier})['runtime']['session']
-                    assert not state.get('error') and not state.get('guest_fault'), state
                     seconds = state.get('seconds', 0)
+                    if args.triple_click_log:
+                        part = client.tool('lisem_uart_read', {'id': identifier, 'run': newer, 'channel': 0, 'cursor': application_cursor})
+                        assert not part['lost']
+                        application_uart.extend(bytes.fromhex(part['hex']))
+                        application_uart = application_uart[-65536:]
+                        application_cursor = part['cursor']
+                    assert not state.get('error') and not state.get('guest_fault'), (state, application_uart.decode(errors='replace'))
                     if state['finished']:
                         break
                     if not pressed and seconds >= .5:
-                        client.tool('lisem_button', {'id': identifier, 'run': newer, 'button': 'function', 'pressed': True})
+                        sequence = client.tool('lisem_button_sequence', dict(buttons, run=newer, count=1, hold_ms=3500))
                         pressed = True
-                    if pressed and not released and seconds >= 4:
-                        client.tool('lisem_button', {'id': identifier, 'run': newer, 'button': 'function', 'pressed': False})
-                        released = True
+                    if args.triple_click_log and not triple and seconds >= 6:
+                        boot = client.tool('lisem_button_sequence_status', {'id': identifier, 'run': newer, 'sequence': sequence['sequence']})
+                        assert boot['status'] == 'completed' or (boot['status'] == 'cancelled' and boot['reason'] == 'reset'), boot
+                        application_uart.clear()
+                        sequence = client.tool('lisem_button_sequence', dict(buttons, run=newer))
+                        triple = True
                     assert time.monotonic() < deadline
                     time.sleep(.03)
-                assert released and state['report']['luna']['completed'] > 0
+                end = state['button_sequence']
+                assert pressed and (end['status'] == 'completed' or (end['status'] == 'cancelled' and end['reason'] == 'reset')), end
+                if args.triple_click_log:
+                    assert triple and end['status'] == 'completed' and end['completed'] == 3, end
+                    assert args.triple_click_log.encode() in application_uart, application_uart.decode(errors='replace')
+                assert state['report']['luna']['completed'] > 0
                 assert state['report']['screen']['enabled']
                 image = client.tool('lisem_screenshot', {'id': identifier})['content'][0]
                 assert base64.b64decode(image['data']).startswith(b'\x89PNG')
+            else:
+                started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
+                newer = started['session']['output']
+                client.tool('lisem_button_sequence', dict(buttons, run=newer, count=1, hold_ms=5000))
             client.close()
             assert not Path(newer).exists() and not (instance / 'ipc.json').exists()
             assert not (instance / 'runs').exists()

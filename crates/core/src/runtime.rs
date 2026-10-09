@@ -54,6 +54,33 @@ impl Default for Options {
     }
 }
 
+/// A bounded sequence is scheduled entirely by the guest virtual clock.
+#[derive(Deserialize)]
+struct ButtonSequence {
+    button: String,
+    count: u64,
+    hold_ms: u64,
+    gap_ms: u64,
+}
+impl ButtonSequence {
+    fn command(&self) -> Result<String> {
+        ensure!((1..=32).contains(&self.count), "Button count must be 1..32");
+        ensure!(
+            (1..=60000).contains(&self.hold_ms),
+            "Hold must be 1..60000 ms"
+        );
+        ensure!(
+            self.gap_ms <= 60000 && (self.count == 1 || self.gap_ms > 0),
+            "Repeated presses require a positive gap of at most 60000 ms"
+        );
+        ensure!(
+            self.count * self.hold_ms + (self.count - 1) * self.gap_ms <= 60000,
+            "Button sequence must fit within 60000 ms"
+        );
+        Ok(format!("{},{},{}", self.count, self.hold_ms, self.gap_ms))
+    }
+}
+
 struct Process {
     child: Child,
 }
@@ -448,6 +475,14 @@ impl Session {
         self.capture_at = Instant::now() + Duration::from_millis(100);
         Ok(())
     }
+    fn button_sequence(&mut self) -> Result<Value> {
+        let value = self.qmp.get("x-lisa-button-sequence", &mut self.uart)?;
+        let state: Value =
+            serde_json::from_str(value.as_str().context("Invalid button sequence state")?)?;
+        self.state["button_sequence"] = state.clone();
+        self.state["controls"]["buttons"]["function"] = state["pressed"].clone();
+        Ok(state)
+    }
     fn tick(&mut self) -> Result<()> {
         if self.finished {
             return Ok(());
@@ -476,6 +511,9 @@ impl Session {
                 storage::read_json(&self.output.join("report.json")).ok()
             };
             if let Some(report) = report {
+                if let Some(sequence) = report.get("button_sequence") {
+                    self.state["button_sequence"] = sequence.clone();
+                }
                 self.state["report"] = report.clone();
                 self.state["seconds"] = json!(report["virtual_ns"].as_f64().unwrap_or(0.0) / 1e9);
                 self.state["ap_exceptions"] = report["cores"][0]["exceptions"].clone();
@@ -498,6 +536,15 @@ impl Session {
             if !status.success() && !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!(format!("QEMU exited with {status}"));
             }
+            if self.state["button_sequence"]["status"] == "running" {
+                // Without a final report, completion cannot be inferred.
+                self.state["button_sequence"]["status"] = json!("interrupted");
+                self.state["button_sequence"]["reason"] = json!("runtime-ended");
+            }
+            if self.state["button_sequence"].is_object() {
+                self.state["button_sequence"]["pressed"] = json!(false);
+            }
+            self.state["controls"]["buttons"]["function"] = json!(false);
             if let Some(audio) = &mut self.audio
                 && let Err(error) = audio.finish(!self.stopped)
                 && self.state["error"].is_null()
@@ -563,6 +610,10 @@ impl Session {
             return Ok(());
         }
         self.stopped = true;
+        let _ = self
+            .qmp
+            .set("x-lisa-button-sequence", json!("cancel"), &mut self.uart);
+        let _ = self.button_sequence();
         let _ = self.qmp.call("quit", json!({}), &mut self.uart);
         let deadline = Instant::now() + Duration::from_secs(3);
         while self.process.child.try_wait()?.is_none() && Instant::now() < deadline {
@@ -752,6 +803,50 @@ impl Runtime {
                 session.state["controls"]["buttons"][params["button"].as_str().unwrap()] =
                     json!(pressed);
                 Ok(json!(true))
+            }
+            "button_sequence" => {
+                ensure!(
+                    params["run"].is_string(),
+                    "Button sequences require a run identifier"
+                );
+                let request: ButtonSequence = serde_json::from_value(params.clone())?;
+                let command = request.command()?;
+                let session = self.session.as_mut().context("Instance is not running")?;
+                session.backend.button(&request.button)?;
+                session
+                    .qmp
+                    .set("x-lisa-button-sequence", json!(command), &mut session.uart)?;
+                session.button_sequence()
+            }
+            "button_sequence_status" | "button_sequence_cancel" => {
+                ensure!(
+                    params["run"].is_string(),
+                    "Button sequences require a run identifier"
+                );
+                let expected = params["sequence"]
+                    .as_u64()
+                    .filter(|id| *id > 0)
+                    .context("A positive sequence identifier is required")?;
+                let state = if let Some(session) = &mut self.session {
+                    session.button_sequence()?
+                } else {
+                    self.last_state["button_sequence"].clone()
+                };
+                ensure!(
+                    state["sequence"].as_u64() == Some(expected),
+                    "The request belongs to an earlier button sequence"
+                );
+                if method == "button_sequence_cancel" {
+                    if let Some(session) = &mut self.session {
+                        session.qmp.set(
+                            "x-lisa-button-sequence",
+                            json!("cancel"),
+                            &mut session.uart,
+                        )?;
+                        return session.button_sequence();
+                    }
+                }
+                Ok(state)
             }
             "mute" => {
                 if let Some(audio) = self.session.as_mut().and_then(|s| s.audio.as_mut()) {

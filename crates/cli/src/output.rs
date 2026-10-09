@@ -9,6 +9,7 @@ pub enum Output {
     Run(String),
     Text,
     Raw,
+    Json,
     Message(String),
 }
 impl Output {
@@ -28,6 +29,7 @@ impl Output {
             Action::Button { button, state, .. } => {
                 Self::Message(format!("Button {button}: {state}."))
             }
+            Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } => Self::Json,
             Action::Screenshot { output, .. } => {
                 Self::Message(format!("Screenshot saved: {}", output.display()))
             }
@@ -41,6 +43,7 @@ impl Output {
     pub fn render(&self, value: &Value) -> String {
         match self {
             Self::Raw => unreachable!(),
+            Self::Json => serde_json::to_string_pretty(value).unwrap(),
             Self::Text => value.as_str().unwrap_or_default().to_owned(),
             Self::Message(message) => message.clone(),
             Self::Device => device(value),

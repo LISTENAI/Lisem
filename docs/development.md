@@ -27,6 +27,9 @@ python3 tests/run_live_memory.py --lpk firmware.lpk --audio --microphone --netwo
 
 MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 验证原应用启动。GHA 对每个平台的最终包运行不依赖应用固件的 MCP 回归。
+支持三击日志的固件可追加 `--triple-click-log '日志标记'`，在开机后提交
+80 ms 按下、80 ms 间隔的三击并检查原始 UART 中的识别结果。固件主动复位
+会取消开机长按；输入完成与后续业务成功分别验证，外设未实现仍使集成失败。
 
 ## 平台工具链
 

@@ -90,7 +90,18 @@ lisem uid INSTANCE_ID --regenerate
 lisem shutdown INSTANCE_ID
 ```
 
-按键的按下与松开是两个独立动作，中间由调用方决定实际等待时间。
+`button press/release` 是即时手动输入。自动化长按、连按使用一次提交的虚拟时间序列：
+
+```sh
+lisem button-sequence INSTANCE_ID function --run RUN_ID --count 3 --hold-ms 80 --gap-ms 80
+lisem button-sequence-status INSTANCE_ID SEQUENCE_ID --run RUN_ID
+lisem button-sequence-status INSTANCE_ID SEQUENCE_ID --run RUN_ID --cancel
+```
+
+`RUN_ID` 从 `lisem --json status INSTANCE_ID` 的 `runtime.session.output` 获取，
+`SEQUENCE_ID` 由提交结果返回。次数为 1–32，总时长至多 60 秒；所有边沿由 QEMU
+虚拟时钟调度，最终自动松开。即时手动输入取消当前序列并接管按键；复位、下电
+终止序列。返回 `completed` 只表示输入完成，不保证固件业务成功。
 `reset --download` 进入 ROM 烧录模式；`write --offset` 写入原始二进制。
 `send INSTANCE_ID 0 TEXT` 向 UART 发送 UTF-8 字节，`--hex` 发送二进制。
 默认输出列表、状态和操作结果；`--json` 输出结构化数据，供脚本读取；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
