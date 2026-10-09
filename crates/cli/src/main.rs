@@ -8,7 +8,7 @@ use lisem_core::{
     runtime::{self, Client, Options},
     storage,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -240,13 +240,7 @@ fn run() -> Result<i32> {
         )?,
         Action::Attach { path } => manager.call("attach", json!({"path": absolute(&path)?}))?,
         Action::Status { id: None } => manager.status()?,
-        Action::Status { id: Some(id) } => {
-            let item = manager.catalog.device(&id)?;
-            let live = Client::connect(Path::new(item["path"].as_str().unwrap()))
-                .and_then(|client| client.call("status", json!({})))
-                .unwrap_or(Value::Null);
-            json!({"device": item, "runtime": live})
-        }
+        Action::Status { id: Some(id) } => manager.call("inspect", json!({"id":id}))?,
         Action::Import { id, package } => manager.call(
             "import", json!({"id": id, "package": absolute(&package)?}),
         )?,

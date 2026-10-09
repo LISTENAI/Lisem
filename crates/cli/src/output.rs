@@ -51,6 +51,30 @@ impl Output {
             Self::Status if value.get("device").is_some() => {
                 let mut out = device(&value["device"]);
                 let _ = write!(out, "\n{}", session(&value["runtime"]["session"]));
+                if value["runtime"].is_object() {
+                    let worker = &value["runtime"]["worker"];
+                    let _ = write!(
+                        out,
+                        "\nWorker: {} (PID {}), client sources: {}",
+                        text(&worker["build"]["version"]),
+                        worker["pid"],
+                        text(&value["client_worker_build"])
+                    );
+                    if let Some(digest) = value["runtime"]["session"]["qemu"]["sha256"].as_str() {
+                        let _ = write!(out, "\nQEMU SHA256: {digest}");
+                        let _ = write!(
+                            out,
+                            "\nQEMU matches client installation: {}",
+                            text(&value["client_qemu_binary"])
+                        );
+                    }
+                    if value["client_worker_build"] == "different"
+                        || value["client_worker_build"] == "unknown"
+                        || value["client_qemu_binary"] == "different"
+                    {
+                        out.push_str("\nCheck the worker build before testing changes. shutdown closes the runtime and UART endpoints; stop preserves the worker.");
+                    }
+                }
                 if let Some(ports) = value["runtime"]["serial"].as_object() {
                     for (channel, endpoint) in ports {
                         let _ = write!(out, "\nUART {channel}: {}", text(endpoint));

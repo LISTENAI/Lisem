@@ -61,7 +61,31 @@ QEMU 从受理时刻按虚拟时间执行每次按下和松开，不依赖 MCP �
 串口观察使用每路 64 KiB 的内存历史，不消耗终端数据。每次返回至多 16 KiB；
 用返回的 `cursor` 继续读取。`lost` 表示较早的字节已过期，`hex` 保留精确
 原始字节，`text` 用于显示。退出运行时后历史释放；不会生成日志归档。
-截图直接作为 MCP 图片返回，不写入磁盘。
+截图直接作为 MCP 图片返回，不写入磁盘，同时在 `structuredContent` 和文本
+内容中返回元数据：`instance_id`、`worker_id`、`run`、宽高及 `frame`。
+`frame.sequence` 是该轮运行的帧发布序号，`virtual_ns` 是发布时的虚拟时间，
+`host_monotonic_ns` 是 QEMU 发布时的宿主单调时钟值（不是 UTC 时间）。三者
+与像素在同一个共享槽内读取，不使用工具响应时间代替。比较截图时先核对
+`run`，再比较序号；相同序号代表同一帧，重启后不能跨运行比较序号。
+`source=active_run` 表示当前运行最近发布的帧，不保证发生在某次操作之后；
+`last_run` 表示下电后保留的最后帧。读取截图不会主动推进虚拟时间。连接旧版
+后台时 `metadata_available=false`，不能据此证明截图新鲜度。
+
+`lisem_status` 和 `lisem --json status <id>` 返回 `client_build`、
+`runtime.worker` 及 `client_worker_build`。后者为 `same`、`different` 或
+`unknown`，比较的是编译时嵌入的 Rust 源码指纹和目标平台；不是协议兼容性
+判断，也不是可执行文件字节相等的保证。旧后台没有身份信息时返回 `unknown`。
+worker 的 `id` 区分进程生命周期，`pid` 便于定位进程；
+`runtime.session.qemu` 保留本轮启动时的 QEMU 文件 SHA256、PID 和 QMP
+报告的版本，运行中替换安装文件不会改变这些已记录值。
+`available_qemu_sha256` 是管理客户端启动时可用 QEMU 的文件哈希；
+`client_qemu_binary` 将它与该实例本轮或上一轮的 QEMU 哈希比较，同样返回
+`same`、`different` 或 `unknown`。这能识别仅更新 QEMU、Rust 版本未变的情况。
+
+后台通过实例目录中的端点发现。换实例库后挂载同一实例仍会连接同一个后台；
+下电、重新上电及复位会保留 worker 与 UART 端点。更新程序后若需要切换后台，
+显式调用 `lisem_shutdown` 或 `lisem shutdown <id>`，再重新上电并核对身份。
+查询和连接不会为了更新版本自动关闭设备。
 
 启动默认关闭宿主网络和音频，按任务显式启用。虚拟运行预算为 5–600 秒，
 宿主截止时间为 1–850 秒。Flash 擦除和 UID 重新生成要求下电并提供当前

@@ -294,6 +294,9 @@ impl Session {
         );
         let assets = Assets::new(&catalog.root)?;
         assets.verify_qemu()?;
+        // Snapshot launch provenance; later updates on disk must not relabel
+        // an already running QEMU process.
+        let qemu_sha256 = storage::sha256(&assets.qemu())?;
         let backend = Backend::for_device(catalog, item)?;
         let instance = Path::new(item["path"].as_str().context("Missing instance path")?);
         let lease = storage::locked(
@@ -423,7 +426,10 @@ impl Session {
                 )?;
             }
         }
-        let qmp = Qmp::new(control, &mut uart)?;
+        let mut qmp = Qmp::new(control, &mut uart)?;
+        let qemu_version = qmp.call("query-version", json!({}), &mut uart)?;
+        let qemu_identity = json!({"version":qemu_version,"sha256":qemu_sha256,
+            "pid":process.child.id()});
         let display = Display::open(&framebuffer)?;
         if options.capture.is_some() {
             storage::write_json(
@@ -445,7 +451,7 @@ impl Session {
             _workspace: workspace,
             _lease: lease,
             output,
-            state: json!({}),
+            state: json!({"qemu":qemu_identity}),
             options,
             started: Instant::now(),
             capture_at: Instant::now(),
@@ -638,6 +644,7 @@ impl Drop for Session {
 pub struct Runtime {
     catalog: Catalog,
     id: String,
+    identity: Value,
     session: Option<Session>,
     last_state: Value,
     last_frame: Option<Frame>,
@@ -660,6 +667,8 @@ impl Runtime {
         Ok(Self {
             catalog,
             id,
+            identity: json!({"id":Uuid::new_v4().simple().to_string(),
+                "pid":std::process::id(),"build":crate::identity::build()}),
             session: None,
             last_state: Value::Null,
             last_frame: None,
@@ -738,7 +747,7 @@ impl Runtime {
             .iter()
             .map(|(n, p)| (n.to_string(), p.path.clone()))
             .collect();
-        Ok(json!({"session":state,"serial":ports}))
+        Ok(json!({"session":state,"serial":ports,"worker":self.identity}))
     }
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
         if let Some(run) = params.get("run").filter(|v| !v.is_null()) {
@@ -967,8 +976,17 @@ impl Runtime {
                             break;
                         }
                         use base64::Engine;
+                        let run = self
+                            .session
+                            .as_ref()
+                            .map(|s| json!(s.output))
+                            .unwrap_or_else(|| self.last_state["output"].clone());
                         return Ok(
                             json!({"mime_type":"image/png", "width":frame.width, "height":frame.height,
+                            "instance_id":self.id,"worker_id":self.identity["id"],"run":run,
+                            "frame":{"sequence":frame.sequence,"virtual_ns":frame.virtual_ns,
+                                "host_monotonic_ns":frame.host_monotonic_ns},
+                            "source":if self.session.is_some() {"active_run"} else {"last_run"},
                             "data":base64::engine::general_purpose::STANDARD.encode(frame.png()?)}),
                         );
                     }

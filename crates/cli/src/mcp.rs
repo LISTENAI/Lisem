@@ -267,7 +267,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Instance>(
             "lisem_screenshot",
-            "Return the current or last screen as a PNG image, without writing a file.",
+            "Return the latest published screen as PNG plus frame metadata. Compare run and frame.sequence between observations; active_run does not guarantee a frame newer than an action. last_run is the retained frame after power-off. Frame clocks are publication times, not response times. Does not write a file or advance guest time.",
             true,
         ),
         definition::<Audio>(
@@ -361,11 +361,22 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_audio_input" => call(manager, "audio", arguments::<Audio>(value)?)?,
         "lisem_shutdown" => call(manager, "shutdown", arguments::<Instance>(value)?)?,
         "lisem_screenshot" => {
-            let result = call(manager, "screenshot", arguments::<Instance>(value)?)?;
-            return Ok(CallToolResult::success(vec![ContentBlock::image(
-                result["data"].as_str().context("Missing image")?,
-                "image/png",
-            )]));
+            let mut result = call(manager, "screenshot", arguments::<Instance>(value)?)?;
+            let data = result
+                .as_object_mut()
+                .context("Invalid screenshot")?
+                .remove("data")
+                .context("Missing image")?;
+            let image = ContentBlock::image(data.as_str().context("Invalid image")?, "image/png");
+            // Older workers can still supply images, but cannot prove freshness.
+            if result.get("frame").is_none() {
+                result["metadata_available"] = json!(false);
+            } else {
+                result["metadata_available"] = json!(true);
+            }
+            let mut reply = CallToolResult::structured(result);
+            reply.content.insert(0, image);
+            return Ok(reply);
         }
         _ => anyhow::bail!("Unknown tool"),
     };

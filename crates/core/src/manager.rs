@@ -23,6 +23,7 @@ pub struct Manager {
     owned: BTreeMap<String, Child>,
     runs: BTreeMap<String, Value>,
     selected: Option<String>,
+    available_qemu_sha256: Option<String>,
 }
 impl Manager {
     pub fn new(root: &Path, data: &Path, executable: &Path) -> Result<Self> {
@@ -32,6 +33,9 @@ impl Manager {
             owned: BTreeMap::new(),
             runs: BTreeMap::new(),
             selected: None,
+            available_qemu_sha256: crate::assets::Assets::new(root)
+                .and_then(|assets| storage::sha256(&assets.qemu()))
+                .ok(),
         })
     }
     pub fn restore_ports(&mut self) -> Result<()> {
@@ -133,6 +137,8 @@ impl Manager {
         let devices = self.catalog.devices()?;
         let mut sessions = json!({});
         let mut serial = json!({});
+        let mut runtimes = json!({});
+        let client_build = crate::identity::build();
         let mut session = Value::Null;
         for item in &devices {
             if !item["unavailable"].is_null() {
@@ -143,6 +149,9 @@ impl Manager {
                 let value = client.call("status", json!({}))?;
                 sessions[id] = value["session"].clone();
                 serial[id] = value["serial"].clone();
+                runtimes[id] = json!({"worker":value["worker"],
+                    "client_worker_build":crate::identity::comparison(&client_build, &value["worker"]["build"]),
+                    "client_qemu_binary":self.qemu_comparison(&value)});
                 if self.selected.as_deref() == Some(id)
                     || (session.is_null() && value["session"].is_object())
                 {
@@ -153,8 +162,20 @@ impl Manager {
         Ok(
             json!({"devices":devices,"boards":self.catalog.boards.values().collect::<Vec<_>>(),"chips":self.catalog.chips.values().collect::<Vec<_>>(),
             "sessions":sessions,"session":session,"serial":serial,"data_dir":self.catalog.data,
+            "client_build":client_build,"runtimes":runtimes,
+            "available_qemu_sha256":self.available_qemu_sha256,
             "capabilities":{"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
         )
+    }
+    fn qemu_comparison(&self, runtime: &Value) -> &'static str {
+        match (
+            self.available_qemu_sha256.as_deref(),
+            runtime["session"]["qemu"]["sha256"].as_str(),
+        ) {
+            (Some(a), Some(b)) if a == b => "same",
+            (Some(_), Some(_)) => "different",
+            _ => "unknown",
+        }
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
         if method == "status" {
@@ -186,7 +207,13 @@ impl Manager {
                 let runtime = Client::connect(&path)
                     .and_then(|c| c.call("status", json!({})))
                     .unwrap_or(Value::Null);
-                Ok(json!({"device":item,"runtime":runtime}))
+                let client_build = crate::identity::build();
+                Ok(
+                    json!({"device":item,"runtime":runtime,"client_build":client_build,
+                    "client_worker_build":crate::identity::comparison(&client_build, &runtime["worker"]["build"]),
+                    "available_qemu_sha256":self.available_qemu_sha256,
+                    "client_qemu_binary":self.qemu_comparison(&runtime)}),
+                )
             }
             "start" => {
                 let options = if let Some(options) = params.get("options") {

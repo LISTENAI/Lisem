@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 license = "MIT"
 
+[build-dependencies]
+sha2 = "0.10"
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

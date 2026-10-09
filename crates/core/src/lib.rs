@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod catalog;
 pub mod display;
+pub mod identity;
 pub mod manager;
 pub mod paths;
 pub mod process;

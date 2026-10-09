@@ -62,6 +62,21 @@ class Client:
                     self.process.wait()
         self.process.stdout.close()
 
+    def screenshot(self, identifier, run, source):
+        result = self.rpc('tools/call', {'name': 'lisem_screenshot',
+                                       'arguments': {'id': identifier}})['result']
+        assert not result.get('isError'), result
+        image = result['content'][0]
+        assert image['type'] == 'image' and image['mimeType'] == 'image/png'
+        assert base64.b64decode(image['data']).startswith(b'\x89PNG\r\n\x1a\n')
+        metadata = result['structuredContent']
+        assert metadata['metadata_available'] and metadata['instance_id'] == identifier
+        assert metadata['run'] == run and metadata['source'] == source
+        assert metadata['frame']['sequence'] > 0
+        assert metadata['frame']['virtual_ns'] >= 0 and metadata['frame']['host_monotonic_ns'] > 0
+        assert 'data' not in metadata
+        return metadata
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -100,6 +115,16 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            status = client.tool('lisem_status', {'id': identifier})
+            worker = status['runtime']['worker']
+            assert status['client_worker_build'] == 'same'
+            assert status['client_build'] == worker['build'] and worker['pid'] > 0
+            assert len(worker['build']['source_sha256']) == 64
+            qemu = status['runtime']['session']['qemu']
+            assert len(qemu['sha256']) == 64 and qemu['pid'] > 0
+            assert status['client_qemu_binary'] == 'same'
+            assert status['available_qemu_sha256'] == qemu['sha256']
+            assert qemu['version']['qemu']['major'] >= 10
             client.tool('lisem_button', {'id': identifier, 'run': 'stale', 'button': 'function', 'pressed': True}, error=True)
             buttons = {'id': identifier, 'run': run, 'button': 'function', 'count': 3, 'hold_ms': 80, 'gap_ms': 80}
             client.tool('lisem_button_sequence', dict(buttons, run='stale'), error=True)
@@ -145,9 +170,8 @@ def main():
                 terminal.extend(uart.read())
                 time.sleep(.01)
             assert terminal == received, 'MCP observation consumed or changed terminal output'
-            image = client.tool('lisem_screenshot', {'id': identifier})['content'][0]
-            assert image['type'] == 'image' and image['mimeType'] == 'image/png'
-            assert base64.b64decode(image['data']).startswith(b'\x89PNG\r\n\x1a\n')
+            frame = client.screenshot(identifier, run, 'active_run')
+            assert frame['worker_id'] == worker['id']
             assert not [p for p in Path(run).rglob('*') if p.is_file()]
             observer = Client(args.binary.resolve(), data)
             observer.tool('lisem_status', {'id': identifier})
@@ -158,9 +182,12 @@ def main():
             control['sequence'] = sequence['sequence']
             client.tool('lisem_reset', {'id': identifier, 'run': run, 'download': True})
             status = client.tool('lisem_status', {'id': identifier})
+            assert status['runtime']['worker'] == worker, 'Reset replaced the worker'
             assert status['runtime']['serial']['0'] == port
             newer = status['runtime']['session']['output']
             assert newer != run
+            assert status['runtime']['session']['qemu']['sha256'] == qemu['sha256']
+            client.screenshot(identifier, newer, 'active_run')
             client.tool('lisem_uart_read', {'id': identifier, 'run': run, 'channel': 0}, error=True)
             client.tool('lisem_button_sequence_cancel', control, error=True)
             client.tool('lisem_button_sequence_status', control, error=True)
@@ -207,9 +234,9 @@ def main():
                     assert args.triple_click_log.encode() in application_uart, application_uart.decode(errors='replace')
                 assert state['report']['luna']['completed'] > 0
                 assert state['report']['screen']['enabled']
-                image = client.tool('lisem_screenshot', {'id': identifier})['content'][0]
-                assert base64.b64decode(image['data']).startswith(b'\x89PNG')
-            else:
+            final_frame = client.screenshot(identifier, newer, 'last_run')
+            assert client.screenshot(identifier, newer, 'last_run') == final_frame
+            if not args.lpk:
                 started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
                 newer = started['session']['output']
                 client.tool('lisem_button_sequence', dict(buttons, run=newer, count=1, hold_ms=5000))

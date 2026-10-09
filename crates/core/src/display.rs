@@ -112,6 +112,10 @@ impl Display {
             return None;
         }
         let start = HEADER + slot * (16 + self.bytes) + 16;
+        // Clocks and pixels belong to the same publication and must all be
+        // copied while this slot is exclusively owned by the reader.
+        let virtual_ns = u64::from_ne_bytes(self.map[start - 16..start - 8].try_into().unwrap());
+        let host_monotonic_ns = u64::from_ne_bytes(self.map[start - 8..start].try_into().unwrap());
         let pixels =
             unsafe { std::slice::from_raw_parts(self.map.as_ptr().add(start), self.bytes) }
                 .to_vec();
@@ -121,6 +125,9 @@ impl Display {
             width: self.width,
             height: self.height,
             bgra: pixels,
+            sequence: publication >> 2,
+            virtual_ns,
+            host_monotonic_ns,
         })
     }
 }
@@ -130,6 +137,9 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
+    pub sequence: u64,
+    pub virtual_ns: u64,
+    pub host_monotonic_ns: u64,
 }
 impl Frame {
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -166,9 +176,19 @@ mod tests {
         for value in words {
             file.write_all(&value.to_ne_bytes()).unwrap();
         }
-        file.write_all(&[0; 60]).unwrap();
+        for (virtual_ns, host_ns, pixel) in [(123_u64, 456_u64, 0x11), (789, 999, 0x22), (0, 0, 0)]
+        {
+            file.write_all(&virtual_ns.to_ne_bytes()).unwrap();
+            file.write_all(&host_ns.to_ne_bytes()).unwrap();
+            file.write_all(&[pixel; 4]).unwrap();
+        }
         let mut display = Display::open(&path).unwrap();
-        assert!(display.latest().is_some());
+        let frame = display.latest().unwrap();
+        assert_eq!(
+            (frame.sequence, frame.virtual_ns, frame.host_monotonic_ns),
+            (1, 123, 456)
+        );
+        assert_eq!(frame.bgra, [0x11; 4]);
         assert!(display.latest().is_none());
         // Producer owns slot 1, so it cannot be read, even if announced.
         display.atomic(7).store(1, Ordering::Release);
@@ -176,7 +196,12 @@ mod tests {
         assert!(display.latest().is_none());
         assert_eq!(display.last, 4);
         display.atomic(7).store(0, Ordering::Release);
-        assert!(display.latest().is_some());
+        let frame = display.latest().unwrap();
+        assert_eq!(
+            (frame.sequence, frame.virtual_ns, frame.host_monotonic_ns),
+            (2, 789, 999)
+        );
+        assert_eq!(frame.bgra, [0x22; 4]);
         assert_eq!(display.atomic(7).load(Ordering::Acquire), 0);
         // Invalid geometry must be rejected without touching any slot.
         file.seek(SeekFrom::Start(8)).unwrap();
