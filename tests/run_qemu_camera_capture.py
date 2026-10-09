@@ -223,7 +223,49 @@ def rejection():
     print('Active pinmux loss, dynamic MCLK and unverified DMA burst modes rejected: PASS')
 
 
+def arrival_order():
+    # At 240 MHz HCLK these MCLK divisors make word periods 0.5/1/2 us.
+    # A tight two-line crop also exercises a 1 us line gap. At equal time,
+    # a timer queued before the word's predecessor must retain precedence.
+    for divider, period, threshold, available in ((14, 500, 6, 7),
+                                                  (29, 1000, 7, 8),
+                                                  (59, 2000, 7, 7)):
+        m = Machine(OUTPUT / ('arrival-order-%d' % period))
+        try:
+            configure(m); image(m)
+            m.write(0x46100018, 40)  # 24 MHz * 40 / 4 = 240 MHz HCLK.
+            m.write(DVP + 0x18, divider)
+            # Eight-pixel line with no extra horizontal clocks.
+            transfer(m, [0x05, 0, 0]); transfer(m, [0x0f, 0, 4])
+            transfer(m, [0x11, 0]); transfer(m, [0x50, 1])
+            transfer(m, [0x55, 0, 2, 0, 8])
+            m.write(DVP + 0x24, threshold)
+            for i in range(9): m.write(RAM + i*4, 0xa5a5a5a5)
+            dma(m, 8); m.write(DVP + 0x20, 1)
+            m.command('clock_step 1'); first = m.command('clock_step')
+            burst = first + (threshold - 1)*period + 1000
+            before = burst - first - 1
+            m.command('clock_step %d' % before)
+            assert [m.read(RAM + 4*i) for i in range(9)] == [0xa5a5a5a5]*9
+            m.command('clock_step 1')
+            assert [m.read(RAM + 4*i) for i in range(8)] == (
+                [0xf800f800]*available + [0]*(8-available))
+            assert m.read(RAM + 32) == 0xa5a5a5a5
+            assert bool(m.read(DVP + 0x38) & 4) == (available < 8)
+            assert bool(m.read(DVP + 0x38) & 0x40) == (period <= 1000)
+            # Stopping immediately after the DMA boundary must not expose
+            # future pixels or cause any later RAM write.
+            m.write(DVP + 0x20, 0); m.write(DVP + 0x2c, 0x7ff)
+            m.command('clock_step 1000000')
+            assert [m.read(RAM + 4*i) for i in range(8)] == (
+                [0xf800f800]*available + [0]*(8-available))
+            assert m.read(DVP + 0x38) == 0 and m.read(RAM + 32) == 0xa5a5a5a5
+        finally: m.close()
+    print('DMA/word coincidence, one-nanosecond RAM guards, 1 us line gap and stop cancellation: PASS')
+
+
 if __name__ == '__main__':
+    arrival_order()
     sampling_edges()
     capture(0)
     capture(1)

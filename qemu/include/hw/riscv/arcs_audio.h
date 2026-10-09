@@ -3,6 +3,7 @@
 #define HW_RISCV_ARCS_AUDIO_H
 #include "hw/sysbus.h"
 #include "qemu/timer.h"
+#define ARCS_GPDMA_SERVICE_NS 1000
 typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsAudioChannel {
     uint32_t control, source, destination, total, remaining;

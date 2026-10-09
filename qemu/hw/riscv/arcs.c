@@ -602,6 +602,7 @@ static bool camera_clock(ArcsMachine *s)
 static void camera_clock_changed(void *opaque)
 {
     ArcsMachine *s = opaque;
+    arcs_dvp_sync(&s->soc);
     bool clock = camera_clock(s);
     if (s->soc.dvp.capturing) {
         for (unsigned pin = 10; pin <= 20; pin++) {
@@ -622,6 +623,7 @@ static void camera_sensor_changed(void *opaque, bool interrupted)
 {
     ArcsMachine *s = opaque;
     if (interrupted) {
+        arcs_dvp_sync(&s->soc);
         timer_del(s->soc.dvp.event); s->soc.dvp.capturing = false;
     }
     arcs_dvp_source_changed(&s->soc);

@@ -32,7 +32,7 @@ static void schedule(ArcsGPDMA *s, int64_t now)
     if (s->servicing || timer_pending(s->event)) { return; }
     for (unsigned i = 0; i < 10; i++) {
         if (ready(s, &s->channel[i])) {
-            s->deadline = now + 1000; timer_mod(s->event, s->deadline); return;
+            s->deadline = now + ARCS_GPDMA_SERVICE_NS; timer_mod(s->event, s->deadline); return;
         }
     }
 }

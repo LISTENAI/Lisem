@@ -19,7 +19,7 @@ typedef struct ArcsDVP {
     unsigned input_form, phase, height;
     bool capturing, clock, dma_requested;
     uint64_t frames, overflows;
-    int64_t frame_start, deadline;
+    int64_t frame_start, deadline, word_armed_at;
     QEMUTimer *event;
     qemu_irq request;
     ArcsDVPFrame frame;
@@ -27,6 +27,7 @@ typedef struct ArcsDVP {
     void (*clock_changed)(void *opaque);
     void *opaque;
 } ArcsDVP;
+void arcs_dvp_sync(ArcsSoC *s);
 uint32_t arcs_dvp_dma_read(ArcsSoC *s);
 void arcs_dvp_init(ArcsSoC *s);
 void arcs_dvp_reset(ArcsSoC *s);
