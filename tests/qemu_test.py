@@ -114,7 +114,7 @@ class Machine:
         request = {'execute': command}
         if arguments is not None:
             request['arguments'] = arguments
-        self.qmp_file.write((json.dumps(request) + '\n').encode())
+        self.qmp.sendall((json.dumps(request) + '\n').encode())
         replied, reset = False, command != 'system_reset'
         reply = None
         while not (replied and reset):

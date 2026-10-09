@@ -119,6 +119,15 @@ enum Action {
         #[arg(long)]
         cancel: bool,
     },
+    /// Select a PNG/JPEG/PNM camera image, center-cropped to 640x480; retained until cleared.
+    Camera {
+        id: String,
+        #[arg(required_unless_present = "clear", conflicts_with = "clear")]
+        image: Option<PathBuf>,
+        /// Remove input; sensor capture waits for another image.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Save the current device display as PNG.
     Screenshot { id: String, output: PathBuf },
     /// Enable or disable a persistent host UART endpoint.
@@ -281,6 +290,10 @@ fn run() -> Result<i32> {
             if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
             json!({"id":id,"run":run,"sequence":sequence}),
         )?,
+        Action::Camera { id, image, .. } => {
+            let state = manager.call("inspect", json!({"id":id}))?;
+            manager.call("camera", json!({"id":id,"run":state["runtime"]["session"]["output"],"path":image.as_deref().map(absolute).transpose()?}))?
+        }
         Action::Screenshot { id, output } => manager.call(
             "screenshot", json!({"id": id, "path": absolute(&output)?}),
         )?,

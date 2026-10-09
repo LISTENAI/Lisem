@@ -63,7 +63,8 @@ static bool data_address(uint32_t address, unsigned size, bool write)
             (write && address >= APC_BASE + 0xf4 && end <= APC_BASE + 0x104) ||
             (!write && address >= APC_BASE + 0x104 && end <= APC_BASE + 0x114) ||
             (write && address >= 0x45003000 && end <= 0x45003800) ||
-            (!write && address >= 0x45002800 && end <= 0x45003000));
+            (!write && address >= 0x45002800 && end <= 0x45003000) ||
+            (!write && address >= 0x45001000 && end <= 0x45001800));
 }
 
 static uint8_t image_component(int value)
@@ -93,8 +94,13 @@ static void service(void *opaque)
                   data_address(c->destination, c->width, true))) {
                 arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
             }
-            if (address_space_read(&address_space_memory, c->source, MEMTXATTRS_UNSPECIFIED,
-                                   data, c->width) != MEMTX_OK) {
+            if (c->source >= 0x45001000 && c->source < 0x45001800) {
+                if (c->width != 4 || c->mode != 0 || burst != 8 || (c->control >> 28) != 5) {
+                    arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
+                }
+                stl_le_p(data, arcs_dvp_dma_read(s->soc));
+            } else if (address_space_read(&address_space_memory, c->source,
+                    MEMTXATTRS_UNSPECIFIED, data, c->width) != MEMTX_OK) {
                 arcs_soc_fail(s->soc, DMA_BASE + ch * 4, 4, true, c->control);
             }
             if (c->image_rgb) {

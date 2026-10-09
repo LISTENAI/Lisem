@@ -77,6 +77,8 @@ enum Action {
     Start,
     Stop,
     Audio,
+    Camera,
+    ClearCamera,
     Sound,
     Network,
     Microphone,
@@ -284,6 +286,7 @@ impl Desktop {
                 match action {
                     Action::Attach => "打开实例目录",
                     Action::Audio => "选择 16 kHz 单声道 PCM16 WAV",
+                    Action::Camera => "选择摄像头图片（PNG / JPEG / PNM）",
                     _ => "选择要写入 Flash 的 LPK",
                 }
                 .into(),
@@ -296,6 +299,9 @@ impl Desktop {
                         match action {
                             Action::ChoosePackage => v.package = Some(path.clone()),
                             Action::Attach => v.send("attach", json!({"path":path})),
+                            Action::Camera => {
+                                v.send("camera", json!({"id":selected,"run":run,"path":path}))
+                            }
                             Action::Audio => {
                                 v.send("audio", json!({"id":selected,"run":run,"path":path}))
                             }
@@ -341,8 +347,13 @@ impl Desktop {
                     show_device(&d, self.backend.clone(), self.windows.clone(), cx);
                 }
             }
-            Action::ChoosePackage | Action::Attach | Action::Import | Action::Audio => {
+            Action::ChoosePackage | Action::Attach | Action::Import | Action::Audio | Action::Camera => {
                 self.choose_file(action, cx);
+            }
+            Action::ClearCamera => {
+                let mut params = self.params();
+                params["path"] = Value::Null;
+                self.send("camera", params);
             }
             Action::ClearPackage => self.package = None,
             Action::Create => self.send("create", json!({
@@ -932,6 +943,39 @@ impl Desktop {
                         false,
                         cx,
                     ));
+                if d.hardware["board"]["camera"].is_object() {
+                    body = body
+                        .child(info(
+                            "摄像头图片",
+                            d.host["camera_image"]
+                                .as_str()
+                                .unwrap_or("未选择，采集等待输入"),
+                        ))
+                        .child(caption(
+                            "保持比例，居中裁切至 640 × 480；重新上电时读取原文件",
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .gap_3()
+                                .child(self.control(
+                                    "选择图片…",
+                                    "camera",
+                                    Action::Camera,
+                                    idle,
+                                    false,
+                                    cx,
+                                ))
+                                .child(self.control(
+                                    "清除图片",
+                                    "clear-camera",
+                                    Action::ClearCamera,
+                                    idle && d.host["camera_image"].is_string(),
+                                    false,
+                                    cx,
+                                )),
+                        );
+                }
             }
             _ => {
                 body = body

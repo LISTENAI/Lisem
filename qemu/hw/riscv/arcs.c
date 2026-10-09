@@ -8,6 +8,7 @@
 #include "hw/riscv/arcs_wifi_ap.h"
 #include "hw/riscv/arcs_network.h"
 #include "hw/display/arcs_st7789.h"
+#include "hw/i2c/gc0328.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/audio/pcm_feedback.h"
@@ -30,6 +31,7 @@ struct ArcsMachine {
     ArcsXccela128 psram;
     ArcsNOR flash;
     DeviceState *screen;
+    DeviceState *camera;
     QEMUTimer *deadline;
     QEMUTimer *power_button;
     QEMUTimer *boot_pin;
@@ -591,6 +593,133 @@ static void connect_panel(ArcsMachine *s)
     s->soc.gpt.changed = backlight; s->soc.gpt.opaque = s;
 }
 
+static bool camera_clock(ArcsMachine *s)
+{
+    return s->soc.dvp.clock && (s->soc.dvp.regs[0x10 / 4] & 1) &&
+        arcs_pinmux_function(&s->soc.pinmux[0], 26, 16);
+}
+
+static void camera_clock_changed(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    bool clock = camera_clock(s);
+    if (s->soc.dvp.capturing) {
+        for (unsigned pin = 10; pin <= 20; pin++) {
+            if (!arcs_pinmux_function(&s->soc.pinmux[0], pin, 16)) {
+                arcs_soc_fail(&s->soc, 0x47500000 + pin * 4, 4, true,
+                              s->soc.pinmux[0].config[pin]);
+            }
+        }
+    }
+    gc0328_set_clock(s->camera, clock);
+    if (!clock) {
+        timer_del(s->soc.dvp.event);
+        s->soc.dvp.capturing = false;
+    } else { arcs_dvp_source_changed(&s->soc); }
+}
+
+static void camera_sensor_changed(void *opaque, bool interrupted)
+{
+    ArcsMachine *s = opaque;
+    if (interrupted) {
+        timer_del(s->soc.dvp.event); s->soc.dvp.capturing = false;
+    }
+    arcs_dvp_source_changed(&s->soc);
+}
+
+static void camera_pad(void *opaque, int pin, int level)
+{
+    camera_clock_changed(opaque);
+}
+
+static bool camera_sccb_route(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    /* Loss of the sensor clock during an owned SCCB transaction is not
+     * approximated as successful data. An idle, unclocked sensor NACKs. */
+    return (!i2c_bus_busy(s->soc.i2c[0].bus) || camera_clock(s)) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], 38, 8) &&
+           arcs_pinmux_function(&s->soc.pinmux[0], 39, 8);
+}
+
+static uint8_t camera_sample(void *opaque, unsigned byte, unsigned line)
+{
+    return gc0328_sample(opaque, byte, line);
+}
+
+static bool camera_begin(void *opaque, ArcsDVPFrame *frame, Error **errp)
+{
+    ArcsMachine *s = opaque;
+    if (!camera_clock(s)) { return false; }
+    for (unsigned pin = 10; pin <= 20; pin++) {
+        if (!arcs_pinmux_function(&s->soc.pinmux[0], pin, 16)) {
+            error_setg(errp, "GC0328 DVP pins are not routed to the receiver"); return false;
+        }
+    }
+    unsigned sync = gc0328_sync_mode(s->camera);
+    /* V_SYNC selects the frame edge, not the active level of the sync
+     * pulse. With the normal low VSYNC pulse (0x46=2), its rising edge
+     * starts the image interval. H_SYNC selects the active line level. */
+    unsigned expected = ((sync & 1) << 2) | (!(sync & 2) << 1);
+    unsigned polarity = s->soc.dvp.regs[0x14 / 4];
+    if ((polarity & 6) != expected) {
+        error_setg(errp, "Unsupported GC0328/DVP sync polarity mismatch"); return false;
+    }
+    uint64_t pixel, line, total;
+    if (!gc0328_frame_info(s->camera, &frame->width, &frame->height,
+            &frame->bpp, &pixel, &line, &total, errp)) { return false; }
+    uint64_t hz = arcs_hclk_hz(&s->soc) /
+        (2 * ((s->soc.dvp.regs[0x18 / 4] & 63) + 1));
+    if (!hz) { error_setg(errp, "Invalid camera MCLK"); return false; }
+    /* Half-MCLK units preserve both sampling edges. The ideal digital
+     * source is stable for the pixel period; falling-edge sampling arrives
+     * half a PCLK later, and sensor PCLK inversion exchanges these phases. */
+    frame->hz = hz * 2; frame->byte_clocks = pixel;
+    frame->sample_clocks = ((polarity ^ (sync >> 2)) & 1) * (pixel / 2);
+    frame->line_clocks = line * 2; frame->lead_clocks = 24 * line;
+    frame->frame_clocks = total * 2;
+    if (frame->line_clocks < frame->width * frame->bpp * frame->byte_clocks ||
+        frame->frame_clocks < frame->lead_clocks + frame->height * frame->line_clocks) {
+        error_setg(errp, "Unsupported GC0328 line/frame timing"); return false;
+    }
+    frame->sample = camera_sample; frame->opaque = s->camera;
+    return true;
+}
+
+static void camera_frame_set(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (!*value) { gc0328_clear_frame(s->camera); return; }
+    const size_t bytes = 640 * 480 * 3, encoded = bytes / 3 * 4;
+    if (strlen(value) != encoded || strspn(value,
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/") != encoded) {
+        error_setg(errp, "Camera input must be base64 640x480 RGB888"); return;
+    }
+    gsize length;
+    g_autofree uint8_t *rgb = g_base64_decode(value, &length);
+    if (gc0328_set_frame(s->camera, rgb, length, errp)) {
+        arcs_dvp_source_changed(&s->soc);
+    }
+}
+
+static void connect_camera(ArcsMachine *s)
+{
+    I2CSlave *sensor = i2c_slave_new(TYPE_GC0328, 0x21);
+    s->camera = DEVICE(sensor);
+    object_property_add_child(OBJECT(s), "camera", OBJECT(sensor));
+    i2c_slave_realize_and_unref(sensor, s->soc.i2c[0].bus, &error_fatal);
+    s->soc.i2c[0].route_valid = camera_sccb_route;
+    s->soc.i2c[0].route_opaque = s;
+    s->soc.dvp.begin_frame = camera_begin;
+    s->soc.dvp.clock_changed = camera_clock_changed;
+    s->soc.dvp.opaque = s;
+    gc0328_set_notify(s->camera, camera_sensor_changed, s);
+    qdev_connect_gpio_out_named(DEVICE(&s->soc), "pad-out", 26,
+                               qemu_allocate_irq(camera_pad, s, 0));
+    object_property_add_str(OBJECT(s), "x-lisa-camera-frame", NULL, camera_frame_set);
+    camera_clock_changed(s);
+}
+
 static void finish(void *opaque)
 {
     /* A timer may run on the shared TCG thread. vm_stop() then queues the
@@ -719,6 +848,7 @@ static void machine_init(MachineState *machine)
         s->boot_pin = timer_new_ns(QEMU_CLOCK_VIRTUAL, boot_pin_release, s);
     }
     connect_panel(s);
+    connect_camera(s);
     connect_pcm(s);
     s->wifi_capture = g_byte_array_new(); reset_radio(s);
     arcs_wifi_ap_init(&s->access_point, &s->soc.wifi); s->wifi_rx_status = "idle";

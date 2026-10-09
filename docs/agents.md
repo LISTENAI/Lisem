@@ -34,6 +34,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_button_sequence_status`、`lisem_button_sequence_cancel` | 查询或取消指定按键序列 |
 | `lisem_uart`、`lisem_uart_read`、`lisem_uart_write` | 连接、观察和输入原始 UART |
 | `lisem_screenshot`、`lisem_audio_input` | 返回 PNG 图像、向 ADC 输入 WAV |
+| `lisem_camera_input` | 选择或清除 GC0328 静态图片场景 |
 
 `lisem_status` 的 `runtime.session.output` 是运行标识；输入、复位和 UART
 读取携带它，防止请求落到另一轮运行。复位后重新获取标识，UART 游标归零。
@@ -57,6 +58,11 @@ QEMU 从受理时刻按虚拟时间执行每次按下和松开，不依赖 MCP �
 即时输入会先取消自动序列，再应用本次按下／松开，取消原因记录为 `manual-input`。
 显式取消和复位会释放序列按键；下电、运行结束或 MCP 所拥有运行的连接关闭也会
 终止序列。序列状态同时出现在 `runtime.session.button_sequence`。
+
+`lisem_camera_input` 接受 `id`、图片 `path`；`path=null` 清除输入。运行中必须
+携带当前 `run`，下电时保存来源用于下次启动。它不代替固件拍照：之后通过
+真实按键输入触发业务，并观察 UART 或画面确认采集结果。选图、下电、复位
+都不清除 Flash/OTP；没有场景时不伪造空白帧或采集成功。
 
 串口观察使用每路 64 KiB 的内存历史，不消耗终端数据。每次返回至多 16 KiB；
 用返回的 `cursor` 继续读取。`lost` 表示较早的字节已过期，`hex` 保留精确

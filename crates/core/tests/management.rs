@@ -116,8 +116,12 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
                     Err(error) => panic!("Worker observation failed: {error}"),
                 }
             };
-            stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
-            stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            stream
+                .set_write_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
             let mut request = String::new();
             BufReader::new(stream.try_clone().unwrap())
                 .read_line(&mut request)
@@ -149,4 +153,52 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
         );
     }
     thread.join().unwrap();
+}
+
+#[test]
+fn camera_input_selection_is_validated_persisted_and_explicitly_cleared() {
+    use lisem_core::runtime::{Options, Runtime};
+    let temp = tempfile::tempdir().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let data = temp.path().join("library");
+    let catalog = Catalog::open(&root, &data).unwrap();
+    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let id = item["id"].as_str().unwrap().to_owned();
+    let mut runtime = Runtime::new(Catalog::open(&root, &data).unwrap(), id.clone()).unwrap();
+    let image_path = temp.path().join("camera.png");
+    image::RgbImage::from_pixel(4, 3, image::Rgb([1, 2, 3]))
+        .save(&image_path)
+        .unwrap();
+    let params = json!({"path":image_path});
+    assert!(runtime.call("camera", &json!({"path":true})).is_err());
+    assert!(runtime.call("camera", &json!({})).is_err());
+    assert!(
+        runtime
+            .call("camera", &json!({"path":image_path,"run":"stale"}))
+            .is_err()
+    );
+    assert_eq!(
+        runtime.call("camera", &params).unwrap()["path"],
+        json!(image_path)
+    );
+    assert_eq!(
+        catalog.device(&id).unwrap()["host"]["camera_image"],
+        json!(image_path)
+    );
+    assert!(
+        runtime
+            .call("camera", &json!({"path":temp.path().join("missing.png")}))
+            .is_err()
+    );
+    assert_eq!(
+        catalog.device(&id).unwrap()["host"]["camera_image"],
+        json!(image_path)
+    );
+    fs::remove_file(&image_path).unwrap();
+    let error = runtime
+        .call("start", &json!({"options":Options::default()}))
+        .unwrap_err();
+    assert!(error.to_string().contains("Cannot open camera image"));
+    runtime.call("camera", &json!({"path":null})).unwrap();
+    assert!(catalog.device(&id).unwrap()["host"]["camera_image"].is_null());
 }

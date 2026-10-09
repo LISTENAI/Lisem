@@ -249,7 +249,8 @@ impl Manager {
             | "uart_read"
             | "button_sequence"
             | "button_sequence_status"
-            | "button_sequence_cancel" => {
+            | "button_sequence_cancel"
+            | "camera" => {
                 let value = self.worker(&id)?.call(method, params)?;
                 if ["reset", "reset_download"].contains(&method) {
                     self.runs.insert(id, value["session"]["output"].clone());

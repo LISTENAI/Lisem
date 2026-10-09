@@ -281,6 +281,10 @@ impl Catalog {
             value["host"]["microphone"].is_null() || value["host"]["microphone"].is_boolean(),
             "Invalid microphone setting"
         );
+        ensure!(
+            value["host"]["camera_image"].is_null() || value["host"]["camera_image"].is_string(),
+            "Invalid camera image setting"
+        );
         if !value["host"]["uart"].is_null() {
             valid_uart(&value["host"]["uart"])?;
         }
@@ -299,6 +303,13 @@ impl Catalog {
                 ensure!(setting.is_boolean(), "Host setting must be boolean");
                 value["host"][key] = setting.clone();
             }
+        }
+        if let Some(image) = changes.get("camera_image") {
+            ensure!(
+                image.is_null() || image.is_string(),
+                "Invalid camera image setting"
+            );
+            value["host"]["camera_image"] = image.clone();
         }
         if let Some(uart) = changes.get("uart") {
             valid_uart(uart)?;
@@ -338,6 +349,10 @@ impl Catalog {
                 }
             }
         }
+        // Older Mini descriptors omitted its physically present camera.
+        if saved["board"]["id"] == "arcs-mini" && saved["board"]["camera"].is_null() {
+            saved["board"]["camera"] = board["camera"].clone();
+        }
         let expected = json!({"board":board,"chip":chip});
         let saved = hardware_identity(saved);
         let expected_identity = hardware_identity(expected.clone());
@@ -357,6 +372,9 @@ fn hardware_identity(mut value: Value) -> Value {
     }
     if let Some(screen) = value["board"]["screen"].as_object_mut() {
         screen.remove("label");
+    }
+    if let Some(camera) = value["board"]["camera"].as_object_mut() {
+        camera.remove("label");
     }
     // Indicators observe signals; they do not add devices or change wiring.
     if let Some(board) = value["board"].as_object_mut() {

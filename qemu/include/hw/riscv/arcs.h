@@ -15,6 +15,7 @@
 #include "hw/riscv/arcs_spi.h"
 #include "hw/riscv/arcs_luna.h"
 #include "hw/riscv/arcs_aux.h"
+#include "hw/riscv/arcs_dvp.h"
 #include "hw/riscv/arcs_rf.h"
 #include "hw/riscv/arcs_wifi.h"
 #include "hw/riscv/arcs_wifi_dma.h"
@@ -68,7 +69,7 @@ struct ArcsSoC {
     ArcsI2C i2c[2];
     ArcsSD sd;
     ArcsUSB usb;
-    ArcsDVPClock dvp_clock;
+    ArcsDVP dvp;
     ArcsRF rf[5];
     ArcsWiFi wifi;
     ArcsWiFiDMA wifi_dma;

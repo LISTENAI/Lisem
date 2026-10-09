@@ -101,92 +101,6 @@ static const MemoryRegionOps adc_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
 };
 
-/* Empty master buses: addressed transactions NACK; no slave is implied. */
-static uint32_t i2c_status(ArcsI2C *s)
-{
-    return s->regs[0x18 / 4] | 0x6000u | (!s->count ? 1 : 0) |
-           (s->count >= 4 ? 4 : 0) | (s->count == 8 ? 2 : 0);
-}
-
-static void i2c_irq(ArcsI2C *s)
-{
-    arcs_soc_irq(s->soc, 43 + s->index, !!(i2c_status(s) & s->regs[0x14 / 4] & 0x3ff));
-}
-
-static bool i2c_valid(hwaddr off, unsigned size)
-{
-    if (off & (size - 1)) { return false; }
-    unsigned reg = off & ~3u;
-    /* FIFO and command accesses must include the low byte exactly once. */
-    if ((reg == 0x20 || reg == 0x28) && off != reg) { return false; }
-    return reg == 0 || (reg >= 0x10 && reg <= 0x30);
-}
-
-static uint64_t i2c_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsI2C *s = opaque;
-    if (!i2c_valid(off, size)) {
-        arcs_soc_fail(s->soc, 0x46d00000 + s->index * 0x100000 + off, size, false, 0);
-    }
-    unsigned shift = (off & 3) * 8;
-    off &= ~3u;
-    if (off == 0x18) { return i2c_status(s) >> shift; }
-    if (off == 0x20) {
-        uint8_t value = 0;
-        if (s->count) { value = s->fifo[s->head]; s->head = (s->head + 1) % 8; s->count--; }
-        i2c_irq(s); return value;
-    }
-    return s->regs[off / 4] >> shift;
-}
-
-static void i2c_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsI2C *s = opaque;
-    hwaddr original_off = off;
-    uint64_t original_value = value;
-    if (!i2c_valid(off, size)) { goto fail; }
-    unsigned lane = (off & 3) * 8;
-    unsigned aligned = off & ~3u;
-    value <<= lane;
-    if (size != 4 && aligned != 0x18 && aligned != 0x20 && aligned != 0x28) {
-        uint32_t mask = (size == 1 ? 255u : 65535u) << lane;
-        value |= s->regs[aligned / 4] & ~mask;
-    }
-    off = aligned;
-    if (off == 0x18) { s->regs[off / 4] &= ~(value & 0x3f8); }
-    else if (off == 0x20) {
-        if (s->count == 8) { goto fail; }
-        s->fifo[(s->head + s->count++) % 8] = value;
-    } else if (off == 0x28) {
-        if (value == 5) { arcs_i2c_reset(s->soc, s->index); }
-        else if (value == 4) { s->head = s->count = 0; }
-        else if (value == 1) {
-            if ((s->regs[0x2c / 4] & 5) != 5 || !(s->regs[0x24 / 4] & 0x800)) { goto fail; }
-            s->regs[0x18 / 4] |= 0x260; /* Complete/START/STOP, ACK remains clear. */
-            s->head = s->count = 0;
-        } else if (value) { goto fail; }
-    } else if (off != 0 && off != 0x10) {
-        if (off == 0x2c && (value & 8)) { goto fail; }
-        s->regs[off / 4] = value;
-    }
-    i2c_irq(s); return;
-fail:
-    arcs_soc_fail(s->soc, 0x46d00000 + s->index * 0x100000 + original_off, size, true, original_value);
-}
-
-static const MemoryRegionOps i2c_ops = {
-    .read = i2c_read, .write = i2c_write, .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-};
-
-void arcs_i2c_reset(ArcsSoC *soc, unsigned index)
-{
-    ArcsI2C *s = &soc->i2c[index];
-    memset(s->regs, 0, sizeof(s->regs)); s->regs[0x10 / 4] = 1;
-    s->head = s->count = 0; i2c_irq(s);
-}
-
 /* SDHCI with an empty slot. No data is manufactured on command timeout. */
 static bool sd_byte_valid(hwaddr off)
 {
@@ -365,44 +279,8 @@ void arcs_usb_reset(ArcsSoC *soc)
     memset(s->fifo_config, 0, sizeof(s->fifo_config));
 }
 
-static uint64_t dvp_clock_read(void *opaque, hwaddr off, unsigned size)
-{
-    ArcsDVPClock *s = opaque;
-    if (size != 4 || (off != 0x10 && off != 0x18)) {
-        arcs_soc_fail(s->soc, 0x45000800 + off, size, false, 0);
-    }
-    return off == 0x10 ? s->enable : s->divider;
-}
-
-static void dvp_clock_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
-{
-    ArcsDVPClock *s = opaque;
-    if (size != 4 || (off != 0x10 && off != 0x18) ||
-        (off == 0x10 && (value & ~3u)) || (off == 0x18 && (value & ~0x13fu))) {
-        arcs_soc_fail(s->soc, 0x45000800 + off, size, true, value);
-    }
-    /* SDK divider: HCLK / (2 * (divider + 1)). No attached camera consumes
-     * this clock. Never manufacture capture data, FIFO state or completion. */
-    if (off == 0x10) { s->enable = value; }
-    else { s->divider = value; }
-}
-
-static const MemoryRegionOps dvp_clock_ops = {
-    .read = dvp_clock_read, .write = dvp_clock_write, .endianness = DEVICE_LITTLE_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
-};
-
-void arcs_dvp_clock_reset(ArcsSoC *soc)
-{
-    soc->dvp_clock.enable = soc->dvp_clock.divider = 0;
-}
-
 void arcs_aux_init(ArcsSoC *soc)
 {
-    ArcsDVPClock *dvp = &soc->dvp_clock; dvp->soc = soc;
-    memory_region_init_io(&dvp->io, OBJECT(soc), &dvp_clock_ops, dvp, "arcs-dvp-clock-only", 0x800);
-    memory_region_add_subregion(get_system_memory(), 0x45000800, &dvp->io);
     ArcsUSB *usb = &soc->usb; usb->soc = soc;
     memory_region_init_io(&usb->io, OBJECT(soc), &usb_ops, usb, "arcs-usb-unattached", 0x1000);
     memory_region_add_subregion(get_system_memory(), 0x41000000, &usb->io);
@@ -413,11 +291,7 @@ void arcs_aux_init(ArcsSoC *soc)
     memory_region_init_io(&s->io, OBJECT(soc), &adc_ops, s, "arcs-gpadc", 0x1000);
     memory_region_add_subregion(get_system_memory(), 0x46600000, &s->io);
     qdev_init_gpio_in_named(DEVICE(soc), adc_input, "adc-input", 16);
-    for (unsigned i = 0; i < 2; i++) {
-        ArcsI2C *bus = &soc->i2c[i]; bus->soc = soc; bus->index = i;
-        memory_region_init_io(&bus->io, OBJECT(soc), &i2c_ops, bus, i ? "arcs-i2c1" : "arcs-i2c0", 0x1000);
-        memory_region_add_subregion(get_system_memory(), 0x46d00000 + i * 0x100000, &bus->io);
-    }
+    arcs_i2c_init(soc);
 }
 
 void arcs_adc_reset(ArcsSoC *soc)

@@ -231,7 +231,7 @@ static void reset(DeviceState *dev)
     for (unsigned i = 0; i < 2; i++) { arcs_i2c_reset(s, i); }
     arcs_sd_reset(s);
     arcs_usb_reset(s);
-    arcs_dvp_clock_reset(s);
+    arcs_dvp_reset(s);
     arcs_rf_reset(s);
     arcs_wifi_reset(s);
     arcs_wifi_dma_reset(s);
@@ -336,6 +336,7 @@ static void realize(DeviceState *dev, Error **errp)
     arcs_bluetooth_init(s);
     arcs_audio_init(s);
     arcs_jpeg_init(s);
+    arcs_dvp_init(s);
     arcs_hsu_init(s);
     arcs_trng_init(s);
     arcs_sysctl_init(s);

@@ -304,6 +304,7 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
     }
     ArcsSysctl *s = &io->soc->sysctl;
+    uint64_t camera_hz = io->soc->dvp.capturing ? arcs_hclk_hz(io->soc) : 0;
     s->pll_regs[off / 4] = value;
     if (s->follow_hclk) {
         static const unsigned dividers[] = {4, 5, 6, 8, 9, 10, 12};
@@ -344,6 +345,10 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             icount_clock_set_hz(CPU(&io->soc->cpu[i]), hz);
         }
     }
+    if (camera_hz && camera_hz != arcs_hclk_hz(io->soc)) {
+        error_report("ARCS DVP cannot change HCLK during active pixel capture");
+        arcs_soc_fail(io->soc, io->base + off, size, true, value);
+    }
     return;
 unsupported_clock:
     error_report("ARCS experimental HCLK requires an enabled integer SYSPLL or XTAL and an integral 1..1000000000 Hz rate");
@@ -373,13 +378,16 @@ static void ap_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value & 4) { arcs_hsu_reset(io->soc); }
         if (value & 0x40) { arcs_codec_reset(io->soc); }
         if (value & 0x80) { arcs_apc_reset(io->soc); }
-        if (value & 0x200) { arcs_dvp_clock_reset(io->soc); }
+        if (value & 0x200) { arcs_dvp_reset(io->soc); }
     }
     if (off == 8) {
         arcs_codec_clocks(io->soc, value);
         arcs_hsu_clock(io->soc, value & 0x2000);
     }
     io->soc->sysctl.ap_regs[off / 4] = off == 0 ? value & 0x1f0000 : value;
+    if (off == 8 || off == 0x1c) {
+        arcs_dvp_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x208000) == 0x208000);
+    }
     if (off == 8 || off == 12) {
         arcs_jpeg_clock(io->soc, (io->soc->sysctl.ap_regs[2] & 0x8000) &&
                         (io->soc->sysctl.ap_regs[3] & 0x80000000));
@@ -668,6 +676,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     remap_update(soc);
     s->cp_entry = 0x00200000;
     memset(s->ap_regs, 0, sizeof(s->ap_regs));
+    arcs_dvp_clock(soc, false);
     memset(s->wdt_control, 0, sizeof(s->wdt_control));
     memset(s->wdt_unlocked, 0, sizeof(s->wdt_unlocked));
     memset(s->wdt_expired, 0, sizeof(s->wdt_expired));
@@ -718,4 +727,26 @@ void arcs_sysctl_reset(ArcsSoC *soc)
     arcs_hsu_clock(soc, false);
     arcs_trng_clock(soc, false);
     arcs_codec_power(soc, false);
+}
+
+/* Functional peripheral clock, independent of the selected CPU timing mode. */
+uint64_t arcs_hclk_hz(ArcsSoC *soc)
+{
+    uint32_t *pll = soc->sysctl.pll_regs;
+    static const unsigned post_dividers[] = {4, 5, 6, 8, 9, 10, 12};
+    uint64_t numerator = 24000000, denominator = 1;
+    unsigned source = pll[0] & 3;
+    if (source == 1) {
+        unsigned post = (pll[3] >> 1) & 15;
+        if (!(pll[2] & 1) || post >= G_N_ELEMENTS(post_dividers) || (pll[6] & 0x100)) {
+            arcs_soc_fail(soc, 0x46001000, 4, false, pll[0]);
+        }
+        numerator *= pll[6] & 255; denominator *= post_dividers[post];
+    } else if (source) { arcs_soc_fail(soc, 0x46001000, 4, false, pll[0]); }
+    numerator *= soc->sysctl.follow_hclk ? soc->sysctl.hclk_n : (pll[0] >> 21) & 15;
+    denominator *= soc->sysctl.follow_hclk ? soc->sysctl.hclk_m : (pll[0] >> 16) & 31;
+    if (!numerator || !denominator || numerator % denominator) {
+        arcs_soc_fail(soc, 0x46001000, 4, false, pll[0]);
+    }
+    return numerator / denominator;
 }

@@ -292,6 +292,10 @@ impl Session {
             !options.microphone || options.host_audio,
             "Microphone requires host audio"
         );
+        let camera_frame = item["host"]["camera_image"]
+            .as_str()
+            .map(|path| crate::camera::load(Path::new(path)))
+            .transpose()?;
         let assets = Assets::new(&catalog.root)?;
         assets.verify_qemu()?;
         // Snapshot launch provenance; later updates on disk must not relabel
@@ -459,6 +463,12 @@ impl Session {
             stopped: false,
             backend,
         };
+        if let Some(frame) = camera_frame {
+            session
+                .qmp
+                .set("x-lisa-camera-frame", json!(frame), &mut session.uart)?;
+        }
+        session.state["camera_image"] = item["host"]["camera_image"].clone();
         session.capture()?;
         session.qmp.call("cont", json!({}), &mut session.uart)?;
         Ok(session)
@@ -866,6 +876,44 @@ impl Runtime {
                     )?;
                 }
                 Ok(json!(true))
+            }
+            "camera" => {
+                let item = self.catalog.device(&self.id)?;
+                ensure!(
+                    item["hardware"]["board"]["camera"].is_object(),
+                    "This board has no camera input"
+                );
+                let value = params
+                    .get("path")
+                    .context("Camera image path or null is required")?;
+                ensure!(
+                    value.is_null() || value.is_string(),
+                    "Camera image path must be a string or null"
+                );
+                let path = value
+                    .as_str()
+                    .map(|p| std::path::absolute(Path::new(p)))
+                    .transpose()?;
+                let frame = path.as_deref().map(crate::camera::load).transpose()?;
+                if let Some(session) = self.session.as_mut() {
+                    ensure!(
+                        params["run"].is_string(),
+                        "Running camera input requires a run identifier"
+                    );
+                    session.qmp.set(
+                        "x-lisa-camera-frame",
+                        json!(frame.unwrap_or_default()),
+                        &mut session.uart,
+                    )?;
+                    session.state["camera_image"] = json!(path);
+                }
+                self.catalog.update(
+                    Path::new(item["path"].as_str().unwrap()),
+                    &json!({"camera_image":path}),
+                )?;
+                Ok(
+                    json!({"path":path,"width":crate::camera::WIDTH,"height":crate::camera::HEIGHT,"fit":"center-crop"}),
+                )
             }
             "audio" => {
                 let session = self.session.as_mut().context("Instance is not running")?;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DVP clock-only configuration, reset and rejection of unmodeled capture."""
+"""DVP clock configuration, reset isolation and invalid register access."""
 import json
 import time
 from qemu_test import Machine, ROOT
@@ -37,9 +37,7 @@ def functional(hart):
 
 
 def rejection():
-    commands=['readl 0x45000800','readl 0x45000834','readl 0x45001000',
-              'writel 0x45000820 1','writel 0x45000828 0','writel 0x4500082c 0x7ff',
-              'writel 0x45000810 4','writel 0x45000818 0x40','writel 0x45000818 0x200',
+    commands=['writel 0x45000810 4','writel 0x45000818 0x40','writel 0x45000818 0x200',
               'readb 0x45000810','readw 0x45000818','readl 0x45000819',
               'writeb 0x45000810 1','writew 0x45000818 1','writel 0x45000811 1']
     for i,command in enumerate(commands):
@@ -51,7 +49,7 @@ def rejection():
             assert m.process.wait(timeout=5)==1
             assert json.loads((m.directory/'report.json').read_text())['status']=='unsupported-mmio'
         finally:m.close()
-    print('Capture, FIFO/status, reserved fields and invalid widths/alignment rejected: PASS')
+    print('Reserved fields and invalid widths/alignment rejected: PASS')
 
 
 if __name__=='__main__':

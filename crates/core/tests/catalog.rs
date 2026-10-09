@@ -92,3 +92,41 @@ fn presentation_does_not_change_hardware_identity() {
         assert!(catalog.check_hardware(&changed).is_err(), "{pointer}");
     }
 }
+
+#[test]
+fn camera_descriptor_enriches_existing_mini_without_changing_storage() {
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let path = PathBuf::from(item["path"].as_str().unwrap());
+    let flash_hash = storage::sha256(&path.join("flash.bin")).unwrap();
+    let otp_hash = storage::sha256(&path.join("otp.bin")).unwrap();
+    let mut metadata: serde_json::Value =
+        serde_json::from_slice(&fs::read(path.join("device.json")).unwrap()).unwrap();
+    metadata["hardware"]["board"]
+        .as_object_mut()
+        .unwrap()
+        .remove("camera");
+    storage::write_json(&path.join("device.json"), &metadata).unwrap();
+    let described = catalog.describe(&path).unwrap();
+    assert_eq!(described["hardware"]["board"]["camera"]["model"], "gc0328");
+    assert_eq!(described["uid"], item["uid"]);
+    assert_eq!(
+        storage::sha256(&path.join("flash.bin")).unwrap(),
+        flash_hash
+    );
+    assert_eq!(storage::sha256(&path.join("otp.bin")).unwrap(), otp_hash);
+    let updated = catalog
+        .update(&path, &json!({"camera_image":"input.png"}))
+        .unwrap();
+    assert_eq!(updated["host"]["camera_image"], "input.png");
+    assert!(
+        catalog
+            .update(&path, &json!({"camera_image":null}))
+            .unwrap()["host"]["camera_image"]
+            .is_null()
+    );
+    let mut changed = described["hardware"].clone();
+    changed["board"]["camera"]["model"] = json!("different-sensor");
+    assert!(catalog.check_hardware(&changed).is_err());
+}

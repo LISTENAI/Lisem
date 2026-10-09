@@ -21,13 +21,16 @@ def functional(hart):
                 assert m.read(base + 0x18) == 0x6006
                 assert [m.read(base + 0x20) for _ in range(8)] == [cycle * 17 + n for n in range(8)]
                 assert m.read(base + 0x20) == 0 and m.command('readb 0x%x' % irq) == 0
+            if i == 0:
+                for pin in (38, 39): m.write(0x47500000 + pin * 4, 8)
             # Completion with no slave always reports NACK, never ACK/ADDRHIT.
             m.write(base + 0x2c, 5)
-            m.write(base + 0x24, 0x800)
+            m.write(base + 0x24, 0x1a00)
             m.write(base + 0x1c, 0x50)
             m.write(base + 0x14, 0x200)
             m.write(base + 0x20, 0x73)
             m.write(base + 0x28, 1)
+            m.command('clock_step 1000000')
             assert m.read(base + 0x18) == 0x6261
             assert m.command('readb 0x%x' % irq) == 1
             m.write(base + 0x18, 0x200)
@@ -48,15 +51,17 @@ def functional(hart):
             for width in ('b', 'w', 'l'):
                 for n in range(8): m.command('write%s 0x%x %d' % (width, base + 0x20, n + 121))
                 assert [m.command('read%s 0x%x' % (width, base + 0x20)) for _ in range(8)] == list(range(121,129))
-            m.write(base + 0x24, 0x803)
+            m.write(base + 0x24, 0x1a03)
             m.command('writeb 0x%x 1' % (base + 0x28))
+            m.command('clock_step 1000000')
             assert m.read(base + 0x18) == 0x6261 and m.command('readb 0x%x' % irq) == 1
             m.command('writeb 0x%x 0x60' % (base + 0x18))
             assert m.read(base + 0x18) == 0x6201 and m.command('readb 0x%x' % irq) == 1
             m.command('writeb 0x%x 2' % (base + 0x19))
             assert m.read(base + 0x18) == 0x6001 and m.command('readb 0x%x' % irq) == 0
             m.command('writeb 0x%x 5' % (base + 0x28))
-            assert m.read(base + 0x24) == m.read(base + 0x14) == 0
+            assert m.read(base + 0x24) == 0x1a03 and m.read(base + 0x14) == 0
+            assert m.read(base + 0x2c) == 5
             for reset in ('fifo', 'command', 'module', 'system'):
                 m.write(base + 0x20, 0x73)
                 m.write(base + 0x14, 1)

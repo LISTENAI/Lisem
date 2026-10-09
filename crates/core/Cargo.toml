@@ -20,7 +20,7 @@ getrandom = "0.4"
 tempfile = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 memmap2 = "0.9"
-image = { version = "0.25", default-features = false, features = ["png", "pnm"] }
+image = { version = "0.25", default-features = false, features = ["png", "pnm", "jpeg"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

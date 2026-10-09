@@ -159,6 +159,17 @@ struct Audio {
     path: PathBuf,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Camera {
+    id: String,
+    /// Required while powered on; identifies the run being updated.
+    run: Option<String>,
+    /// PNG/JPEG/PNM path on the Lisem host. Null or omitted clears input.
+    /// Kept in host settings and reloaded at startup. Pixels are not saved.
+    path: Option<PathBuf>,
+}
+
 fn definition<T: JsonSchema + 'static>(
     name: &'static str,
     description: &'static str,
@@ -270,6 +281,11 @@ fn tools() -> Vec<Tool> {
             "Return the latest published screen as PNG plus frame metadata. Compare run and frame.sequence between observations; active_run does not guarantee a frame newer than an action. last_run is the retained frame after power-off. Frame clocks are publication times, not response times. Does not write a file or advance guest time.",
             true,
         ),
+        definition::<Camera>(
+            "lisem_camera_input",
+            "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) for a board camera. Preserves aspect ratio, center-crops to 640x480. Can set before power-on or replace during a run. Null path clears input; capture then waits without producing synthetic frames. Requires run while powered on.",
+            false,
+        ),
         definition::<Audio>(
             "lisem_audio_input",
             "Feed a 16 kHz mono PCM16 WAV of at most 60 seconds through ADC. Requires microphone capture off and no queued input.",
@@ -332,6 +348,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
                 p,
             )?
         }
+        "lisem_camera_input" => call(manager, "camera", arguments::<Camera>(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
         "lisem_button_sequence" => call(
             manager,

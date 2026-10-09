@@ -93,7 +93,9 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 21 and 'lisem_screenshot' in names
+            assert len(names) == 22
+            assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_button_sequence',
+                    'lisem_button_sequence_status', 'lisem_button_sequence_cancel'} <= names
             assert all(tool['inputSchema'].get('additionalProperties') is False for tool in definitions)
             assert client.rpc('tools/call', {'name': 'missing', 'arguments': {}})['error']
             client.tool('lisem_create', {'board': 'missing'}, error=True)
@@ -103,6 +105,11 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            camera_image = Path(temporary) / 'camera.ppm'
+            camera_image.write_bytes(b'P6\n2 2\n255\n' + bytes([20, 80, 160]) * 4)
+            client.tool('lisem_camera_input', {'id': identifier, 'path': str(camera_image)})
+            assert client.tool('lisem_status', {'id': identifier})['device']['host']['camera_image'] == str(camera_image)
+            client.tool('lisem_camera_input', {'id': identifier, 'path': str(Path(temporary) / 'missing.png')}, error=True)
             uid = item['uid']
             instance = Path(item['path'])
             before = hashlib.sha256((instance / 'otp.bin').read_bytes()).hexdigest()
@@ -125,6 +132,12 @@ def main():
             assert status['client_qemu_binary'] == 'same'
             assert status['available_qemu_sha256'] == qemu['sha256']
             assert qemu['version']['qemu']['major'] >= 10
+            assert started['session']['camera_image'] == str(camera_image)
+            client.tool('lisem_camera_input', {'id': identifier, 'run': 'stale', 'path': None}, error=True)
+            client.tool('lisem_camera_input', {'id': identifier, 'path': None}, error=True)
+            client.tool('lisem_camera_input', {'id': identifier, 'run': run, 'path': None})
+            assert client.tool('lisem_status', {'id': identifier})['device']['host']['camera_image'] is None
+            client.tool('lisem_camera_input', {'id': identifier, 'run': run, 'path': str(camera_image)})
             client.tool('lisem_button', {'id': identifier, 'run': 'stale', 'button': 'function', 'pressed': True}, error=True)
             buttons = {'id': identifier, 'run': run, 'button': 'function', 'count': 3, 'hold_ms': 80, 'gap_ms': 80}
             client.tool('lisem_button_sequence', dict(buttons, run='stale'), error=True)

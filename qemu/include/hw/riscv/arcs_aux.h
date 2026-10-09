@@ -2,6 +2,8 @@
 #ifndef HW_RISCV_ARCS_AUX_H
 #define HW_RISCV_ARCS_AUX_H
 #include "hw/sysbus.h"
+#include "hw/i2c/i2c.h"
+#include "qemu/timer.h"
 typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsADC {
     ArcsSoC *soc;
@@ -15,7 +17,12 @@ typedef struct ArcsI2C {
     MemoryRegion io;
     uint32_t regs[0x34 / 4];
     uint8_t fifo[8];
-    unsigned head, count, index;
+    unsigned head, count, index, remaining;
+    I2CBus *bus;
+    QEMUTimer *event;
+    bool active, address_phase, receiving, stop;
+    bool (*route_valid)(void *opaque);
+    void *route_opaque;
 } ArcsI2C;
 typedef struct ArcsSD {
     ArcsSoC *soc;
@@ -30,16 +37,10 @@ typedef struct ArcsUSB {
     uint8_t endpoint[8][16], fifo_config[8][6];
     bool session;
 } ArcsUSB;
-/* Clock configuration only; camera capture and pixel pins are not modeled. */
-typedef struct ArcsDVPClock {
-    ArcsSoC *soc;
-    MemoryRegion io;
-    uint32_t enable, divider;
-} ArcsDVPClock;
 void arcs_aux_init(ArcsSoC *s);
 void arcs_adc_reset(ArcsSoC *s);
+void arcs_i2c_init(ArcsSoC *s);
 void arcs_i2c_reset(ArcsSoC *s, unsigned index);
 void arcs_sd_reset(ArcsSoC *s);
 void arcs_usb_reset(ArcsSoC *s);
-void arcs_dvp_clock_reset(ArcsSoC *s);
 #endif

@@ -10,6 +10,9 @@
 - `make check-qemu`：CPU、时钟、器件、存储、控制和宿主传输回归。
 
 单项保留 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
+`make qemu-camera qemu-camera-capture` 验证 GC0328 SCCB 的重复起始、FIFO
+背压与取消，并核对静态图片经 DVP FIFO/GPDMA 写入 RAM 的字节、内存边界、
+帧快照、SOF/EOF 中断及复位取消。原固件拍照还需通过原 LPK 的业务入口验证。
 运行 CPU 探针需要 RISC-V bare-metal GCC，`CROSS_COMPILE` 指定工具链前缀。
 应用固件只作为外部测试输入，不提交其源码、微程序或实例副本。
 
