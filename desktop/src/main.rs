@@ -2,16 +2,19 @@
 
 mod about;
 mod backend;
+mod camera_selector;
 mod display;
 mod icons;
 mod theme;
 
 use backend::{Backend, Device, Snapshot};
+use camera_selector::{CameraChoice, CameraOption};
 use gpui::component::{
     ActiveTheme, Disableable, Icon, TitleBar,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     menu::{DropdownMenu, PopupMenuItem},
+    select::{Select, SelectEvent, SelectState},
     switch::Switch,
     tab::{Tab, TabBar},
     tooltip::Tooltip,
@@ -104,6 +107,8 @@ struct Desktop {
     package: Option<PathBuf>,
     name: Entity<InputState>,
     title: String,
+    camera_select: Entity<SelectState<Vec<CameraOption>>>,
+    camera_options: Vec<CameraOption>,
     rendered_frame: Option<Arc<gpui::RenderImage>>,
 }
 
@@ -193,6 +198,26 @@ impl Desktop {
             Mode::Device(id) => Some(id.clone()),
             Mode::Library => None,
         };
+        let camera_select =
+            cx.new(|cx| SelectState::new(Vec::<CameraOption>::new(), None, window, cx));
+        cx.subscribe_in(&camera_select, window, |view, _, event, window, cx| {
+            let SelectEvent::Confirm(Some(choice)) = event else {
+                return;
+            };
+            match choice {
+                CameraChoice::Off => view.act(Action::ClearCamera, window, cx),
+                CameraChoice::Image => view.act(Action::Camera, window, cx),
+                CameraChoice::Refresh => view.act(Action::RefreshCameras, window, cx),
+                CameraChoice::Device(id) => {
+                    let mut params = view.params();
+                    params["device_id"] = json!(id);
+                    view.send("camera", params);
+                }
+            }
+            // A picker or pending backend request does not change the confirmed source.
+            cx.notify();
+        })
+        .detach();
         Self {
             backend,
             windows,
@@ -208,6 +233,8 @@ impl Desktop {
             package: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("实例名称")),
             title: String::new(),
+            camera_select,
+            camera_options: Vec::new(),
             rendered_frame: None,
         }
     }
@@ -826,7 +853,22 @@ impl Desktop {
                 )),
         )
     }
-    fn settings_panel(&self, d: &Device, cx: &mut Context<Self>) -> Div {
+    fn settings_panel(&mut self, d: &Device, window: &mut Window, cx: &mut Context<Self>) -> Div {
+        let (options, selected) = camera_selector::options(
+            &d.host,
+            &self.state.cameras,
+            self.state.data["capabilities"]["host_camera"] == true,
+        );
+        let options_changed = self.camera_options != options;
+        if options_changed || self.camera_select.read(cx).selected_value() != Some(&selected) {
+            self.camera_select.update(cx, |select, cx| {
+                if options_changed {
+                    select.set_items(options.clone(), window, cx);
+                }
+                select.set_selected_value(&selected, window, cx);
+            });
+            self.camera_options = options;
+        }
         let mutable = !self.powered() && !self.state.busy;
         let idle = !self.state.busy;
         let selected = match self.settings_tab {
@@ -958,18 +1000,6 @@ impl Desktop {
                     let waiting_first_frame = pending && change["phase"] == "waiting-first-frame";
                     let host_camera = self.state.data["capabilities"]["host_camera"] == true;
                     let selected_device = d.host["camera_device"].as_str();
-                    let devices = self.state.cameras["devices"].as_array();
-                    let source_name = selected_device
-                        .map(|id| {
-                            devices
-                                .into_iter()
-                                .flatten()
-                                .find(|device| device["id"] == id)
-                                .and_then(|device| device["name"].as_str())
-                                .unwrap_or(id)
-                        })
-                        .or_else(|| d.host["camera_image"].as_str())
-                        .unwrap_or("未选择，采集等待输入");
                     let capture = &self.state.data["session"]["camera_capture"];
                     let camera_notice = if let Some(error) = change["error"].as_str() {
                         error.to_owned()
@@ -1004,76 +1034,23 @@ impl Desktop {
                         "选择图片作为场景输入".into()
                     };
                     let enabled = idle && (!pending || waiting_first_frame);
-                    let view = cx.entity().downgrade();
-                    let camera_menu = Button::new("host-camera")
-                        .label("宿主摄像头…")
-                        .disabled(!enabled || !host_camera)
-                        .dropdown_menu(move |mut menu, _, cx| {
-                            let Some(view_entity) = view.upgrade() else {
-                                return menu;
-                            };
-                            let current = view_entity.read(cx);
-                            let selected = current
-                                .device()
-                                .and_then(|d| d.host["camera_device"].as_str().map(str::to_owned));
-                            let devices = current.state.cameras["devices"]
-                                .as_array()
-                                .cloned()
-                                .unwrap_or_default();
-                            if devices.is_empty() {
-                                menu = menu.item(
-                                    PopupMenuItem::new("未发现摄像头，请刷新设备").disabled(true),
-                                );
-                            }
-                            for device in devices {
-                                let Some(id) = device["id"].as_str().map(str::to_owned) else {
-                                    continue;
-                                };
-                                let name = device["name"].as_str().unwrap_or(&id).to_owned();
-                                let view = view.clone();
-                                menu = menu.item(
-                                    PopupMenuItem::new(name)
-                                        .checked(selected.as_deref() == Some(id.as_str()))
-                                        .on_click(move |_, _, cx| {
-                                            let _ = view.update(cx, |v, cx| {
-                                                let mut params = v.params();
-                                                params["device_id"] = json!(id);
-                                                v.send("camera", params);
-                                                cx.notify();
-                                            });
-                                        }),
-                                );
-                            }
-                            menu
-                        });
                     body = body
-                        .child(info("摄像头输入", source_name))
-                        .child(caption(&camera_notice))
                         .child(
                             div()
                                 .flex()
-                                .gap_3()
-                                .child(self.control(
-                                    "选择图片…",
-                                    "camera",
-                                    Action::Camera,
-                                    enabled,
-                                    false,
-                                    cx,
-                                ))
-                                .when(host_camera, |e| e.child(camera_menu))
-                                .child(self.control(
-                                    "关闭输入",
-                                    "clear-camera",
-                                    Action::ClearCamera,
-                                    enabled
-                                        && (waiting_first_frame
-                                            || d.host["camera_image"].is_string()
-                                            || selected_device.is_some()),
-                                    false,
-                                    cx,
-                                )),
-                        );
+                                .flex_col()
+                                .gap_2()
+                                .w_full()
+                                .child(caption("摄像头输入"))
+                                .child(
+                                    Select::new(&self.camera_select)
+                                        .id("camera-source")
+                                        .accessibility_label("摄像头输入")
+                                        .w_full()
+                                        .disabled(!enabled),
+                                ),
+                        )
+                        .child(caption(&camera_notice));
                     if host_camera {
                         let authorization = match self.state.cameras["authorization"].as_str() {
                             Some("denied") => {
@@ -1083,14 +1060,7 @@ impl Desktop {
                             Some("not-determined") => "首次开启时会请求系统摄像头权限",
                             _ => "只使用所选摄像头；画面不保存",
                         };
-                        body = body.child(caption(authorization)).child(self.control(
-                            "刷新设备",
-                            "refresh-cameras",
-                            Action::RefreshCameras,
-                            idle,
-                            false,
-                            cx,
-                        ));
+                        body = body.child(caption(authorization));
                     } else {
                         body = body.child(caption("当前系统暂不支持宿主摄像头，可选择图片输入"));
                     }
@@ -1474,7 +1444,7 @@ impl Render for Desktop {
             layout = layout.child(self.new_panel(cx));
         } else if let Some(d) = self.device() {
             if self.settings {
-                layout = layout.child(self.settings_panel(&d, cx));
+                layout = layout.child(self.settings_panel(&d, window, cx));
             } else if matches!(self.mode, Mode::Library) {
                 layout = layout.child(self.overview(&d, cx));
             } else {
