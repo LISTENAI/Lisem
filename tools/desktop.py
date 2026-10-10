@@ -98,7 +98,10 @@ def main():
             return
         command = ['open']
         if args.data_dir:
-            command.extend(['--env', 'LISEM_DATA_DIR=' + str(args.data_dir.resolve())])
+            # A running copy may use a different library (including the installed
+            # release). LaunchServices must start this bundle with this environment
+            # instead of delivering a reopen event to that existing process.
+            command.extend(['-n', '--env', 'LISEM_DATA_DIR=' + str(args.data_dir.resolve())])
         command.append(str(bundle))
         subprocess.run(command, check=True, timeout=15)
 
