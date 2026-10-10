@@ -116,6 +116,9 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
                     Err(error) => panic!("Worker observation failed: {error}"),
                 }
             };
+            // Darwin inherits O_NONBLOCK from the listener. The fixture uses
+            // blocking, timeout-bounded request reads on each accepted stream.
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(5)))
                 .unwrap();
