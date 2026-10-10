@@ -283,3 +283,75 @@ fn microphone_selection_is_persisted_without_starting_a_worker() {
         "saved"
     );
 }
+
+#[test]
+fn wifi_environment_preserves_other_environments_and_storage_and_rejects_busy_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut manager = Manager::new(
+        &root,
+        &temp.path().join("library"),
+        Path::new("unused-worker"),
+    )
+    .unwrap();
+    let item = manager
+        .call("create", json!({"board":"arcs-mini"}))
+        .unwrap();
+    assert_eq!(
+        item["environment"]["wifi"]["access_points"][0]["ssid"],
+        "Lisem"
+    );
+    let path = Path::new(item["path"].as_str().unwrap());
+    let before = ["flash.bin", "otp.bin"].map(|name| storage::sha256(&path.join(name)).unwrap());
+    let mut metadata = storage::read_json(&path.join("device.json")).unwrap();
+    metadata["environment"] = json!({"ble":{"advertisers":[]}});
+    storage::write_json(&path.join("device.json"), &metadata).unwrap();
+    let environment = json!({"access_points":[
+        {"ssid":"Lisem","rssi":-60,"channel":6,"connectable":false},
+        {"ssid":"Other","rssi":-35,"channel":11,"connectable":true}]});
+    let request = json!({"id":item["id"],"environment":environment});
+    let layout = manager.catalog.layout("arcs-mini").unwrap();
+    let lease = storage::locked(path, &layout).unwrap();
+    assert!(manager.call("wifi_environment", request.clone()).is_err());
+    assert!(
+        manager
+            .call(
+                "settings",
+                json!({"id":item["id"],"wifi_environment":environment})
+            )
+            .is_err()
+    );
+    drop(lease);
+    let updated = manager.call("wifi_environment", request.clone()).unwrap();
+    assert_eq!(updated["environment"]["wifi"], environment);
+    assert_eq!(updated["environment"]["ble"], json!({"advertisers":[]}));
+    let persisted = fs::read(path.join("device.json")).unwrap();
+    let mut invalid = request.clone();
+    invalid["environment"]["access_points"][0]["channel"] = json!(0);
+    assert!(manager.call("wifi_environment", invalid).is_err());
+    let mut stale = request;
+    stale["run"] = json!("old-run");
+    assert!(manager.call("wifi_environment", stale).is_err());
+    assert_eq!(fs::read(path.join("device.json")).unwrap(), persisted);
+    let reopened = Catalog::open(&root, &temp.path().join("library")).unwrap();
+    let restored = reopened.device(item["id"].as_str().unwrap()).unwrap();
+    assert_eq!(restored["environment"]["wifi"], environment);
+    assert_eq!(restored["hardware"], item["hardware"]);
+    assert_eq!(restored["uid"], item["uid"]);
+    for (name, expected) in ["flash.bin", "otp.bin"].iter().zip(before) {
+        assert_eq!(storage::sha256(&path.join(name)).unwrap(), expected);
+    }
+    manager
+        .call(
+            "wifi_environment",
+            json!({"id":item["id"],"environment":{"access_points":[]}}),
+        )
+        .unwrap();
+    assert_eq!(
+        manager
+            .catalog
+            .device(item["id"].as_str().unwrap())
+            .unwrap()["environment"]["wifi"]["access_points"],
+        json!([])
+    );
+}

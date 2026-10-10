@@ -322,6 +322,19 @@ impl Manager {
                     Ok(json!({"status":"saved","enabled":enabled}))
                 }
             }
+            "wifi_environment" => {
+                ensure!(
+                    params["run"].is_null(),
+                    "Wi-Fi environment can only be changed while powered off"
+                );
+                let environment = params
+                    .get("environment")
+                    .context("Missing Wi-Fi environment")?;
+                crate::wifi_environment::WifiEnvironment::from_value(environment)?;
+                let _storage = storage::locked(&path, &layout)?;
+                self.catalog
+                    .update(&path, &json!({"wifi_environment":environment}))
+            }
             "settings" | "rename" | "sound" => {
                 let changes = if method == "sound" {
                     json!({"sound":params["enabled"]})
@@ -358,12 +371,14 @@ impl Manager {
                     return client
                         .call("microphone", json!({"enabled":enabled,"run":params["run"]}));
                 }
-                let _storage =
-                    if changes.get("online").is_some() || changes.get("microphone").is_some() {
-                        Some(storage::locked(&path, &layout)?)
-                    } else {
-                        None
-                    };
+                let _storage = if changes.get("online").is_some()
+                    || changes.get("microphone").is_some()
+                    || changes.get("wifi_environment").is_some()
+                {
+                    Some(storage::locked(&path, &layout)?)
+                } else {
+                    None
+                };
                 let result = self.catalog.update(&path, &changes)?;
                 if let Some(sound) = changes["sound"].as_bool()
                     && let Ok(client) = Client::connect(&path)

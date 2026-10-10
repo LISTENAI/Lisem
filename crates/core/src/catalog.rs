@@ -127,9 +127,17 @@ impl Catalog {
                 .context("Board missing")?,
         )?;
         let hardware = self.check_hardware(&value["hardware"])?;
+        let mut environment = value["environment"].clone();
+        if environment.is_null() {
+            environment = json!({});
+        }
+        environment["wifi"] = serde_json::to_value(
+            crate::wifi_environment::WifiEnvironment::from_value(&value["environment"]["wifi"])?,
+        )?;
         Ok(
             json!({"id":value["id"],"name":value["name"],"path":path,"board":layout.board,
                   "hardware":hardware,"host":value["host"],
+                  "environment":environment,
                   "uid":storage::uid(&path,&layout)?}),
         )
     }
@@ -304,6 +312,11 @@ impl Catalog {
         if !value["host"]["uart"].is_null() {
             valid_uart(&value["host"]["uart"])?;
         }
+        ensure!(
+            value["environment"].is_null() || value["environment"].is_object(),
+            "Invalid instance environment"
+        );
+        crate::wifi_environment::WifiEnvironment::from_value(&value["environment"]["wifi"])?;
         Ok(value)
     }
 
@@ -344,6 +357,13 @@ impl Catalog {
         if let Some(uart) = changes.get("uart") {
             valid_uart(uart)?;
             value["host"]["uart"] = uart.clone();
+        }
+        if let Some(environment) = changes.get("wifi_environment") {
+            let wifi = crate::wifi_environment::WifiEnvironment::from_value(environment)?;
+            if value["environment"].is_null() {
+                value["environment"] = json!({});
+            }
+            value["environment"]["wifi"] = serde_json::to_value(wifi)?;
         }
         storage::write_json(&path.join("device.json"), &value)?;
         self.describe(path)

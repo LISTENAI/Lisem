@@ -383,6 +383,12 @@ impl Session {
             options.download,
             options.capture.is_some(),
         );
+        command.env(
+            "ARCS_QEMU_WIFI_ENVIRONMENT",
+            serde_json::to_string(&crate::wifi_environment::WifiEnvironment::from_value(
+                &item["environment"]["wifi"],
+            )?)?,
+        );
         command.stdin(Stdio::null());
         command.env(
             "ARCS_QEMU_WIFI_AP_PRESENT",

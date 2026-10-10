@@ -2,12 +2,17 @@
 #ifndef HW_RISCV_ARCS_WIFI_AP_H
 #define HW_RISCV_ARCS_WIFI_AP_H
 #include "hw/riscv/arcs_wifi.h"
+#include "qapi/error.h"
+#define ARCS_WIFI_AP_MAX 16
 typedef struct ArcsWiFiAP {
     ArcsWiFi *wifi;
     QEMUTimer *response, *beacon;
     GQueue queue;
     uint8_t ssid[32], bssid[6], station[6], xid[4], client[255];
     unsigned ssid_length, client_length, retries;
+    int rssi;
+    unsigned channel;
+    bool connectable;
     bool running, authenticated, associated, offered, client_present;
     uint16_t sequence, ip_id;
     int64_t epoch;
@@ -20,4 +25,6 @@ void arcs_wifi_ap_reset(ArcsWiFiAP *s);
 void arcs_wifi_ap_configure(ArcsWiFiAP *s, const uint8_t *ssid, unsigned length);
 bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length);
 void arcs_wifi_ap_ethernet(ArcsWiFiAP *s, const uint8_t *frame, unsigned length);
+bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **errp);
+char *arcs_wifi_environment_json(ArcsWiFiAP *aps);
 #endif

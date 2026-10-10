@@ -3,6 +3,11 @@
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs_wifi_ap.h"
 #include "qemu/bswap.h"
+#include "qobject/qjson.h"
+#include "qobject/qdict.h"
+#include "qobject/qlist.h"
+#include "qobject/qnum.h"
+#include "qobject/qbool.h"
 
 static const uint8_t broadcast[6] = {255,255,255,255,255,255};
 static const uint8_t server[4] = {192,0,2,1}, lease[4] = {192,0,2,2};
@@ -37,7 +42,8 @@ static void advertisement(ArcsWiFiAP *s, const uint8_t *destination, bool beacon
     stq_le_p(body, (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->epoch) / 1000);
     body[8] = 100; body[10] = 1; body[13] = s->ssid_length;
     memcpy(body + 14, s->ssid, s->ssid_length);
-    const uint8_t ies[] = {1,4,0x8c,0x98,0xb0,0x6c,3,1,1,5,4,0,1,0,0};
+    uint8_t ies[] = {1,4,0x8c,0x98,0xb0,0x6c,3,1,1,5,4,0,1,0,0};
+    ies[8] = s->channel;
     unsigned tail = beacon ? sizeof(ies) : 9;
     memcpy(body + 14 + s->ssid_length, ies, tail);
     reply(s, beacon ? 0x80 : 0x50, destination, body, 14 + s->ssid_length + tail, NULL);
@@ -57,7 +63,8 @@ static void deliver(void *opaque)
     if (!s->running || g_queue_is_empty(&s->queue)) { return; }
     GByteArray *p = g_queue_peek_head(&s->queue);
     uint64_t no_space = s->wifi->rx_no_space;
-    bool accepted = arcs_wifi_receive(s->wifi, p->data, p->len, -45);
+    /* RX vector RSSI is signed quarter-dBm; environment values are dBm. */
+    bool accepted = arcs_wifi_receive(s->wifi, p->data, p->len, s->rssi * 4);
     bool retry = !accepted && s->wifi->rx_no_space != no_space && !(p->data[4] & 1) && s->retries < 4;
     if (retry) { s->retries++; s->retried++; p->data[1] |= 8; }
     else {
@@ -183,7 +190,8 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
         const uint8_t body[] = {0,0,2,0,0,0}; reply(s, 0xb0, frame + 10, body, sizeof(body), NULL); return true;
     }
     if (!frame[0]) {
-        unsigned status = s->authenticated && !memcmp(frame + 10, s->station, 6) && has_ssid(s, frame, length, 28, false) ? 0 : 9;
+        unsigned status = !s->connectable ? 1 :
+            s->authenticated && !memcmp(frame + 10, s->station, 6) && has_ssid(s, frame, length, 28, false) ? 0 : 9;
         s->associated = status == 0; s->offered = false;
         const uint8_t body[] = {1,0,status,0,1,0xc0,1,4,0x8c,0x98,0xb0,0x6c};
         reply(s, 0x10, frame + 10, body, sizeof(body), NULL); return true;
@@ -238,7 +246,66 @@ void arcs_wifi_ap_configure(ArcsWiFiAP *s, const uint8_t *ssid, unsigned length)
 
 void arcs_wifi_ap_init(ArcsWiFiAP *s, ArcsWiFi *wifi)
 {
+    s->rssi = -45; s->channel = 1; s->connectable = true;
     s->wifi = wifi; s->bssid[0] = 2; s->bssid[5] = 1; g_queue_init(&s->queue);
     s->response = timer_new_ns(QEMU_CLOCK_VIRTUAL, deliver, s);
     s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon, s);
+}
+
+/* Parse the complete bounded configuration before altering any AP state. */
+bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **errp)
+{
+    if (strlen(json) > 8192) {
+        error_setg(errp, "Wi-Fi environment exceeds 8192 bytes"); return false;
+    }
+    QObject *root = qobject_from_json(json, errp);
+    if (!root) { return false; }
+    QDict *object = qobject_to(QDict, root);
+    QList *list = object ? qobject_to(QList, qdict_get(object, "access_points")) : NULL;
+    if (!list || qdict_size(object) != 1 || qlist_size(list) > ARCS_WIFI_AP_MAX) { goto invalid; }
+    unsigned count = 0;
+    const QListEntry *entry;
+    QLIST_FOREACH_ENTRY(list, entry) {
+        QDict *ap = qobject_to(QDict, qlist_entry_obj(entry));
+        if (!ap || qdict_size(ap) != 4) { goto invalid; }
+        const char *ssid = qdict_get_try_str(ap, "ssid");
+        QNum *rssi = qobject_to(QNum, qdict_get(ap, "rssi"));
+        QNum *channel = qobject_to(QNum, qdict_get(ap, "channel"));
+        QBool *connectable = qobject_to(QBool, qdict_get(ap, "connectable"));
+        int64_t r, c;
+        if (!ssid || !*ssid || strlen(ssid) > 32 || !g_utf8_validate(ssid, -1, NULL) ||
+            !rssi || !channel || !connectable || !qnum_get_try_int(rssi, &r) ||
+            !qnum_get_try_int(channel, &c) || r < -127 || r > 0 || c < 1 || c > 14) { goto invalid; }
+    }
+    QLIST_FOREACH_ENTRY(list, entry) {
+        QDict *ap = qobject_to(QDict, qlist_entry_obj(entry));
+        const char *ssid = qdict_get_str(ap, "ssid");
+        ArcsWiFiAP *s = &aps[count++];
+        s->rssi = qdict_get_int(ap, "rssi"); s->channel = qdict_get_int(ap, "channel");
+        s->connectable = qdict_get_bool(ap, "connectable");
+        arcs_wifi_ap_configure(s, (const uint8_t *)ssid, strlen(ssid));
+    }
+    for (; count < ARCS_WIFI_AP_MAX; count++) { arcs_wifi_ap_configure(&aps[count], NULL, 0); }
+    qobject_unref(root); return true;
+invalid:
+    qobject_unref(root);
+    error_setg(errp, "Expected access_points array (max 16): SSID 1..32 UTF-8 bytes, RSSI -127..0, channel 1..14, connectable boolean");
+    return false;
+}
+
+char *arcs_wifi_environment_json(ArcsWiFiAP *aps)
+{
+    QDict *root = qdict_new(); QList *list = qlist_new();
+    qdict_put_obj(root, "access_points", QOBJECT(list));
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        ArcsWiFiAP *s = &aps[i];
+        if (!s->running) { continue; }
+        QDict *ap = qdict_new();
+        g_autofree char *ssid = g_strndup((const char *)s->ssid, s->ssid_length);
+        qdict_put_str(ap, "ssid", ssid); qdict_put_int(ap, "rssi", s->rssi);
+        qdict_put_int(ap, "channel", s->channel); qdict_put_bool(ap, "connectable", s->connectable);
+        qlist_append_obj(list, QOBJECT(ap));
+    }
+    GString *json = qobject_to_json(QOBJECT(root));
+    qobject_unref(root); return g_string_free(json, false);
 }

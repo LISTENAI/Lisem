@@ -32,6 +32,7 @@ impl Output {
             Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } => Self::Json,
             Action::Camera { .. }
             | Action::CameraDevices
+            | Action::WifiEnvironment { .. }
             | Action::AccessPoint { .. }
             | Action::AudioInput { .. }
             | Action::AudioOutput { .. } => Self::Json,

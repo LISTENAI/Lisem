@@ -77,7 +77,7 @@ struct ArcsMachine {
     size_t desktop_pcm_written;
     uint64_t desktop_samples;
     unsigned desktop_rate;
-    ArcsWiFiAP access_point;
+    ArcsWiFiAP access_points[ARCS_WIFI_AP_MAX];
     ArcsNetwork network;
     const char *wifi_rx_status;
     GString *ble_capture;
@@ -118,7 +118,17 @@ static bool radio_transmit(void *opaque, const uint8_t *frame, unsigned length, 
     stl_le_p(record + 8, length); stl_le_p(record + 12, length);
     g_byte_array_append(s->wifi_capture, record, sizeof(record));
     g_byte_array_append(s->wifi_capture, frame, length); s->wifi_frames++;
-    return arcs_wifi_ap_transmit(&s->access_point, frame, length);
+    bool acknowledged = false;
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        acknowledged |= arcs_wifi_ap_transmit(&s->access_points[i], frame, length);
+        if (length >= 24 && s->access_points[i].associated && !memcmp(frame + 4, s->access_points[i].bssid, 6)) {
+            /* One station has one active association; retain no stale uplink. */
+            for (unsigned j = 0; j < ARCS_WIFI_AP_MAX; j++) {
+                if (j != i) { s->access_points[j].associated = false; }
+            }
+        }
+    }
+    return acknowledged;
 }
 
 static char *wifi_rx_get(Object *obj, Error **errp)
@@ -150,7 +160,7 @@ invalid:
 
 static char *wifi_ap_get(Object *obj, Error **errp)
 {
-    ArcsWiFiAP *s = &ARCS_MACHINE(obj)->access_point;
+    ArcsWiFiAP *s = &ARCS_MACHINE(obj)->access_points[0];
     return g_strndup((const char *)s->ssid, s->ssid_length);
 }
 
@@ -160,7 +170,17 @@ static void wifi_ap_set(Object *obj, const char *value, Error **errp)
     if (length > 32 || !g_utf8_validate(value, length, NULL)) {
         error_setg(errp, "Logical AP SSID must contain at most 32 UTF-8 bytes"); return;
     }
-    arcs_wifi_ap_configure(&ARCS_MACHINE(obj)->access_point, (const uint8_t *)value, length);
+    arcs_wifi_ap_configure(&ARCS_MACHINE(obj)->access_points[0], (const uint8_t *)value, length);
+}
+
+static char *wifi_environment_get(Object *obj, Error **errp)
+{
+    return arcs_wifi_environment_json(ARCS_MACHINE(obj)->access_points);
+}
+
+static void wifi_environment_set(Object *obj, const char *value, Error **errp)
+{
+    arcs_wifi_environment_configure(ARCS_MACHINE(obj)->access_points, value, errp);
 }
 
 static bool wifi_ap_present_get(Object *obj, Error **errp)
@@ -569,7 +589,7 @@ static void report(void *opaque, const char *status)
             s->network.enabled ? "true" : "false", s->network.transmitted, s->network.received,
             s->network.context ? s->network.dropped(s->network.context) : 0);
     arcs_network_save(&s->network, getenv("ARCS_QEMU_NETWORK_CAPTURE"));
-    ArcsWiFiAP *ap = &s->access_point;
+    ArcsWiFiAP *ap = &s->access_points[0];
     fprintf(f, ",\"wifi_ap\":{\"running\":%s,\"associated\":%s,\"accepted\":%" PRIu64
             ",\"dropped\":%" PRIu64 ",\"retried\":%" PRIu64 ",\"queued\":%u,\"dhcp_offers\":%" PRIu64 ",\"dhcp_acks\":%" PRIu64 "}",
             ap->running ? "true" : "false", ap->associated ? "true" : "false", ap->accepted,
@@ -957,7 +977,10 @@ static void machine_reset(MachineState *machine, ResetType type)
     s->speaker_feedback = (PCMFeedback){0};
     if (s->pcm_output) { g_byte_array_set_size(s->pcm_output, 0); }
     if (s->wifi_capture) { reset_radio(s); }
-    if (s->access_point.response) { arcs_wifi_ap_reset(&s->access_point); s->wifi_rx_status = "idle"; }
+    if (s->access_points[0].response) {
+        for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) { arcs_wifi_ap_reset(&s->access_points[i]); }
+        s->wifi_rx_status = "idle";
+    }
     if (s->network.library) { arcs_network_reset(&s->network); }
     if (s->ble_capture) { g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; }
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
@@ -1022,17 +1045,21 @@ static void machine_init(MachineState *machine)
     connect_camera(s);
     connect_pcm(s);
     s->wifi_capture = g_byte_array_new(); reset_radio(s);
-    arcs_wifi_ap_init(&s->access_point, &s->soc.wifi); s->wifi_rx_status = "idle";
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        arcs_wifi_ap_init(&s->access_points[i], &s->soc.wifi);
+        s->access_points[i].bssid[5] = i + 1;
+    }
+    s->wifi_rx_status = "idle";
     object_property_add_str(OBJECT(s), "wifi-rx", wifi_rx_get, wifi_rx_set);
     object_property_add_str(OBJECT(s), "wifi-ap", wifi_ap_get, wifi_ap_set);
     object_property_add_bool(OBJECT(s), "wifi-ap-present", wifi_ap_present_get, wifi_ap_present_set);
     const char *ssid = getenv("ARCS_QEMU_WIFI_AP");
     if (ssid) { wifi_ap_set(OBJECT(s), ssid, &error_fatal); }
+    object_property_add_str(OBJECT(s), "wifi-environment", wifi_environment_get, wifi_environment_set);
+    const char *environment = getenv("ARCS_QEMU_WIFI_ENVIRONMENT");
+    if (environment) { wifi_environment_set(OBJECT(s), environment, &error_fatal); }
     const char *network_library = getenv("ARCS_QEMU_NETWORK_LIBRARY");
-    if (network_library && !s->access_point.running) {
-        error_report("ARCS host network requires an explicit Wi-Fi AP"); exit(1);
-    }
-    arcs_network_init(&s->network, &s->access_point, network_library,
+    arcs_network_init(&s->network, &s->access_points[0], network_library,
                       g_strcmp0(getenv("ARCS_QEMU_NETWORK_LOOPBACK"), "1") == 0);
     if (g_strcmp0(getenv("ARCS_QEMU_WIFI_AP_PRESENT"), "0") == 0) {
         wifi_ap_present_set(OBJECT(s), false, &error_fatal);

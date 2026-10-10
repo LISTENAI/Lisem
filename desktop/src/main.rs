@@ -7,6 +7,7 @@ mod display;
 mod icons;
 mod peripheral_controls;
 mod theme;
+mod wifi_environment;
 
 use backend::{Backend, Device, Snapshot};
 use camera_selector::{CameraChoice, CameraOption};

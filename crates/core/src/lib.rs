@@ -16,3 +16,5 @@ pub mod storage;
 mod transport;
 
 pub mod install;
+
+pub mod wifi_environment;

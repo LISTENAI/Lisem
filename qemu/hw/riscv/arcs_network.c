@@ -37,7 +37,9 @@ static void drain(ArcsNetwork *s)
         if (!size) { return; }
         if (size < 14 || size > sizeof(frame)) { fail(s, "invalid Ethernet frame from bridge"); }
         capture(s, frame, size); s->received++;
-        arcs_wifi_ap_ethernet(s->ap, frame, size);
+        for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+            arcs_wifi_ap_ethernet(&s->ap[i], frame, size);
+        }
     }
 }
 
@@ -112,6 +114,8 @@ void arcs_network_init(ArcsNetwork *s, ArcsWiFiAP *ap, const char *library, bool
     stl_le_p(header, 0xa1b2c3d4); stw_le_p(header + 4, 2); stw_le_p(header + 6, 4);
     stl_le_p(header + 16, 65535); stl_le_p(header + 20, 1);
     g_byte_array_append(s->capture, header, sizeof(header));
-    ap->ethernet_transmit = transmit; ap->ethernet_opaque = s;
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        ap[i].ethernet_transmit = transmit; ap[i].ethernet_opaque = s;
+    }
     arcs_network_enable(s, true);
 }

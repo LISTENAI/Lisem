@@ -53,6 +53,12 @@ enum Action {
     Attach { path: PathBuf },
     /// Show live state and persisted instance identity.
     Status { id: Option<String> },
+    /// Show or replace the logical Wi-Fi environment (JSON file; power off to save).
+    WifiEnvironment {
+        id: String,
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Write only the ranges specified by a validated LPK.
     Import { id: String, package: PathBuf },
     /// Write a binary into Flash at a byte offset.
@@ -280,6 +286,14 @@ fn run() -> Result<i32> {
         Action::Attach { path } => manager.call("attach", json!({"path": absolute(&path)?}))?,
         Action::Status { id: None } => manager.status()?,
         Action::Status { id: Some(id) } => manager.call("inspect", json!({"id":id}))?,
+        Action::WifiEnvironment { id, file } => {
+            if let Some(path) = file {
+                let environment = storage::read_json(&path)?;
+                manager.call("wifi_environment", json!({"id":id,"environment":environment}))?["environment"]["wifi"].clone()
+            } else {
+                manager.catalog.device(&id)?["environment"]["wifi"].clone()
+            }
+        }
         Action::Import { id, package } => manager.call(
             "import", json!({"id": id, "package": absolute(&package)?}),
         )?,
