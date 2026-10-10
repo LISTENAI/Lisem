@@ -25,6 +25,8 @@ pub struct Device {
     pub hardware: Value,
     #[serde(default)]
     pub host: Value,
+    #[serde(default)]
+    pub environment: Value,
     pub unavailable: Option<String>,
 }
 
@@ -43,6 +45,7 @@ pub struct Snapshot {
 
 pub enum Request {
     Call(&'static str, Value),
+    Query(&'static str, Value, mpsc::Sender<Result<Value, String>>),
     Quit,
 }
 
@@ -107,6 +110,9 @@ impl Backend {
             loop {
                 match receiver.recv_timeout(Duration::from_millis(250)) {
                     Ok(Request::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Ok(Request::Query(method, params, reply)) => {
+                        let _ = reply.send(bridge.call(method, params));
+                    }
                     Ok(Request::Call(method, params)) => {
                         {
                             let mut state = output.lock().unwrap();
@@ -193,6 +199,22 @@ impl Backend {
 
     pub fn request_shutdown(&self) {
         let _ = self.sender.send(Request::Quit);
+    }
+
+    /// Return a response to its requesting panel without replacing another
+    /// window's operation/error state. Callers keep at most one query in flight.
+    pub fn query(
+        &self,
+        method: &'static str,
+        params: Value,
+    ) -> mpsc::Receiver<Result<Value, String>> {
+        let (reply, receiver) = mpsc::channel();
+        if let Err(error) = self.sender.send(Request::Query(method, params, reply)) {
+            if let Request::Query(_, _, reply) = error.0 {
+                let _ = reply.send(Err("控制服务已退出，请重新打开应用。".into()));
+            }
+        }
+        receiver
     }
 
     pub fn shutdown(&self) {
