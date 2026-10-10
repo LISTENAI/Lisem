@@ -27,6 +27,7 @@ typedef struct ArcsDVP {
     void (*clock_changed)(void *opaque);
     void *opaque;
 } ArcsDVP;
+bool arcs_dvp_enabled(const ArcsDVP *s);
 void arcs_dvp_sync(ArcsSoC *s);
 uint32_t arcs_dvp_dma_read(ArcsSoC *s);
 void arcs_dvp_init(ArcsSoC *s);

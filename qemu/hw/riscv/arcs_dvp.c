@@ -39,12 +39,12 @@ static void signals(ArcsDVP *s)
     arcs_soc_irq(s->soc, 16, !!(R(0x38) & ~R(0x28) & 0x1ff));
 }
 
-static bool enabled(ArcsDVP *s) { return s->clock && (R(0x20) & 1); }
+bool arcs_dvp_enabled(const ArcsDVP *s) { return s->clock && (R(0x20) & 1); }
 
 void arcs_dvp_source_changed(ArcsSoC *soc)
 {
     ArcsDVP *s = &soc->dvp;
-    if (enabled(s) && !timer_pending(s->event)) {
+    if (arcs_dvp_enabled(s) && !timer_pending(s->event)) {
         s->phase = FRAME;
         s->deadline = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1;
         timer_mod(s->event, s->deadline);
@@ -136,7 +136,7 @@ void arcs_dvp_sync(ArcsSoC *soc)
 static void event(void *opaque)
 {
     ArcsDVP *s = opaque;
-    if (!enabled(s)) { return; }
+    if (!arcs_dvp_enabled(s)) { return; }
     if (s->phase == FRAME || s->phase == NEXT) {
         Error *err = NULL;
         if (!s->begin_frame || !s->begin_frame(s->opaque, &s->frame, &err)) {

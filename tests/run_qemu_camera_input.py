@@ -46,6 +46,7 @@ def main():
         m.write(DVP + 0x2c, 0x7ff)
         dma(m, 8)
         m.write(DVP + 0x20, 1)
+        assert status()["receiver_enabled"] is True
         m.command('clock_step 1000000')
         assert [m.read(RAM + 4 * i) for i in range(8)] == [expected] * 8
         m.write(DVP + 0x20, 0)
@@ -53,12 +54,19 @@ def main():
     try:
         assert producer.source_open(name)
         configure(m)
+        assert status()["receiver_enabled"] is False
+        # Firmware may enable capture before a source delivers any frame.
+        m.write(DVP + 0x20, 1)
+        assert status()["receiver_enabled"] is True
+        m.write(DVP + 0x20, 0)
+        assert status()["receiver_enabled"] is False
         publish(0, 1, 1, 1, 2, 0xff0000)
         source(1)
         source(1, error=True)  # Duplicate and old generations never change the scene.
         source(0, error=True)
         capture(0xf800f800)
         first = status()
+        assert first['receiver_enabled'] is False  # Host source is still live.
         assert first['source_state'] == 'live' and first['sampled_frame'] == 1
         # Source 2's pending first frame must not hide source 1's newer frames.
         publish(1, 2, 1, 1, 1, 0x0000ff)

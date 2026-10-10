@@ -793,11 +793,12 @@ static char *camera_input_status(ArcsMachine *s)
 {
     LisaCameraInput *p = s->camera_mapping.address;
     const char *states[] = {"none", "still", "live", "disconnected"};
-    return g_strdup_printf("{\"generation\":%" PRIu64 ",\"sequence\":%" PRIu64
+    return g_strdup_printf("{\"receiver_enabled\":%s,\"generation\":%" PRIu64 ",\"sequence\":%" PRIu64
         ",\"received_frame\":%" PRIu64 ",\"sampled_frame\":%" PRIu64
         ",\"source_state\":\"%s\",\"captured_host_ns\":%" PRIu64
         ",\"received_host_ns\":%" PRIu64 ",\"skipped_frames\":%" PRIu64
         ",\"repeated_frames\":%" PRIu64 ",\"producer_dropped_frames\":%" PRIu64 "}",
+        arcs_dvp_enabled(&s->soc.dvp) ? "true" : "false",
         s->camera_generation, s->camera_sequence, s->camera_frame_index, s->camera_latched_frame,
         states[s->camera_source_state],
         s->camera_host_ns, s->camera_received_ns, s->camera_skipped, s->camera_repeated,
