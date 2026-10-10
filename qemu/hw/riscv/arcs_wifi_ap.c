@@ -188,6 +188,17 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
         const uint8_t body[] = {1,0,status,0,1,0xc0,1,4,0x8c,0x98,0xb0,0x6c};
         reply(s, 0x10, frame + 10, body, sizeof(body), NULL); return true;
     }
+    if ((frame[0] == 0xc0 || frame[0] == 0xa0) && length == 26) {
+        /* MAC ACK does not imply that an unknown transmitter owns this STA. */
+        if (!memcmp(frame + 10, s->station, 6)) {
+            s->associated = s->offered = s->client_present = false;
+            if (frame[0] == 0xc0) { s->authenticated = false; }
+            timer_del(s->response);
+            g_queue_clear_full(&s->queue, (GDestroyNotify)g_byte_array_unref);
+            s->retries = 0;
+        }
+        return true;
+    }
     if (frame[0] == 0xd0 && length >= 30 && frame[24] == 3 && s->authenticated && !memcmp(frame + 10, s->station, 6)) {
         if (!frame[25] && length == 33) {
             const uint8_t body[] = {3,1,frame[26],37,0,frame[27],frame[28],0,0};

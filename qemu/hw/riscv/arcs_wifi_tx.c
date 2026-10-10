@@ -50,14 +50,17 @@ static void validate(ArcsWiFiTX *t, uint32_t policy)
         }
     } else {
         if ((f[1] & ~8) || (f[22] & 15) ||
-            (f[0] != 0x40 && f[0] != 0xb0 && f[0] != 0 && f[0] != 0xd0)) {
+            (f[0] != 0x40 && f[0] != 0xb0 && f[0] != 0 && f[0] != 0xd0 &&
+             f[0] != 0xc0 && f[0] != 0xa0)) {
             fail(t, "unsupported management frame control");
         }
         if (f[0] == 0xd0 && (n < 30 || f[24] != 3 || f[25] > 2 ||
                             n != (f[25] == 2 ? 30 : 33))) {
             fail(t, "unsupported Block Ack action body");
         }
-        unsigned start = f[0] == 0xd0 ? n : f[0] == 0x40 ? 24 : f[0] == 0 ? 28 : 30;
+        bool disconnect = f[0] == 0xc0 || f[0] == 0xa0;
+        if (disconnect && n != 26) { fail(t, "invalid disassociation or deauthentication reason body"); }
+        unsigned start = disconnect ? n : f[0] == 0xd0 ? n : f[0] == 0x40 ? 24 : f[0] == 0 ? 28 : 30;
         if (n < start || (f[0] == 0xb0 && (n != 30 || f[24] || f[25] ||
             f[26] != 1 || f[27] || f[28] || f[29]))) {
             fail(t, "unsupported authentication or association body");
@@ -80,6 +83,7 @@ static void validate(ArcsWiFiTX *t, uint32_t policy)
 
 static void prepare(ArcsWiFiTX *t, uint32_t address)
 {
+    t->current = address;
     if (t->halted) { fail(t, "submission while halted"); }
     if ((address & 3) || t->seen_count == G_N_ELEMENTS(t->seen)) { fail(t, "descriptor alignment or chain limit"); }
     for (unsigned i = 0; i < t->seen_count; i++) {
@@ -109,7 +113,6 @@ static void prepare(ArcsWiFiTX *t, uint32_t address)
     }
     if (t->length != length - 4) { fail(t, "segments differ from frame length excluding FCS"); }
     validate(t, ldl_le_p(header + 0x34));
-    t->current = address;
     timer_mod(t->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 10000);
 }
 

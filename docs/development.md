@@ -126,6 +126,20 @@ python3 tests/run_desktop_network_firmware.py --lpk /path/to/firmware.lpk --outp
 python3 tests/run_desktop_cskburn.py --cskburn /path/to/cskburn --lpk /path/to/firmware.lpk --output artifacts/verify-burn
 ```
 
+Wi-Fi 主动断开使用 `make qemu-wifi-disconnect` 验证两核的去认证、解除关联、
+MAC ACK、待发响应取消和重新关联。原固件支持五击重新配网、八击恢复出厂时，运行：
+
+```sh
+python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --output artifacts/verify-disconnect --binary /path/to/lisem --product-id TEST_PRODUCT_ID
+```
+
+该测试将新建的测试 UID 绑定到指定的 ling 应用，通过原固件串口配置凭据，
+在正常联网业务状态下五击进入配网，并在另一实例中八击验证清除热点和重启。
+`--counts 8` 可单独离线运行，无需 `--product-id`；源码 CLI 另加 `--root .`。
+测试显式保存诊断到输出目录，联网用例仅导出筛选后的串口标记；应用凭据
+由原固件写入独立测试实例。
+它验证断网及固件动作，不代表手机小程序或 BLE 配网交互已经通过。
+
 修改相关链路须验证 ROM 身份、完整 LPK 烧录/回读、Flash 持久化、UART
 预连接/复位/上下电和实例隔离。错误必须来自原固件或模型的可观测状态，
 不能把进程存活或计时完成当作业务成功。

@@ -15,7 +15,7 @@ QEMU_TESTS := \
     qemu-mailbox qemu-pacing qemu-psram qemu-remap qemu-rf \
     qemu-rom qemu-sd qemu-soc-clocks qemu-storage \
     qemu-sysctl qemu-trng qemu-uart qemu-usb \
-    qemu-watchdog qemu-watchpoint qemu-wifi qemu-wifi-ap \
+    qemu-watchdog qemu-watchpoint qemu-wifi qemu-wifi-ap qemu-wifi-disconnect \
     qemu-wifi-dma qemu-wifi-rx qemu-wifi-tx
 
 .PHONY: build headless run test test-core qemu-build check-qemu $(QEMU_TESTS)
