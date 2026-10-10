@@ -307,7 +307,7 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
      * electrical feedback, not a model of PA gain or the analog RC network.
      * A stereo fixture supplies an independently recorded MIC1 instead. */
     values[1] = pcm_feedback_read(&s->speaker_feedback, now, pa_enabled(s));
-    if (s->host_audio.stream && s->host_audio.stream->capture) {
+    if (s->host_audio.stream && lisa_audio_load(&s->host_audio.stream->capture)) {
         LisaAudioStream *p = s->host_audio.stream;
         if (rate != LISA_AUDIO_RATE) {
             lisa_audio_store(&p->guest_error, LISA_AUDIO_FORMAT);
@@ -391,7 +391,7 @@ static void connect_pcm(ArcsMachine *s)
     const char *path = getenv("ARCS_QEMU_AUDIO_INPUT");
     const char *host = getenv("ARCS_QEMU_HOST_AUDIO");
     lisa_host_audio_init(&s->host_audio, host);
-    if (host && s->host_audio.stream->capture && path) { audio_error(s, "host microphone cannot share file ADC input"); }
+    if (host && lisa_audio_load(&s->host_audio.stream->capture) && path) { audio_error(s, "host microphone cannot share file ADC input"); }
     if (path) {
         const char *format = getenv("ARCS_QEMU_AUDIO_FORMAT"); char extra;
         int size = get_image_size(path);
@@ -1058,7 +1058,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
-        "\"input_resyncs\":%" PRIu64 ","
+        "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
         camera, sequence, s->desktop_pressed ? "true" : "false",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
@@ -1069,6 +1069,8 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_skipped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_dropped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_resyncs) : 0,
+        s->soc.codec.adc.rate && (s->soc.codec.regs[11] & 10) == 2 &&
+        s->soc.apc.clock && (s->soc.apc.regs[0] & 1) && (s->soc.apc.regs[5] & 1) ? "true" : "false",
         driven[0], levels[0], driven[1], levels[1]);
 }
 
@@ -1178,7 +1180,7 @@ static void desktop_button_set(Object *obj, bool pressed, Error **errp)
 static void desktop_input(Object *obj, const char *path, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
-    if (s->host_audio.stream && s->host_audio.stream->capture) {
+    if (s->host_audio.stream && lisa_audio_load(&s->host_audio.stream->capture)) {
         error_setg(errp, "Microphone owns the ADC input for this run"); return;
     }
     if (s->pcm_position < s->pcm_length) {

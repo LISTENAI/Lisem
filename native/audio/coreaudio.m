@@ -28,7 +28,7 @@ typedef struct HostAudio {
     uint64_t input_frames, output_frames, input_nonzero, input_callbacks, output_callbacks;
     uint64_t input_generation, generation, mute_changes;
     double input_end;
-    bool input_time_valid, draining, closing, muted;
+    bool input_time_valid, draining, closing, muted, input_closing;
     int callback_error;
     const char *error_operation;
     uint64_t reference[REFERENCE_FRAMES], reference_nonzero, reference_missing, reference_clock_errors;
@@ -37,6 +37,7 @@ typedef struct HostAudio {
 } HostAudio;
 
 static volatile sig_atomic_t interrupted;
+static int microphone_authorization;
 static void interrupt_handler(int sig) { interrupted = sig; }
 static double monotonic_seconds(void)
 {
@@ -96,7 +97,8 @@ static void capture(void *opaque, AudioQueueRef queue, AudioQueueBufferRef buffe
 {
     HostAudio *s = opaque;
     (void)packets; (void)descriptions;
-    if (__atomic_load_n(&s->closing, __ATOMIC_ACQUIRE)) { return; }
+    if (__atomic_load_n(&s->closing, __ATOMIC_ACQUIRE) ||
+        __atomic_load_n(&s->input_closing, __ATOMIC_ACQUIRE)) { return; }
     if (buffer->mAudioDataByteSize % 2) {
         lisa_audio_store(&s->stream->host_error, LISA_AUDIO_FORMAT);
         return;
@@ -124,7 +126,8 @@ static void capture(void *opaque, AudioQueueRef queue, AudioQueueBufferRef buffe
     }
     lisa_audio_store(&s->input_callbacks, lisa_audio_load(&s->input_callbacks) + 1);
     OSStatus status = AudioQueueEnqueueBuffer(queue, buffer, 0, NULL);
-    if (!__atomic_load_n(&s->closing, __ATOMIC_ACQUIRE)) { fail_status(s, status); }
+    if (!__atomic_load_n(&s->closing, __ATOMIC_ACQUIRE) &&
+        !__atomic_load_n(&s->input_closing, __ATOMIC_ACQUIRE)) { fail_status(s, status); }
 }
 
 static void playback(void *opaque, AudioQueueRef queue, AudioQueueBufferRef buffer)
@@ -167,6 +170,34 @@ static bool microphone_permission(void)
         dispatch_semaphore_signal(done);
     }];
     return dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC)) == 0 && granted;
+}
+
+static OSStatus input_close(HostAudio *s)
+{
+    __atomic_store_n(&s->input_closing, true, __ATOMIC_RELEASE);
+    OSStatus status = 0;
+    if (s->input) {
+        status = AudioQueueStop(s->input, true);
+        OSStatus disposed = AudioQueueDispose(s->input, true);
+        if (!status) { status = disposed; }
+        s->input = NULL;
+    }
+    s->input_time_valid = false;
+    return status;
+}
+
+static OSStatus input_open(HostAudio *s, const AudioStreamBasicDescription *format)
+{
+    if ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio] != AVAuthorizationStatusAuthorized) { return kAudio_ParamError; }
+    __atomic_store_n(&s->input_closing, false, __ATOMIC_RELEASE);
+    OSStatus status = AudioQueueNewInput(format, capture, s, NULL, NULL, 0, &s->input);
+    for (unsigned i = 0; !status && i < BUFFERS; i++) {
+        status = AudioQueueAllocateBuffer(s->input, FRAMES * 2, &s->inbuf[i]);
+        if (!status) { status = AudioQueueEnqueueBuffer(s->input, s->inbuf[i], 0, NULL); }
+    }
+    if (!status) { status = AudioQueueStart(s->input, NULL); }
+    if (status) { input_close(s); }
+    return status;
 }
 
 static bool save_pending(HostAudio *s, FILE *input, FILE *output, FILE *reference)
@@ -216,7 +247,7 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture_input;
-    p->live_input = capture_input && !recording_files;
+    p->live_input = !recording_files;
     HostAudio s = {.stream = p};
     mach_timebase_info_data_t timebase;
     mach_timebase_info(&timebase);
@@ -244,7 +275,7 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
     bool recording = capture_input && !error, playing = false, output_started = false, ready = false;
     bool completed = false;
     double started = monotonic_seconds();
-    bool control_open = true;
+    bool control_open = true, microphone_pending = false, microphone_enable = false;
     int flags = fcntl(STDIN_FILENO, F_GETFL);
     if (flags >= 0) { fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK); }
     while (!interrupted && !lisa_audio_load(&p->host_error) && !lisa_audio_load(&p->guest_error) &&
@@ -255,12 +286,46 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
             if (!count) { control_open = false; }
             for (ssize_t i = 0; i < count; i++) {
                 if (commands[i] == 'q') { interrupted = SIGTERM; }
+                if (commands[i] == 'c' || commands[i] == 'd') {
+                    microphone_enable = commands[i] == 'c';
+                    microphone_pending = true;
+                    AVAuthorizationStatus permission = [AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio];
+                    __atomic_store_n(&microphone_authorization, 1, __ATOMIC_RELEASE);
+                    if (microphone_enable && !recording_files && permission == AVAuthorizationStatusNotDetermined) {
+                        __atomic_store_n(&microphone_authorization, 0, __ATOMIC_RELEASE);
+                        [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio completionHandler:^(BOOL allowed) {
+                            __atomic_store_n(&microphone_authorization, allowed ? 1 : -1, __ATOMIC_RELEASE);
+                        }];
+                    }
+                }
                 if (commands[i] == '0' || commands[i] == '1') {
                     bool muted = commands[i] == '1';
                     s.mute_changes += muted != __atomic_load_n(&s.muted, __ATOMIC_ACQUIRE);
                     __atomic_store_n(&s.muted, muted, __ATOMIC_RELEASE);
                 }
             }
+        }
+        if (microphone_pending && __atomic_load_n(&microphone_authorization, __ATOMIC_ACQUIRE)) {
+            bool enable = microphone_enable;
+            OSStatus change = recording_files ? kAudio_ParamError : 0;
+            if (!change && enable != capture_input) {
+                if (enable) {
+                    uint64_t start = lisa_audio_load(&p->input_write);
+                    change = input_open(&s, &format);
+                    if (!change) {
+                        lisa_audio_store(&p->input_start, start);
+                        lisa_audio_store(&p->capture, 1);
+                        capture_input = recording = true;
+                    }
+                } else {
+                    lisa_audio_store(&p->capture, 0);
+                    change = input_close(&s);
+                    capture_input = recording = false;
+                }
+            }
+            printf("{\"microphone\":%s,\"ok\":%s}\n", capture_input ? "true" : "false", change ? "false" : "true");
+            fflush(stdout);
+            microphone_pending = false;
         }
         if (!save_pending(&s, input, output, reference)) { fail_status(&s, -1); break; }
         uint64_t state = lisa_audio_load(&p->state);

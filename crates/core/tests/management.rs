@@ -231,3 +231,55 @@ fn camera_input_selection_is_validated_persisted_and_explicitly_cleared() {
         );
     }
 }
+
+#[test]
+fn microphone_selection_is_persisted_without_starting_a_worker() {
+    use lisem_core::runtime::Runtime;
+    let temp = tempfile::tempdir().unwrap();
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let data = temp.path().join("library");
+    let mut manager = Manager::new(&root, &data, Path::new("must-not-spawn")).unwrap();
+    let item = manager
+        .call("create", json!({"board":"arcs-mini"}))
+        .unwrap();
+    let result = manager
+        .call("microphone", json!({"id":item["id"],"enabled":true}))
+        .unwrap();
+    assert_eq!(result, json!({"status":"saved","enabled":true}));
+    assert_eq!(
+        manager
+            .catalog
+            .device(item["id"].as_str().unwrap())
+            .unwrap()["host"]["microphone"],
+        true
+    );
+    assert!(
+        manager
+            .call(
+                "microphone",
+                json!({"id":item["id"],"enabled":false,"run":"old"})
+            )
+            .is_err()
+    );
+    assert!(
+        manager
+            .call("microphone", json!({"id":item["id"],"enabled":"yes"}))
+            .is_err()
+    );
+    let mut runtime = Runtime::new(
+        Catalog::open(&root, &data).unwrap(),
+        item["id"].as_str().unwrap().into(),
+    )
+    .unwrap();
+    assert!(
+        runtime
+            .call("microphone", &json!({"enabled":false,"run":"old"}))
+            .is_err()
+    );
+    assert_eq!(
+        runtime
+            .call("microphone", &json!({"enabled":false}))
+            .unwrap()["status"],
+        "saved"
+    );
+}

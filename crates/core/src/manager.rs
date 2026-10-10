@@ -299,12 +299,43 @@ impl Manager {
                 }
                 self.catalog.describe(&path)
             }
+            "microphone" => {
+                let enabled = params["enabled"]
+                    .as_bool()
+                    .context("Microphone requires a boolean")?;
+                if let Ok(client) = Client::connect(&path) {
+                    client.call("microphone", params)
+                } else {
+                    ensure!(
+                        params["run"].is_null(),
+                        "The request belongs to an earlier run"
+                    );
+                    let _storage = storage::locked(&path, &layout)?;
+                    self.catalog.update(&path, &json!({"microphone":enabled}))?;
+                    Ok(json!({"status":"saved","enabled":enabled}))
+                }
+            }
             "settings" | "rename" | "sound" => {
                 let changes = if method == "sound" {
                     json!({"sound":params["enabled"]})
                 } else {
                     params.clone()
                 };
+                if let Some(enabled) = changes.get("microphone")
+                    && let Ok(client) = Client::connect(&path)
+                    && client.call("status", json!({}))?["session"]["finished"] == false
+                {
+                    ensure!(
+                        changes
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .all(|key| ["id", "run", "microphone"].contains(&key.as_str())),
+                        "Change microphone and other settings separately while running"
+                    );
+                    return client
+                        .call("microphone", json!({"enabled":enabled,"run":params["run"]}));
+                }
                 let _storage =
                     if changes.get("online").is_some() || changes.get("microphone").is_some() {
                         Some(storage::locked(&path, &layout)?)

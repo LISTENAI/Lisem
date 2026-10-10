@@ -32,6 +32,20 @@ static void live_input(void)
     s->input_logged = UINT64_MAX;
     int16_t mic[160], reference[160];
     for (unsigned i = 0; i < 160; i++) { mic[i] = i + 1; reference[i] = -(i + 1); }
+    s->input_write = 8000;
+    s->input_start = 8000;
+    s->input_cursor = 7000;
+    s->input_reference = 123;
+    s->output_cursor_ns = 987654;
+    lisa_audio_advance(s, 123456);
+    assert(s->input_cursor == 8000 && s->input_floor == 8000);
+    assert(s->input_skipped == 1000 && s->input_reference == 0 && s->input_buffering);
+    assert(lisa_audio_adc(s, 123456) == 0 && s->adc_missing == 1);
+    assert(s->output_cursor_ns == 987654 && s->watermark_ns == 123456);
+    memset(s, 0, sizeof(*s));
+    s->live_input = s->capture = s->epoch_ready = 1;
+    s->state = LISA_AUDIO_RUNNING;
+    s->input_logged = UINT64_MAX;
     /* A short consumer stall cannot make the producer overwrite unread data. */
     s->input_write = LISA_AUDIO_CAPACITY;
     s->input[0] = 1234; s->reference[0] = -1234;

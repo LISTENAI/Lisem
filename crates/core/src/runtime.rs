@@ -160,6 +160,8 @@ impl PipeLog {
 }
 
 struct Audio {
+    replies: std::sync::mpsc::Receiver<Value>,
+    pending_microphone: Option<(bool, Instant)>,
     process: Process,
     stdout: PipeLog,
     stderr: PipeLog,
@@ -192,6 +194,7 @@ impl Audio {
         let stdout = child.stdout.take().context("Audio stdout missing")?;
         let stderr = PipeLog::start(child.stderr.take().context("Audio stderr missing")?);
         let (tx, rx) = std::sync::mpsc::channel();
+        let (reply_tx, replies) = std::sync::mpsc::sync_channel(4);
         let bytes = Arc::new(Mutex::new(Vec::new()));
         let tail = bytes.clone();
         let reader = thread::spawn(move || {
@@ -199,9 +202,23 @@ impl Audio {
             let mut line = String::new();
             let result = reader.read_line(&mut line).map(|_| line);
             let _ = tx.send(result);
-            PipeLog::collect(reader, &tail);
+            for line in reader.lines().map_while(std::result::Result::ok) {
+                if let Ok(value) = serde_json::from_str::<Value>(&line)
+                    && value.get("microphone").is_some()
+                {
+                    let _ = reply_tx.try_send(value);
+                } else {
+                    let mut bytes = tail.lock().unwrap();
+                    bytes.extend_from_slice(line.as_bytes());
+                    bytes.push(b'\n');
+                    let excess = bytes.len().saturating_sub(256 * 1024);
+                    bytes.drain(..excess);
+                }
+            }
         });
         let mut audio = Self {
+            replies,
+            pending_microphone: None,
             process: Process { child },
             stdout: PipeLog {
                 bytes,
@@ -225,6 +242,22 @@ impl Audio {
         );
         audio.mute(!options.sound)?;
         Ok(audio)
+    }
+    fn microphone(&mut self, enabled: bool) -> Result<()> {
+        ensure!(
+            self.pending_microphone.is_none(),
+            "Microphone change is still pending"
+        );
+        let input = self
+            .process
+            .child
+            .stdin
+            .as_mut()
+            .context("Audio control closed")?;
+        input.write_all(if enabled { b"c" } else { b"d" })?;
+        input.flush()?;
+        self.pending_microphone = Some((enabled, Instant::now()));
+        Ok(())
     }
     fn mute(&mut self, muted: bool) -> Result<()> {
         let input = self
@@ -563,6 +596,12 @@ impl Session {
         }
         if let Some(status) = self.process.child.try_wait()? {
             self.end_camera_capture();
+            if let Some(audio) = self.audio.as_mut()
+                && let Some((enabled, _)) = audio.pending_microphone.take()
+            {
+                self.state["microphone_change"] = json!({"status":"cancelled","enabled":enabled});
+            }
+            self.state["microphone"] = json!(false);
             self.finished = true;
             self.state["finished"] = json!(true);
             self.state["returncode"] = json!(status.code().unwrap_or(-1));
@@ -929,6 +968,47 @@ impl Runtime {
                     session.pending_releases.remove(&button);
                 }
             }
+            if !session.finished
+                && let Some(audio) = session.audio.as_mut()
+                && let Some((enabled, since)) = audio.pending_microphone
+            {
+                match audio.replies.try_recv() {
+                    Ok(reply) => {
+                        audio.pending_microphone = None;
+                        let actual = reply["microphone"]
+                            .as_bool()
+                            .context("Invalid microphone response")?;
+                        session.options.microphone = actual;
+                        session.state["microphone"] = json!(actual);
+                        let result = if reply["ok"] == true && actual == enabled {
+                            let item = self.catalog.device(&self.id)?;
+                            self.catalog
+                                .update(
+                                    Path::new(item["path"].as_str().unwrap()),
+                                    &json!({"microphone":actual}),
+                                )
+                                .map(|_| ())
+                        } else {
+                            Err(anyhow::anyhow!(
+                                "Host microphone change failed; check device access and microphone permission"
+                            ))
+                        };
+                        session.state["microphone_change"] = match result {
+                            Ok(()) => json!({"status":"applied","enabled":actual}),
+                            Err(error) => {
+                                json!({"status":"error","enabled":enabled,"error":error.to_string()})
+                            }
+                        };
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty)
+                        if since.elapsed() < Duration::from_secs(40) => {}
+                    Err(_) => {
+                        // Retain ownership until the same request is confirmed.
+                        // A late reply cannot acknowledge any later request.
+                        session.state["microphone_change"] = json!({"status":"unknown","enabled":enabled,"error":"Waiting for host microphone confirmation"});
+                    }
+                }
+            }
             Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
         }
@@ -1268,6 +1348,40 @@ impl Runtime {
                 }
                 Ok(state)
             }
+            "microphone" => {
+                let enabled = params["enabled"]
+                    .as_bool()
+                    .context("Microphone requires a boolean")?;
+                ensure!(
+                    params["run"].is_null() || self.session.as_ref().is_some_and(|s| !s.finished),
+                    "The request belongs to an earlier run"
+                );
+                if let Some(session) = self.session.as_mut().filter(|s| !s.finished) {
+                    ensure!(
+                        session.options.capture.is_none(),
+                        "Microphone changes are unavailable during diagnostic capture"
+                    );
+                    ensure!(
+                        !enabled || session.state["input_busy"] != true,
+                        "WAV input is still being consumed"
+                    );
+                    let audio = session
+                        .audio
+                        .as_mut()
+                        .context("This run has no host audio endpoint")?;
+                    audio.microphone(enabled)?;
+                    let change = json!({"status":"pending","enabled":enabled});
+                    session.state["microphone_change"] = change.clone();
+                    Ok(change)
+                } else {
+                    let item = self.catalog.device(&self.id)?;
+                    self.catalog.update(
+                        Path::new(item["path"].as_str().unwrap()),
+                        &json!({"microphone":enabled}),
+                    )?;
+                    Ok(json!({"status":"saved","enabled":enabled}))
+                }
+            }
             "mute" => {
                 if let Some(audio) = self.session.as_mut().and_then(|s| s.audio.as_mut()) {
                     audio.mute(
@@ -1406,7 +1520,11 @@ impl Runtime {
             "audio" => {
                 let session = self.session.as_mut().context("Instance is not running")?;
                 ensure!(
-                    !session.options.microphone,
+                    !session.options.microphone
+                        && session
+                            .audio
+                            .as_ref()
+                            .is_none_or(|a| a.pending_microphone.is_none()),
                     "Microphone owns the ADC input for this run"
                 );
                 let source = Path::new(params["path"].as_str().context("WAV path missing")?);

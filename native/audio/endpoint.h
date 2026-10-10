@@ -27,6 +27,7 @@ void host_output(HostAudio *s, int16_t *out, size_t count, double dac_time);
 void host_input(HostAudio *s, const int16_t *in, size_t count, double adc_time);
 void host_xrun(HostAudio *s);
 HostDevice *host_device_start(HostAudio *s);
+bool host_device_capture(HostDevice *device, bool enabled);
 double host_device_latency(HostDevice *device);
 void host_device_stop(HostDevice *device);
 #endif

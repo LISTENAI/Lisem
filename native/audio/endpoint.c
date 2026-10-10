@@ -187,7 +187,7 @@ static FILE *open_output(const char *directory, const char *name, const char *mo
 #endif
 }
 
-static void control(HostAudio *s)
+static void control(HostAudio *s, HostDevice *device, bool recording_files)
 {
     char buffer[64];
 #ifdef _WIN32
@@ -201,6 +201,21 @@ static void control(HostAudio *s)
 #endif
     for (int i = 0; i < count; i++) {
         if (buffer[i] == 'q') { interrupted = SIGTERM; }
+        if (buffer[i] == 'c' || buffer[i] == 'd') {
+            bool enabled = buffer[i] == 'c', ok = !recording_files;
+            uint64_t start = lisa_audio_load(&s->stream->input_write);
+            if (ok && enabled != (lisa_audio_load(&s->stream->capture) != 0)) {
+                if (!enabled) { lisa_audio_store(&s->stream->capture, 0); }
+                ok = host_device_capture(device, enabled);
+                if (ok && enabled) {
+                    lisa_audio_store(&s->stream->input_start, start);
+                    lisa_audio_store(&s->stream->capture, 1);
+                }
+            }
+            printf("{\"microphone\":%s,\"ok\":%s}\n",
+                   lisa_audio_load(&s->stream->capture) ? "true" : "false", ok ? "true" : "false");
+            fflush(stdout);
+        }
         if (buffer[i] == '0' || buffer[i] == '1') {
             uint64_t muted = buffer[i] == '1';
             s->mute_changes += muted != lisa_audio_load(&s->mute);
@@ -242,7 +257,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
     if (!p) { perror("Map audio transport"); return 1; }
     p->magic = LISA_AUDIO_MAGIC; p->bytes = sizeof(*p);
     p->rate = LISA_AUDIO_RATE; p->capacity = LISA_AUDIO_CAPACITY; p->capture = capture;
-    p->live_input = capture && !recording_files;
+    p->live_input = !recording_files;
     HostAudio *s = calloc(1, sizeof(*s));
     if (!s) { return 1; }
     s->stream = p; s->capture = capture;
@@ -256,7 +271,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
     bool ready = false, completed = false;
     while (!error && !interrupted && host_monotonic_seconds() - started < seconds &&
            !lisa_audio_load(&p->host_error) && !lisa_audio_load(&p->guest_error)) {
-        control(s);
+        control(s, device, recording_files);
         if (!save_pending(p, input, output, reference)) { error = 1; break; }
         if (!ready && lisa_audio_load(&p->ready)) {
             ready = true;
@@ -297,7 +312,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
                 "\"reference_clock_errors\":%llu,\"xruns\":%llu,"
                 "\"adc_missing\":%llu,\"output_underrun\":%llu,\"max_input_backlog_frames\":%llu,"
                 "\"max_output_backlog_frames\":%llu,\"wall_seconds\":%.6f,",
-                completed ? "true" : "false", capture ? "true" : "false",
+                completed ? "true" : "false", lisa_audio_load(&p->capture) ? "true" : "false",
                 (unsigned long long)p->host_error, (unsigned long long)p->guest_error,
                 (unsigned long long)s->input_frames, (unsigned long long)s->input_nonzero,
                 (unsigned long long)s->input_callbacks, (unsigned long long)s->output_callbacks,

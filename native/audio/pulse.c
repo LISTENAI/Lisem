@@ -141,6 +141,50 @@ HostDevice *host_device_start(HostAudio *audio)
     host_device_stop(d); return NULL;
 }
 
+bool host_device_capture(HostDevice *d, bool enabled)
+{
+    pa_threaded_mainloop_lock(d->loop);
+    if (d->input) {
+        pa_stream_set_state_callback(d->input, NULL, NULL);
+        pa_stream_set_read_callback(d->input, NULL, NULL);
+        pa_stream_disconnect(d->input);
+        pa_stream_unref(d->input);
+        d->input = NULL;
+    }
+    d->audio->capture = false;
+    d->audio->input_live = false;
+    d->audio->pending_count = d->audio->pending_head = 0;
+    if (enabled) {
+        pa_sample_spec format = {.format = PA_SAMPLE_S16LE, .rate = LISA_AUDIO_RATE, .channels = 1};
+        pa_buffer_attr buffer = {.maxlength = 6400, .tlength = 1280, .prebuf = UINT32_MAX,
+                                .minreq = 320, .fragsize = 320};
+        d->input = pa_stream_new(d->context, "Microphone", &format, NULL);
+        if (d->input && pa_stream_connect_record(d->input, NULL, &buffer,
+            PA_STREAM_AUTO_TIMING_UPDATE | PA_STREAM_INTERPOLATE_TIMING | PA_STREAM_ADJUST_LATENCY) < 0) {
+            pa_stream_unref(d->input); d->input = NULL;
+        }
+    }
+    pa_threaded_mainloop_unlock(d->loop);
+    if (!enabled) { return true; }
+    double deadline = host_monotonic_seconds() + 10;
+    while (host_monotonic_seconds() < deadline) {
+        pa_threaded_mainloop_lock(d->loop);
+        pa_stream_state_t state = d->input ? pa_stream_get_state(d->input) : PA_STREAM_FAILED;
+        if (state == PA_STREAM_READY) {
+            d->audio->capture = true;
+            pa_stream_set_state_callback(d->input, stream_state, d);
+            pa_stream_set_read_callback(d->input, recording, d);
+        }
+        pa_threaded_mainloop_unlock(d->loop);
+        if (state == PA_STREAM_READY) { return true; }
+        if (state == PA_STREAM_FAILED || state == PA_STREAM_TERMINATED) { break; }
+        struct timespec pause = {.tv_nsec = 10000000};
+        nanosleep(&pause, NULL);
+    }
+    host_device_capture(d, false);
+    return false;
+}
+
 double host_device_latency(HostDevice *d)
 {
     pa_usec_t latency = 0;

@@ -6,7 +6,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define LISA_AUDIO_MAGIC UINT64_C(0x4c49534150434d35)
+#define LISA_AUDIO_MAGIC UINT64_C(0x4c49534150434d36)
 #define LISA_AUDIO_RATE 16000
 #define LISA_AUDIO_PERIOD_NS 62500
 #define LISA_AUDIO_CAPACITY 262144
@@ -34,7 +34,7 @@ typedef struct LisaAudioStream {
     uint64_t max_input_backlog, max_output_backlog;
     uint64_t epoch_ready, epoch_ns, input_origin, pacing_origin_ns;
     uint64_t live_input, input_skipped, input_dropped, input_resyncs;
-    uint64_t input_cursor, input_buffering, input_reference;
+    uint64_t input_cursor, input_buffering, input_reference, input_start;
     int16_t input[LISA_AUDIO_CAPACITY], reference[LISA_AUDIO_CAPACITY];
     LisaAudioFrame output[LISA_AUDIO_CAPACITY];
 } LisaAudioStream;
@@ -100,8 +100,24 @@ static inline int16_t lisa_audio_adc_reference(LisaAudioStream *s, uint64_t ns)
            s->reference[frame & LISA_AUDIO_MASK] : 0;
 }
 
+/* Only the guest consumer releases old slots when input is reconnected. */
+static inline void lisa_audio_input_sync(LisaAudioStream *s)
+{
+    uint64_t start = lisa_audio_load(&s->input_start);
+    uint64_t cursor = lisa_audio_load(&s->input_cursor);
+    if (s->live_input && cursor < start) {
+        lisa_audio_store(&s->input_skipped, lisa_audio_load(&s->input_skipped) + start - cursor);
+        lisa_audio_store(&s->input_resyncs, lisa_audio_load(&s->input_resyncs) + 1);
+        lisa_audio_store(&s->input_cursor, start);
+        lisa_audio_store(&s->input_floor, start);
+        s->input_buffering = 1;
+        s->input_reference = 0;
+    }
+}
+
 static inline int16_t lisa_audio_adc(LisaAudioStream *s, uint64_t ns)
 {
+    lisa_audio_input_sync(s);
     uint64_t frame = s->live_input ? lisa_audio_load(&s->input_cursor) :
         lisa_audio_load(&s->input_origin) + (ns - s->epoch_ns) / LISA_AUDIO_PERIOD_NS;
     uint64_t written = lisa_audio_load(&s->input_write);
@@ -144,6 +160,7 @@ static inline bool lisa_audio_dac(LisaAudioStream *s, uint64_t ns, int16_t value
 
 static inline void lisa_audio_advance(LisaAudioStream *s, uint64_t ns)
 {
+    lisa_audio_input_sync(s);
     /* A timestamp equal to this watermark may still be produced by another
      * event at the same ns. Only the strictly earlier interval is complete. */
     uint64_t floor;

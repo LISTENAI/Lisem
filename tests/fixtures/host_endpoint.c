@@ -6,6 +6,7 @@
 #include <stdlib.h>
 
 HostDevice *host_device_start(HostAudio *s) { (void)s; return NULL; }
+bool host_device_capture(HostDevice *d, bool enabled) { (void)d; (void)enabled; return false; }
 void host_device_stop(HostDevice *d) { (void)d; }
 double host_device_latency(HostDevice *d) { (void)d; return 0; }
 
