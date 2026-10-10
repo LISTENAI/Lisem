@@ -75,6 +75,7 @@ void arcs_aon_wdt_reset(ArcsSoC *s);
 void arcs_dual_timer_init(ArcsSoC *s);
 void arcs_dual_timer_reset(ArcsSoC *s);
 uint64_t arcs_hclk_hz(ArcsSoC *s);
+void arcs_hclk_ratio(ArcsSoC *s, uint64_t *num, uint64_t *den);
 void arcs_sysctl_init(ArcsSoC *s);
 void arcs_sysctl_reset(ArcsSoC *s);
 #endif

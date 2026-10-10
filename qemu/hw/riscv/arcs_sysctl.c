@@ -353,6 +353,7 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             icount_clock_set_ratio(CPU(&io->soc->cpu[i]), numerator, denominator);
         }
     }
+    arcs_hsu_hclk_changed(io->soc);
     if (camera_hz && camera_hz != arcs_hclk_hz(io->soc)) {
         error_report("ARCS DVP cannot change HCLK during active pixel capture");
         arcs_soc_fail(io->soc, io->base + off, size, true, value);
@@ -745,7 +746,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
 }
 
 /* Functional peripheral clock, independent of the selected CPU timing mode. */
-uint64_t arcs_hclk_hz(ArcsSoC *soc)
+void arcs_hclk_ratio(ArcsSoC *soc, uint64_t *num, uint64_t *den)
 {
     uint32_t *pll = soc->sysctl.pll_regs;
     static const unsigned post_dividers[] = {4, 5, 6, 8, 9, 10, 12};
@@ -760,8 +761,18 @@ uint64_t arcs_hclk_hz(ArcsSoC *soc)
     } else if (source) { arcs_soc_fail(soc, 0x46001000, 4, false, pll[0]); }
     numerator *= soc->sysctl.follow_hclk ? soc->sysctl.hclk_n : (pll[0] >> 21) & 15;
     denominator *= soc->sysctl.follow_hclk ? soc->sysctl.hclk_m : (pll[0] >> 16) & 31;
-    if (!numerator || !denominator || numerator % denominator) {
+    if (!numerator || !denominator) {
         arcs_soc_fail(soc, 0x46001000, 4, false, pll[0]);
+    }
+    *num = numerator; *den = denominator;
+}
+
+uint64_t arcs_hclk_hz(ArcsSoC *soc)
+{
+    uint64_t numerator, denominator;
+    arcs_hclk_ratio(soc, &numerator, &denominator);
+    if (numerator % denominator) {
+        arcs_soc_fail(soc, 0x46001000, 4, false, soc->sysctl.pll_regs[0]);
     }
     return numerator / denominator;
 }

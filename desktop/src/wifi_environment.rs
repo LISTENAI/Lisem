@@ -4,11 +4,12 @@ use gpui::component::{
     ActiveTheme, Disableable,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
+    menu::{DropdownMenu, PopupMenuItem},
     switch::Switch,
 };
 use gpui::{Context, Entity, Render, Window, div, prelude::*, px};
 use lisem_core::wifi_environment::{
-    AccessPoint, MAX_ACCESS_POINTS, WifiEnvironment as Configuration,
+    AccessPoint, MAX_ACCESS_POINTS, Security, WifiEnvironment as Configuration,
 };
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
@@ -18,6 +19,8 @@ struct Row {
     rssi: Entity<InputState>,
     channel: Entity<InputState>,
     connectable: bool,
+    security: Security,
+    password: Entity<InputState>,
 }
 
 pub struct WifiEnvironment {
@@ -62,8 +65,15 @@ impl WifiEnvironment {
             rssi: cx.new(|cx| InputState::new(window, cx).default_value(ap.rssi.to_string())),
             channel: cx.new(|cx| InputState::new(window, cx).default_value(ap.channel.to_string())),
             connectable: ap.connectable,
+            security: ap.security,
+            password: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .default_value(&ap.password)
+                    .masked(true)
+                    .placeholder("密码（8–63 字符）")
+            }),
         };
-        for input in [&row.ssid, &row.rssi, &row.channel] {
+        for input in [&row.ssid, &row.rssi, &row.channel, &row.password] {
             cx.subscribe(input, |view, _, event, cx| {
                 if matches!(event, InputEvent::Change) {
                     view.message.clear();
@@ -107,9 +117,19 @@ impl WifiEnvironment {
                 rssi,
                 channel,
                 connectable: row.connectable,
+                security: row.security,
+                password: if row.security == Security::Open {
+                    String::new()
+                } else {
+                    row.password.read(cx).value().to_string()
+                },
             });
         }
-        Ok(Configuration { access_points })
+        let configuration = Configuration { access_points };
+        configuration
+            .validate()
+            .map_err(|_| "WPA2 密码需为 8–63 个可打印 ASCII 字符".to_owned())?;
+        Ok(configuration)
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
@@ -167,49 +187,108 @@ impl Render for WifiEnvironment {
             .unwrap_or(true);
         let mut rows = div().flex().flex_col().gap_2();
         for (index, row) in self.rows.iter().enumerate() {
+            let owner = cx.entity().downgrade();
+            let security = row.security;
             rows = rows.child(
                 div()
                     .flex()
-                    .items_center()
-                    .gap_3()
+                    .flex_col()
+                    .gap_2()
+                    .pb_3()
                     .child(
                         div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(Input::new(&row.ssid).disabled(locked)),
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .child(Input::new(&row.ssid).disabled(locked)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(86.))
+                                    .child(Input::new(&row.rssi).disabled(locked)),
+                            )
+                            .child(
+                                div()
+                                    .w(px(68.))
+                                    .child(Input::new(&row.channel).disabled(locked)),
+                            )
+                            .child(
+                                div().w(px(74.)).flex().justify_center().child(
+                                    Switch::new(("wifi-connectable", index))
+                                        .checked(row.connectable)
+                                        .disabled(locked)
+                                        .on_click(cx.listener(move |view, enabled, _, cx| {
+                                            view.rows[index].connectable = *enabled;
+                                            view.message.clear();
+                                            cx.notify();
+                                        })),
+                                ),
+                            )
+                            .child(
+                                Button::new(("wifi-remove", index))
+                                    .label("移除")
+                                    .ghost()
+                                    .disabled(locked)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.rows.remove(index);
+                                        view.message.clear();
+                                        cx.notify();
+                                    })),
+                            ),
                     )
                     .child(
                         div()
-                            .w(px(86.))
-                            .child(Input::new(&row.rssi).disabled(locked)),
-                    )
-                    .child(
-                        div()
-                            .w(px(68.))
-                            .child(Input::new(&row.channel).disabled(locked)),
-                    )
-                    .child(
-                        div().w(px(74.)).flex().justify_center().child(
-                            Switch::new(("wifi-connectable", index))
-                                .checked(row.connectable)
-                                .disabled(locked)
-                                .on_click(cx.listener(move |view, enabled, _, cx| {
-                                    view.rows[index].connectable = *enabled;
-                                    view.message.clear();
-                                    cx.notify();
-                                })),
-                        ),
-                    )
-                    .child(
-                        Button::new(("wifi-remove", index))
-                            .label("移除")
-                            .ghost()
-                            .disabled(locked)
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.rows.remove(index);
-                                view.message.clear();
-                                cx.notify();
-                            })),
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                Button::new(("wifi-security", index))
+                                    .label(if security == Security::Open {
+                                        "开放"
+                                    } else {
+                                        "WPA2-Personal"
+                                    })
+                                    .icon(gpui::component::Icon::new(
+                                        gpui::assets::IconName::ChevronDown,
+                                    ))
+                                    .disabled(locked)
+                                    .dropdown_menu(move |mut menu, _, _| {
+                                        for (label, choice) in [
+                                            ("开放", Security::Open),
+                                            ("WPA2-Personal", Security::Wpa2Psk),
+                                        ] {
+                                            let owner = owner.clone();
+                                            menu = menu.item(
+                                                PopupMenuItem::new(label)
+                                                    .checked(choice == security)
+                                                    .on_click(move |_, _, cx| {
+                                                        let _ = owner.update(cx, |view, cx| {
+                                                            if view.pending || view.powered() {
+                                                                return;
+                                                            }
+                                                            if let Some(row) =
+                                                                view.rows.get_mut(index)
+                                                            {
+                                                                row.security = choice;
+                                                            }
+                                                            view.message.clear();
+                                                            cx.notify();
+                                                        });
+                                                    }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            )
+                            .when(security == Security::Wpa2Psk, |view| {
+                                view.child(div().flex_1().min_w_0().child(
+                                    Input::new(&row.password).mask_toggle().disabled(locked),
+                                ))
+                            }),
                     ),
             );
         }
@@ -238,6 +317,8 @@ impl Render for WifiEnvironment {
                                         rssi: -60,
                                         channel: 1,
                                         connectable: true,
+                                        security: Security::Open,
+                                        password: String::new(),
                                     },
                                     window,
                                     cx,
@@ -251,7 +332,7 @@ impl Render for WifiEnvironment {
                 div()
                     .text_sm()
                     .text_color(cx.theme().muted_foreground)
-                    .child("开放热点；允许连接与允许联网分别设置。"),
+                    .child("允许连接与允许联网分别设置。"),
             )
             .when(!self.rows.is_empty(), |view| {
                 view.child(

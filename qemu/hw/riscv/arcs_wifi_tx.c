@@ -5,6 +5,7 @@
 #include "system/address-spaces.h"
 #include "qemu/bswap.h"
 #include "qemu/error-report.h"
+#include "hw/riscv/arcs_wifi_security.h"
 
 static G_NORETURN void fail(ArcsWiFiTX *t, const char *message)
 {
@@ -43,15 +44,14 @@ static void validate(ArcsWiFiTX *t, uint32_t policy)
     unsigned n = t->length;
     bool null = f[0] == 0x48;
     if (f[0] == 8 || f[0] == 0x88 || null) {
-        if ((f[1] & 3) != 1 || (f[1] & ~0x29) || (f[22] & 15) ||
+        if ((f[1] & 3) != 1 || (f[1] & ~0x69) || (f[22] & 15) ||
             (null && n != 24) ||
             (f[0] == 0x88 && (n < 26 || (f[24] & ~15) || f[25]))) {
             fail(t, "unsupported data header, QoS ACK policy or aggregation");
         }
     } else {
         if ((f[1] & ~8) || (f[22] & 15) ||
-            (f[0] != 0x40 && f[0] != 0xb0 && f[0] != 0 && f[0] != 0xd0 &&
-             f[0] != 0xc0 && f[0] != 0xa0)) {
+            (f[0] != 0x40 && f[0] != 0xb0 && f[0] != 0 && f[0] != 0xd0 && f[0] != 0xc0 && f[0] != 0xa0)) {
             fail(t, "unsupported management frame control");
         }
         if (f[0] == 0xd0 && (n < 30 || f[24] != 3 || f[25] > 2 ||
@@ -111,7 +111,22 @@ static void prepare(ArcsWiFiTX *t, uint32_t address)
         if (ldl_le_p(payload) != 0xcafefade || ldl_le_p(payload + 16)) { fail(t, "unsupported payload descriptor"); }
         append(t, ldl_le_p(payload + 8), ldl_le_p(payload + 12)); pbd = ldl_le_p(payload + 4);
     }
-    if (t->length != length - 4) { fail(t, "segments differ from frame length excluding FCS"); }
+    t->encrypt = (t->frame[1] & 0x40) && !(ldl_le_p(header + 0x34) & 0x40000000);
+    if (t->encrypt) {
+        uint32_t policy = ldl_le_p(header + 0x24);
+        t->key_index = read_word(t, policy + 12) & 1023;
+        if (t->key_index >= 8 || (t->wifi->keys[t->key_index][10] & 0x3700) != 0x300 ||
+            t->length < (t->frame[0] == 0x88 ? 42 : 40)) { fail(t, "unsupported TX cipher, key index or short CCMP frame"); }
+    }
+    if (t->length != length - 4) {
+        char reason[192];
+        snprintf(reason, sizeof(reason), "TX length mismatch: segments=%u frame=%u encrypt=%u control=0x%08x fc=0x%04x",
+                 t->length, length, t->encrypt, ldl_le_p(header + 0x34), lduw_le_p(t->frame));
+        fail(t, reason);
+    }
+    /* The DMA chain reserves the cipher trailer in its total length.
+     * Hardware replaces those bytes with the generated MIC, not payload. */
+    if (t->encrypt) { t->length -= 8; }
     validate(t, ldl_le_p(header + 0x34));
     timer_mod(t->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 10000);
 }
@@ -121,6 +136,17 @@ static void complete(void *opaque)
     ArcsWiFiTX *t = opaque;
     ArcsWiFi *s = t->wifi;
     uint32_t next = read_word(t, t->current + 4);
+    if (t->encrypt) {
+        /* Key RAM is read at the execution event, including its cipher. */
+        if ((s->keys[t->key_index][10] & 0x3700) != 0x300) {
+            fail(t, "TX key cipher changed before execution");
+        }
+        uint8_t key[16];
+        for (unsigned i = 0; i < 4; i++) { stl_le_p(key + 4 * i, s->keys[t->key_index][i]); }
+        bool ok = arcs_wifi_ccmp(key, t->frame, &t->length, true);
+        memset(key, 0, sizeof(key));
+        if (!ok) { fail(t, "invalid CCMP transmit framing"); }
+    }
     bool acknowledged = s->transmit && s->transmit(s->medium_opaque, t->frame,
                                                   t->length, arcs_wifi_microseconds(s));
     uint32_t status = 0x80000000;

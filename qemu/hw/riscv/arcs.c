@@ -594,6 +594,17 @@ static void report(void *opaque, const char *status)
             ",\"dropped\":%" PRIu64 ",\"retried\":%" PRIu64 ",\"queued\":%u,\"dhcp_offers\":%" PRIu64 ",\"dhcp_acks\":%" PRIu64 "}",
             ap->running ? "true" : "false", ap->associated ? "true" : "false", ap->accepted,
             ap->dropped, ap->retried, ap->queue.length, ap->dhcp_offers, ap->dhcp_acks);
+    fprintf(f, ",\"wifi_security\":{\"authorized\":%s,\"authentication_failures\":%" PRIu64
+            ",\"mic_failures\":%" PRIu64 ",\"authentication_requests\":%" PRIu64
+            ",\"association_requests\":%" PRIu64 ",\"association_status\":%u"
+            ",\"association_rejections\":%" PRIu64 ",\"last_association_rejection\":%u"
+            ",\"handshake_state\":%u,\"eapol_received\":%" PRIu64
+            ",\"station_rsn_size\":%u,\"station_rsn_caps\":%u}",
+            ap->authorized ? "true" : "false", ap->authentication_failures,
+            ap->mic_failures, ap->authentication_requests, ap->association_requests,
+            ap->association_status, ap->association_rejections, ap->last_association_rejection,
+            ap->handshake_state, ap->eapol_received,
+            ap->station_rsn_size, ap->station_rsn_caps);
     fprintf(f, ",\"bluetooth\":{\"captured\":%u,\"submitted\":%" PRIu64
             ",\"completed\":%" PRIu64 ",\"fifo_count\":%u}", s->ble_frames,
             s->soc.bluetooth.submitted, s->soc.bluetooth.completed, s->soc.bluetooth.fifo_count);

@@ -362,6 +362,7 @@ static uint64_t wifi_read(void *opaque, hwaddr off, unsigned size)
         if (off == 0x124) { return (counter(s) >> 32) | (s->software_update ? 0x80000000 : 0); }
         if (off >= 0x128 && off <= 0x14c) { return s->alarms[(off - 0x128) / 4].compare; }
         if (!listed(off, core_offsets, G_N_ELEMENTS(core_offsets))) { goto fail; }
+        if (off == 4) { return 0x80; } /* CCMP is implemented; other ciphers are absent. */
         if (off == 8) { return 71; } /* Virtual UM revision accepted by the SDK. */
         if (off == 0xd8) { return CORE_REG(off) | 0x07000000; }
         return CORE_REG(off);

@@ -14,6 +14,15 @@
 背压与取消，并核对静态图片经 DVP FIFO/GPDMA 写入 RAM 的字节、内存边界、
 帧快照、SOF/EOF 中断及复位取消。共享输入另覆盖连续发布、代际隔离、SOF
 锁存、丢帧／重复计数和断开／重连。原固件拍照还需通过原 LPK 的业务入口验证。
+`make qemu-wifi-wpa2 qemu-hsu` 验证 EAPOL 密钥确认、CCMP 独立向量、GTK
+广播 DHCP、MIC/PN 拒绝、取消和密钥替换边界。原固件使用
+`python3 tests/run_wifi_wpa2_firmware.py --lpk firmware.lpk` 验证正确密码取得
+DHCP（包含原固件获 IP 回调）与错误密码实际 MIC 失败且未授权；此测试
+不连接外网、不保存 UART 或密码。
+SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC 回归另外
+覆盖 SHA1/224/256 独立摘要、分段、HCLK 有理分频切换、门控与复位；真机观测
+包络与按块功能推导的边界见架构文档。
+
 运行 CPU 探针需要 RISC-V bare-metal GCC，`CROSS_COMPILE` 指定工具链前缀。
 应用固件只作为外部测试输入，不提交其源码、微程序或实例副本。
 

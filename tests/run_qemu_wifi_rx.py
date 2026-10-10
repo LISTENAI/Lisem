@@ -152,6 +152,11 @@ def filters():
             setup(m);station(m,7);m.write(CORE+0xbc,0x1234)
             assert receive(m,p)
             assert m.read(START+80)&0x2038000==0x2038000 and m.read(CORE+0xbc)==0x1234
+        # Protected traffic without a usable CCMP key is filtered before DMA.
+        setup(m);p=bytearray(frame());p[1]|=0x40
+        before=read_bytes(m,START,4096)
+        assert not receive(m,p)
+        assert read_bytes(m,START,4096)==before and m.read(PL+0x1d4)==START
         for group,filter_bit in ((bytes.fromhex('010000000007'),4),(bytes.fromhex('040000000007'),0x40)):
             setup(m);p=bytearray(frame());p[4:10]=group
             assert not receive(m,p);m.write(CORE+0x60,m.read(CORE+0x60)|filter_bit);assert receive(m,p)
@@ -160,11 +165,10 @@ def filters():
 
 
 def rejection():
-    for name in ('protected','fragment','direction','qos','truncated-ie','auth','ba','wrap','reserve','start','end','align','rd','phase','duplicate-station'):
+    for name in ('fragment','direction','qos','truncated-ie','auth','ba','wrap','reserve','start','end','align','rd','phase','duplicate-station'):
         m=Machine(OUTPUT/('reject-'+name),budget_ns=10000000)
         try:
             setup(m);p=bytearray(frame())
-            if name=='protected':p[1]|=0x40
             if name=='fragment':p[22]|=1
             if name=='direction':p[1]=1
             if name=='qos':p=bytearray(frame(0x88));p[24]=0x80

@@ -5,13 +5,43 @@ use serde_json::Value;
 
 pub const MAX_ACCESS_POINTS: usize = 16;
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum Security {
+    #[default]
+    Open,
+    Wpa2Psk,
+}
+impl Security {
+    fn is_open(&self) -> bool {
+        *self == Self::Open
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AccessPoint {
     pub ssid: String,
     pub rssi: i16,
     pub channel: u8,
     pub connectable: bool,
+    #[serde(default, skip_serializing_if = "Security::is_open")]
+    pub security: Security,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub password: String,
+}
+
+impl std::fmt::Debug for AccessPoint {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AccessPoint")
+            .field("ssid", &self.ssid)
+            .field("rssi", &self.rssi)
+            .field("channel", &self.channel)
+            .field("connectable", &self.connectable)
+            .field("security", &self.security)
+            .field("password", &"[redacted]")
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -28,6 +58,8 @@ impl Default for WifiEnvironment {
                 rssi: -45,
                 channel: 1,
                 connectable: true,
+                security: Security::Open,
+                password: String::new(),
             }],
         }
     }
@@ -54,6 +86,17 @@ impl WifiEnvironment {
                 !ap.ssid.is_empty() && ap.ssid.len() <= 32 && !ap.ssid.contains('\0'),
                 "SSID must contain 1..32 UTF-8 bytes and no NUL"
             );
+            match ap.security {
+                Security::Open => ensure!(
+                    ap.password.is_empty(),
+                    "Open access points cannot have a password"
+                ),
+                Security::Wpa2Psk => ensure!(
+                    (8..=63).contains(&ap.password.len())
+                        && ap.password.bytes().all(|b| (32..=126).contains(&b)),
+                    "WPA2-PSK password must contain 8..63 printable ASCII characters"
+                ),
+            }
             ensure!((-127..=0).contains(&ap.rssi), "RSSI must be -127..0 dBm");
             ensure!(
                 (1..=14).contains(&ap.channel),
@@ -68,6 +111,31 @@ impl WifiEnvironment {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn security_requires_real_password_and_redacts_debug() {
+        let mut env = WifiEnvironment::default();
+        env.access_points[0].security = Security::Wpa2Psk;
+        assert!(env.validate().is_err());
+        env.access_points[0].password = "test-password".into();
+        assert!(env.validate().is_ok());
+        assert!(!format!("{env:?}").contains("test-password"));
+        assert_eq!(
+            WifiEnvironment::from_value(&serde_json::to_value(&env).unwrap()).unwrap(),
+            env
+        );
+        for value in [
+            "short".to_owned(),
+            "x".repeat(64),
+            "validpass\0".to_owned(),
+            "密码12345678".to_owned(),
+        ] {
+            env.access_points[0].password = value;
+            assert!(env.validate().is_err());
+        }
+        env.access_points[0].security = Security::Open;
+        assert!(env.validate().is_err());
+    }
 
     #[test]
     fn defaults_and_empty_environment_are_distinct() {

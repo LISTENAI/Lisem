@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Checksum and block-aligned SHA streams; other crypto modes are rejected. */
+/* Checksum, block-aligned SHA streams and HMAC-SHA1/224/256. */
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs.h"
 #include "system/address-spaces.h"
 #include "qemu/bswap.h"
+#include "qemu/host-utils.h"
 
 /* FIPS 180-4 block compression. No implicit padding in non-LAST segments. */
 static const uint64_t sha_k[80] = {
@@ -155,7 +156,56 @@ static void complete(void *opaque)
         s->sha_done = true;
     } else { s->result = s->pending_result; s->done = true; }
     s->bytes += s->pending_length; s->completed++;
-    s->busy = false; s->remaining = 0; irq(s);
+    s->busy = false; s->remaining = 0; s->hmac_work = int128_zero(); irq(s);
+}
+
+/* LCM(SYSPLL post dividers) * LCM(HCLK denominators 1..31).
+ * Fixed units avoid rounding partial cycles when changing rational rates. */
+#define HMAC_CLOCK_SCALE UINT64_C(25992639520848000)
+
+static Int128 hmac_multiply(Int128 value, uint64_t factor)
+{
+    uint64_t lo = int128_getlo(value), hi = int128_gethi(value);
+    bool overflow = mulu128(&lo, &hi, factor);
+    assert(!overflow);
+    return int128_make128(lo, hi);
+}
+
+static void hmac_rate(ArcsHSU *s)
+{
+    uint64_t numerator, denominator;
+    arcs_hclk_ratio(s->soc, &numerator, &denominator);
+    assert(HMAC_CLOCK_SCALE % denominator == 0);
+    s->hmac_rate = hmac_multiply(int128_make64(numerator),
+                                 HMAC_CLOCK_SCALE / denominator);
+}
+
+static uint64_t hmac_duration(ArcsHSU *s)
+{
+    Int128 rounded = int128_add(s->hmac_work,
+                                int128_sub(s->hmac_rate, int128_one()));
+    return int128_get64(int128_divu(rounded, s->hmac_rate));
+}
+
+/* Account at the previously selected HCLK before selecting the new rate. */
+static void hmac_account(ArcsHSU *s, int64_t now)
+{
+    if (s->clock) {
+        uint64_t elapsed = now - s->hmac_updated;
+        s->hmac_work = elapsed >= hmac_duration(s) ? int128_zero() :
+            int128_sub(s->hmac_work, hmac_multiply(s->hmac_rate, elapsed));
+    }
+    s->hmac_updated = now;
+}
+
+void arcs_hsu_hclk_changed(ArcsSoC *soc)
+{
+    ArcsHSU *s = &soc->hsu;
+    if (!s->busy || !s->pending_hmac) { return; }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    hmac_account(s, now);
+    hmac_rate(s);
+    if (s->clock) { timer_mod(s->event, now + hmac_duration(s)); }
 }
 
 void arcs_hsu_clock(ArcsSoC *soc, bool enabled)
@@ -164,10 +214,30 @@ void arcs_hsu_clock(ArcsSoC *soc, bool enabled)
     if (enabled == s->clock) { return; }
     if (s->busy) {
         int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        if (enabled) { timer_mod(s->event, now + s->remaining); }
+        if (s->pending_hmac) {
+            hmac_account(s, now);
+            if (enabled) {
+                hmac_rate(s);
+                timer_mod(s->event, now + hmac_duration(s));
+            } else { timer_del(s->event); }
+        } else if (enabled) { timer_mod(s->event, now + s->remaining); }
         else { s->remaining = timer_expire_time_ns(s->event) - now; timer_del(s->event); }
     }
     s->clock = enabled;
+}
+
+/* Conservative observed completion envelopes, including MMIO observation
+ * overhead. SHA1: key16/64, LAST20/55/56/64/128, non-LAST64. SHA256:
+ * key9/16/32 and LAST16/20/64. Other lengths and SHA224 extrapolate by
+ * compression block; these are functional timings, not silicon guarantees. */
+static unsigned hmac_cycles(unsigned mode, unsigned length, bool first, bool last)
+{
+    if (first) { return mode == 6 ? (length <= 16 ? 223 : 248) : (length <= 32 ? 172 : 248); }
+    unsigned blocks = length / 64;
+    if (!last) { return 174 * blocks; }
+    blocks += (length % 64 >= 56 ? 2 : 1) + 2;
+    if (mode != 6) { return 327 + 69 * (blocks - 3); }
+    return 394 + (blocks > 3 ? 89 + 107 * (blocks - 4) : 0);
 }
 
 static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
@@ -178,9 +248,9 @@ static uint64_t read_reg(void *opaque, hwaddr off, unsigned size)
         return s->digest[(off - 0x34) / 4];
     }
     switch (off) {
-    case 0: return 0x3c0000; /* IP checksum and SHA1/224/256/384/512. */
+    case 0: return 0xfc0000; /* SHA1/224/256/384/512 and HMAC-SHA1/224/256. */
     case 4: return s->sha_control;
-    case 8: return (s->done ? 0x10 : 0) | (s->sha_done ? 0x1000 : 0);
+    case 8: return (s->done ? 0x10 : 0) | (s->sha_done ? (s->sha.hmac ? 0x10000 : 0x1000) : 0);
     case 0x20: return s->sha_source;
     case 0x24: return s->sha_length;
     case 0xc: case 0x7c: case 0x8c: return 0;
@@ -203,28 +273,59 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
     switch (off) {
     case 4: {
         unsigned mode = (value >> 8) & 31;
+        bool hmac = mode >= 6 && mode <= 8;
+        unsigned hash_mode = hmac ? mode - 3 : mode;
         bool first = value & 16, last = value & 32;
         unsigned block_size = mode >= 9 ? 128 : 64;
-        if (s->busy || (value & ~0x1f31u) ||
-            (mode != 3 && mode != 4 && mode != 5 && mode != 9 && mode != 10)) { goto fail; }
+        if (s->busy || (value & ~0x1f31u)) { goto fail; }
         if (value & 1) {
+            if (mode != 3 && mode != 4 && mode != 5 && !hmac && mode != 9 && mode != 10) { goto fail; }
             uint64_t end = (uint64_t)s->sha_source + s->sha_length;
-            if (!s->clock || !s->sha_length || s->sha_length > 65535 ||
-                (!last && s->sha_length % block_size) ||
-                (!first && (!s->sha.active || s->sha.mode != mode)) ||
+            if (!s->clock || (!s->sha_length && !(hmac && (first || last))) || s->sha_length > 65535 ||
+                (hmac && first && (last || s->sha_length > 64)) ||
+                (!last && !(hmac && first) && s->sha_length % block_size) ||
+                (!first && (!s->sha.active || s->sha.mode != hash_mode || s->sha.hmac != hmac)) ||
                 !((s->sha_source >= 0x20000000 && end <= 0x200d0000) ||
                   (s->sha_source >= 0x28000000 && end <= 0x29000000) ||
                   (s->sha_source >= 0x30000000 && end <= 0x31000000))) { goto fail; }
             s->pending_sha = s->sha;
-            if (first) { sha_begin(&s->pending_sha, mode); }
+            if (first) { sha_begin(&s->pending_sha, hash_mode); s->pending_sha.hmac = hmac; }
             if (s->pending_sha.bytes > UINT64_MAX / 8 - s->sha_length) { goto fail; }
-            bytes = g_malloc(s->sha_length);
+            bytes = g_malloc(MAX(1, s->sha_length));
             if (address_space_read(&address_space_memory, s->sha_source,
                 MEMTXATTRS_UNSPECIFIED, bytes, s->sha_length) != MEMTX_OK) { goto fail; }
-            sha_segment(&s->pending_sha, bytes, s->sha_length, last, s->pending_digest);
+            if (hmac && first) {
+                uint8_t ipad[64];
+                for (unsigned i = 0; i < 64; i++) {
+                    uint8_t key = i < s->sha_length ? bytes[i] : 0;
+                    ipad[i] = key ^ 0x36; s->pending_sha.opad[i] = key ^ 0x5c;
+                }
+                sha_segment(&s->pending_sha, ipad, sizeof(ipad), false, s->pending_digest);
+                memset(ipad, 0, sizeof(ipad));
+            } else {
+                sha_segment(&s->pending_sha, bytes, s->sha_length, last, s->pending_digest);
+                if (hmac && last) {
+                    uint8_t inner[32];
+                    unsigned digest_bytes = hash_mode == 3 ? 20 : hash_mode == 5 ? 28 : 32;
+                    for (unsigned i = 0; i < digest_bytes / 4; i++) { stl_le_p(inner + 4 * i, s->pending_digest[i]); }
+                    ArcsSHAState outer; sha_begin(&outer, hash_mode);
+                    sha_segment(&outer, s->pending_sha.opad, 64, false, s->pending_digest);
+                    sha_segment(&outer, inner, digest_bytes, true, s->pending_digest);
+                    memset(s->pending_sha.opad, 0, sizeof(s->pending_sha.opad));
+                    memset(inner, 0, sizeof(inner)); memset(&outer, 0, sizeof(outer));
+                }
+            }
             s->pending_is_sha = true; s->pending_length = s->sha_length;
             s->busy = true; s->remaining = 10000;
-            timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
+            s->pending_hmac = hmac;
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            if (hmac) {
+                uint64_t cycles = hmac_cycles(mode, s->sha_length, first, last);
+                s->hmac_work = hmac_multiply(int128_make64(cycles * UINT64_C(1000000000)), HMAC_CLOCK_SCALE);
+                hmac_rate(s);
+                s->hmac_updated = now;
+                timer_mod(s->event, now + hmac_duration(s));
+            } else { timer_mod(s->event, now + s->remaining); }
         }
         s->sha_control = value & ~1u; return;
     }
@@ -249,7 +350,7 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
             /* Snapshot input at START; retain the previous visible result and
              * sticky DONE until completion/W1C, exactly as the existing model. */
             s->pending_result = sum; s->pending_length = s->length;
-            s->pending_is_sha = false;
+            s->pending_is_sha = s->pending_hmac = false;
             s->busy = true; s->remaining = 10000;
             timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + s->remaining);
         }
@@ -296,7 +397,9 @@ void arcs_hsu_reset(ArcsSoC *soc)
     memset(&s->pending_sha, 0, sizeof(s->pending_sha));
     memset(s->digest, 0, sizeof(s->digest));
     memset(s->pending_digest, 0, sizeof(s->pending_digest));
-    s->sha_done = s->pending_is_sha = false; irq(s);
+    s->hmac_work = s->hmac_rate = int128_zero();
+    s->hmac_updated = 0;
+    s->sha_done = s->pending_is_sha = s->pending_hmac = false; irq(s);
 }
 
 void arcs_hsu_init(ArcsSoC *soc)

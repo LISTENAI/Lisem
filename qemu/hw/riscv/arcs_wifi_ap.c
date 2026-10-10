@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* Explicit open logical AP. No RF tuning, contention or fake station events. */
+/* Logical AP with open or WPA2-PSK/CCMP security. No RF tuning or contention. */
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs_wifi_ap.h"
 #include "qemu/bswap.h"
@@ -8,9 +8,26 @@
 #include "qobject/qlist.h"
 #include "qobject/qnum.h"
 #include "qobject/qbool.h"
+#include "hw/riscv/arcs_wifi_security.h"
+#include "crypto/random.h"
+#include "qapi/error.h"
 
+static const uint8_t rsn[] = {48,20,1,0,0,15,172,4,1,0,0,15,172,4,1,0,0,15,172,2,0,0};
 static const uint8_t broadcast[6] = {255,255,255,255,255,255};
 static const uint8_t server[4] = {192,0,2,1}, lease[4] = {192,0,2,2};
+
+/* Single CCMP pairwise/group cipher and PSK AKM. MFPC advertises a
+ * capability; MFPR requires PMF, which this AP does not implement. Replay
+ * counter capabilities may differ from the AP. Optional zero PMKID count
+ * and BIP-CMAC-128 capability do not negotiate PMF with our non-PMF AP. */
+static bool supported_station_rsn(const uint8_t *ie, unsigned n)
+{
+    if ((n != 22 && n != 24 && n != 28) || ie[0] != 48 || ie[1] + 2 != n ||
+        memcmp(ie + 2, rsn + 2, 18) || (lduw_le_p(ie + 20) & ~0x00bcu)) { return false; }
+    if (n >= 24 && lduw_le_p(ie + 22)) { return false; }
+    static const uint8_t bip[] = {0, 15, 172, 6};
+    return n < 28 || ((ie[20] & 0x80) && !memcmp(ie + 24, bip, sizeof(bip)));
+}
 
 static void schedule(ArcsWiFiAP *s, uint64_t ns)
 {
@@ -33,20 +50,119 @@ static void reply(ArcsWiFiAP *s, uint8_t type, const uint8_t *destination,
     memcpy(header + 16, source ? source : s->bssid, 6);
     stw_le_p(header + 22, s->sequence++ << 4);
     GByteArray *p = g_byte_array_sized_new(24 + length);
-    g_byte_array_append(p, header, 24); g_byte_array_append(p, body, length); enqueue(s, p);
+    g_byte_array_append(p, header, 24);
+    bool protected = type == 8 && s->wpa2 && s->authorized &&
+        !(length >= 8 && body[6] == 0x88 && body[7] == 0x8e);
+    if (protected) {
+        unsigned group = destination[0] & 1;
+        if (s->tx_pn[group] == 0xffffffffffffULL) { g_byte_array_unref(p); return; }
+        uint8_t iv[8]; arcs_wifi_iv(iv, ++s->tx_pn[group], group);
+        g_byte_array_append(p, iv, sizeof(iv));
+    }
+    g_byte_array_append(p, body, length);
+    if (protected) {
+        p->data[1] |= 0x40;
+        unsigned size = p->len; g_byte_array_set_size(p, size + 8);
+        bool ok = arcs_wifi_ccmp(destination[0] & 1 ? s->gtk : s->ptk + 32, p->data, &size, true);
+        assert(ok); assert(size == p->len);
+    }
+    enqueue(s, p);
+}
+
+/* The guest supplicant owns M2/M4 and key installation. The AP never reads
+ * guest key RAM to authenticate a password; it verifies the EAPOL MIC. */
+static void send_eapol(ArcsWiFiAP *s)
+{
+    uint8_t body[264] = {0xaa,0xaa,3,0,0,0,0x88,0x8e};
+    memcpy(body + 8, s->eapol, s->eapol_length);
+    reply(s, 8, s->station, body, s->eapol_length + 8, NULL);
+}
+static void handshake_timeout(void *opaque)
+{
+    ArcsWiFiAP *s = opaque;
+    if (!s->running || !s->associated || !s->handshake_state || s->authorized) { return; }
+    if (++s->handshake_retries >= 4) {
+        s->authentication_failures++; s->handshake_state = 0;
+        memset(s->ptk, 0, sizeof(s->ptk)); return;
+    }
+    send_eapol(s);
+    timer_mod(s->handshake, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000000);
+}
+static void handshake_message(ArcsWiFiAP *s, bool third)
+{
+    memset(s->eapol, 0, sizeof(s->eapol));
+    uint8_t *e = s->eapol;
+    e[0] = 2; e[1] = 3; e[4] = 2;
+    stw_be_p(e + 5, third ? 0x13ca : 0x008a); stw_be_p(e + 7, 16);
+    stq_be_p(e + 9, s->replay); memcpy(e + 17, s->anonce, 32);
+    s->eapol_length = 99;
+    if (third) {
+        uint8_t data[48] = {0}; memcpy(data, rsn, sizeof(rsn));
+        uint8_t kde[] = {221,22,0,15,172,1,1,0};
+        memcpy(data + sizeof(rsn), kde, sizeof(kde));
+        memcpy(data + sizeof(rsn) + sizeof(kde), s->gtk, 16);
+        data[46] = 221;
+        arcs_wifi_wrap(s->ptk + 16, data, sizeof(data), e + 99);
+        stw_be_p(e + 97, 56); s->eapol_length += 56;
+    }
+    stw_be_p(e + 2, s->eapol_length - 4);
+    if (third) { arcs_wifi_mic(s->ptk, e, s->eapol_length, e + 81); }
+    s->handshake_state = third ? 3 : 1; s->handshake_retries = 0;
+    send_eapol(s);
+    timer_mod(s->handshake, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000000000);
+}
+static void handshake_start(ArcsWiFiAP *s)
+{
+    s->authorized = false; memset(s->ptk, 0, sizeof(s->ptk));
+    memset(s->rx_pn, 0, sizeof(s->rx_pn)); memset(s->tx_pn, 0, sizeof(s->tx_pn));
+    qcrypto_random_bytes(s->anonce, sizeof(s->anonce), &error_fatal);
+    qcrypto_random_bytes(s->gtk, sizeof(s->gtk), &error_fatal);
+    s->replay++; handshake_message(s, false);
+}
+static void handshake_receive(ArcsWiFiAP *s, const uint8_t *e, unsigned n)
+{
+    s->eapol_received++;
+    if (n < 99 || n > 256 || e[1] != 3 || e[4] != 2 ||
+        lduw_be_p(e + 2) + 4 != n || lduw_be_p(e + 97) + 99 != n ||
+        ldq_be_p(e + 9) != s->replay || !s->handshake_state) { return; }
+    unsigned info = lduw_be_p(e + 5);
+    bool second = s->handshake_state == 1 && info == 0x010a;
+    bool fourth = s->handshake_state == 3 && info == 0x030a && n == 99;
+    if (!second && !fourth) { return; }
+    uint8_t ptk[48], message[256], mic[16];
+    if (second) {
+        if (n != 99 + s->station_rsn_length || !s->station_rsn_length ||
+            memcmp(e + 99, s->station_rsn, s->station_rsn_length)) { return; }
+        arcs_wifi_ptk(s->pmk, s->bssid, s->station, s->anonce, e + 17, ptk);
+    } else { memcpy(ptk, s->ptk, sizeof(ptk)); }
+    memcpy(message, e, n); memset(message + 81, 0, 16);
+    arcs_wifi_mic(ptk, message, n, mic);
+    unsigned difference = 0;
+    for (unsigned i = 0; i < 16; i++) { difference |= mic[i] ^ e[81 + i]; }
+    if (difference) { s->authentication_failures++; s->mic_failures++; memset(ptk, 0, sizeof(ptk)); return; }
+    if (second) {
+        memcpy(s->ptk, ptk, sizeof(ptk)); memcpy(s->snonce, e + 17, 32);
+        s->replay++; handshake_message(s, true);
+    } else {
+        s->authorized = true; s->handshake_state = 0; timer_del(s->handshake);
+        memset(s->eapol, 0, sizeof(s->eapol));
+    }
+    memset(ptk, 0, sizeof(ptk));
 }
 
 static void advertisement(ArcsWiFiAP *s, const uint8_t *destination, bool beacon)
 {
-    uint8_t body[68] = {0};
+    uint8_t body[96] = {0};
     stq_le_p(body, (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->epoch) / 1000);
-    body[8] = 100; body[10] = 1; body[13] = s->ssid_length;
+    body[8] = 100; body[10] = s->wpa2 ? 0x11 : 1; body[13] = s->ssid_length;
     memcpy(body + 14, s->ssid, s->ssid_length);
     uint8_t ies[] = {1,4,0x8c,0x98,0xb0,0x6c,3,1,1,5,4,0,1,0,0};
     ies[8] = s->channel;
     unsigned tail = beacon ? sizeof(ies) : 9;
     memcpy(body + 14 + s->ssid_length, ies, tail);
-    reply(s, beacon ? 0x80 : 0x50, destination, body, 14 + s->ssid_length + tail, NULL);
+    unsigned size = 14 + s->ssid_length + tail;
+    if (s->wpa2) { memcpy(body + size, rsn, sizeof(rsn)); size += sizeof(rsn); }
+    reply(s, beacon ? 0x80 : 0x50, destination, body, size, NULL);
 }
 
 static void beacon(void *opaque)
@@ -172,6 +288,19 @@ static void data(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
     }
 }
 
+/* A station's queued responses belong to the same association epoch. */
+static void disconnect(ArcsWiFiAP *s)
+{
+    timer_del(s->handshake); timer_del(s->response);
+    g_queue_clear_full(&s->queue, (GDestroyNotify)g_byte_array_unref);
+    s->associated = s->offered = s->client_present = s->authorized = false;
+    s->handshake_state = s->handshake_retries = s->eapol_length = s->retries = 0;
+    s->station_rsn_length = 0;
+    memset(s->ptk, 0, sizeof(s->ptk)); memset(s->gtk, 0, sizeof(s->gtk));
+    memset(s->eapol, 0, sizeof(s->eapol));
+    memset(s->rx_pn, 0, sizeof(s->rx_pn)); memset(s->tx_pn, 0, sizeof(s->tx_pn));
+}
+
 bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 {
     if (!s->running || length < 24 || (s->wifi->core[0x38 / 4] & 15) != 3) { return false; }
@@ -182,28 +311,67 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
     if (memcmp(frame + 4, s->bssid, 6) || (frame[10] & 1)) { return false; }
     if ((frame[0] & 12) == 8) {
         if (!s->associated || memcmp(frame + 10, s->station, 6)) { return false; }
-        data(s, frame, length); return true;
+        unsigned header = frame[0] == 0x88 ? 26 : 24;
+        uint8_t plain[4096];
+        if (frame[1] & 0x40) {
+            if (!s->wpa2 || !s->authorized || length < header + 16 || length > sizeof(plain)) { return true; }
+            unsigned tid = header == 26 ? frame[24] & 15 : 0;
+            uint64_t pn = arcs_wifi_pn(frame + header);
+            if ((frame[header + 3] >> 6) || pn <= s->rx_pn[tid]) { return true; }
+            memcpy(plain, frame, length);
+            unsigned size = length;
+            if (!arcs_wifi_ccmp(s->ptk + 32, plain, &size, false)) { return true; }
+            s->rx_pn[tid] = pn;
+            memmove(plain + header, plain + header + 8, length - header - 16);
+            length -= 16; plain[1] &= ~0x40; frame = plain;
+        }
+        if (length >= header + 8 && !memcmp(frame + header, "\xaa\xaa\x03\x00\x00\x00\x88\x8e", 8)) {
+            if (s->wpa2) { handshake_receive(s, frame + header + 8, length - header - 8); }
+        } else if (!s->wpa2 || s->authorized) {
+            /* A secured controlled port accepts only authenticated CCMP data. */
+            if (!s->wpa2 || frame == plain) { data(s, frame, length); }
+        }
+        return true;
     }
     if (memcmp(frame + 16, s->bssid, 6)) { return false; }
     if (frame[0] == 0xb0 && length == 30 && !frame[24] && !frame[25] && frame[26] == 1 && !frame[27]) {
-        s->authenticated = true; s->associated = s->offered = false; memcpy(s->station, frame + 10, 6);
+        s->authentication_requests++;
+        disconnect(s); s->authenticated = true; memcpy(s->station, frame + 10, 6);
         const uint8_t body[] = {0,0,2,0,0,0}; reply(s, 0xb0, frame + 10, body, sizeof(body), NULL); return true;
     }
     if (!frame[0]) {
+        s->association_requests++;
+        s->station_rsn_size = s->station_rsn_caps = s->station_rsn_length = 0;
         unsigned status = !s->connectable ? 1 :
             s->authenticated && !memcmp(frame + 10, s->station, 6) && has_ssid(s, frame, length, 28, false) ? 0 : 9;
-        s->associated = status == 0; s->offered = false;
-        const uint8_t body[] = {1,0,status,0,1,0xc0,1,4,0x8c,0x98,0xb0,0x6c};
-        reply(s, 0x10, frame + 10, body, sizeof(body), NULL); return true;
+        if (!status && s->wpa2) {
+            bool found = false, valid = true;
+            for (unsigned i = 28; i < length;) {
+                if (i + 2 > length || i + 2 + frame[i + 1] > length) { valid = false; break; }
+                unsigned n = 2 + frame[i + 1];
+                if (frame[i] == 48) {
+                    s->station_rsn_size = frame[i + 1];
+                    if (n >= 22) { s->station_rsn_caps = lduw_le_p(frame + i + 20); }
+                    if (found || !supported_station_rsn(frame + i, n)) { valid = false; break; }
+                    found = true; memcpy(s->station_rsn, frame + i, n); s->station_rsn_length = n;
+                }
+                i += n;
+            }
+            if (!found || !valid) { status = 43; s->station_rsn_length = 0; }
+        }
+        if (status) { s->association_rejections++; s->last_association_rejection = status; }
+        s->association_status = status;
+        s->associated = status == 0; s->offered = false; s->authorized = !s->wpa2 && !status;
+        const uint8_t body[] = {s->wpa2 ? 0x11 : 1,0,status,0,1,0xc0,1,4,0x8c,0x98,0xb0,0x6c};
+        reply(s, 0x10, frame + 10, body, sizeof(body), NULL);
+        if (!status && s->wpa2) { handshake_start(s); }
+        return true;
     }
     if ((frame[0] == 0xc0 || frame[0] == 0xa0) && length == 26) {
         /* MAC ACK does not imply that an unknown transmitter owns this STA. */
         if (!memcmp(frame + 10, s->station, 6)) {
-            s->associated = s->offered = s->client_present = false;
+            disconnect(s);
             if (frame[0] == 0xc0) { s->authenticated = false; }
-            timer_del(s->response);
-            g_queue_clear_full(&s->queue, (GDestroyNotify)g_byte_array_unref);
-            s->retries = 0;
         }
         return true;
     }
@@ -219,7 +387,7 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 
 void arcs_wifi_ap_ethernet(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 {
-    if (!s->running || !s->associated || length < 14 || length > 2286 ||
+    if (!s->running || !s->associated || !s->authorized || length < 14 || length > 2286 ||
         (memcmp(frame, s->station, 6) && memcmp(frame, broadcast, 6))) { return; }
     uint8_t payload[2304] = {0xaa,0xaa,3,0,0,0};
     memcpy(payload + 6, frame + 12, length - 12);
@@ -228,11 +396,19 @@ void arcs_wifi_ap_ethernet(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 
 void arcs_wifi_ap_reset(ArcsWiFiAP *s)
 {
-    timer_del(s->response); timer_del(s->beacon);
+    timer_del(s->response); timer_del(s->beacon); timer_del(s->handshake);
     g_queue_clear_full(&s->queue, (GDestroyNotify)g_byte_array_unref);
-    s->authenticated = s->associated = s->offered = s->client_present = false;
+    s->authenticated = s->associated = s->offered = s->client_present = s->authorized = false;
+    s->handshake_state = s->handshake_retries = s->eapol_length = 0;
+    memset(s->ptk, 0, sizeof(s->ptk)); memset(s->gtk, 0, sizeof(s->gtk));
+    memset(s->eapol, 0, sizeof(s->eapol));
+    memset(s->tx_pn, 0, sizeof(s->tx_pn)); memset(s->rx_pn, 0, sizeof(s->rx_pn));
     s->retries = s->sequence = s->ip_id = 0;
     s->accepted = s->dropped = s->retried = s->dhcp_offers = s->dhcp_acks = 0;
+    s->authentication_failures = s->mic_failures = s->eapol_received = 0;
+    s->authentication_requests = s->association_requests = 0;
+    s->association_status = s->station_rsn_size = s->station_rsn_caps = s->station_rsn_length = 0;
+    s->association_rejections = s->last_association_rejection = 0;
     s->epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     if (s->running) { timer_mod(s->beacon, s->epoch + 102400000); }
 }
@@ -240,6 +416,7 @@ void arcs_wifi_ap_reset(ArcsWiFiAP *s)
 void arcs_wifi_ap_configure(ArcsWiFiAP *s, const uint8_t *ssid, unsigned length)
 {
     assert(length <= sizeof(s->ssid));
+    s->wpa2 = false; memset(s->pmk, 0, sizeof(s->pmk));
     s->ssid_length = length; if (length) { memcpy(s->ssid, ssid, length); }
     s->running = length != 0; arcs_wifi_ap_reset(s);
 }
@@ -250,6 +427,7 @@ void arcs_wifi_ap_init(ArcsWiFiAP *s, ArcsWiFi *wifi)
     s->wifi = wifi; s->bssid[0] = 2; s->bssid[5] = 1; g_queue_init(&s->queue);
     s->response = timer_new_ns(QEMU_CLOCK_VIRTUAL, deliver, s);
     s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon, s);
+    s->handshake = timer_new_ns(QEMU_CLOCK_VIRTUAL, handshake_timeout, s);
 }
 
 /* Parse the complete bounded configuration before altering any AP state. */
@@ -267,7 +445,24 @@ bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **
     const QListEntry *entry;
     QLIST_FOREACH_ENTRY(list, entry) {
         QDict *ap = qobject_to(QDict, qlist_entry_obj(entry));
-        if (!ap || qdict_size(ap) != 4) { goto invalid; }
+        if (!ap || qdict_size(ap) < 4 || qdict_size(ap) > 6) { goto invalid; }
+        const char *security = qdict_get_try_str(ap, "security");
+        const char *password = qdict_get_try_str(ap, "password");
+        if ((qdict_haskey(ap, "security") && !security) || (qdict_haskey(ap, "password") && !password)) { goto invalid; }
+        bool wpa2 = security && !strcmp(security, "wpa2-psk");
+        if ((security && strcmp(security, "open") && !wpa2) ||
+            (wpa2 && (!password || strlen(password) < 8 || strlen(password) > 63)) ||
+            (!wpa2 && password && *password)) { goto invalid; }
+        if (password) {
+            for (const unsigned char *c = (const unsigned char *)password; *c; c++) {
+                if (*c < 32 || *c > 126) { goto invalid; }
+            }
+        }
+        const QDictEntry *field;
+        for (field = qdict_first(ap); field; field = qdict_next(ap, field)) {
+            if (strcmp(field->key, "ssid") && strcmp(field->key, "rssi") && strcmp(field->key, "channel") &&
+                strcmp(field->key, "connectable") && strcmp(field->key, "security") && strcmp(field->key, "password")) { goto invalid; }
+        }
         const char *ssid = qdict_get_try_str(ap, "ssid");
         QNum *rssi = qobject_to(QNum, qdict_get(ap, "rssi"));
         QNum *channel = qobject_to(QNum, qdict_get(ap, "channel"));
@@ -284,12 +479,16 @@ bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **
         s->rssi = qdict_get_int(ap, "rssi"); s->channel = qdict_get_int(ap, "channel");
         s->connectable = qdict_get_bool(ap, "connectable");
         arcs_wifi_ap_configure(s, (const uint8_t *)ssid, strlen(ssid));
+        const char *security = qdict_get_try_str(ap, "security");
+        s->wpa2 = security && !strcmp(security, "wpa2-psk");
+        memset(s->pmk, 0, sizeof(s->pmk));
+        if (s->wpa2) { arcs_wifi_psk(qdict_get_str(ap, "password"), (const uint8_t *)ssid, strlen(ssid), s->pmk); }
     }
     for (; count < ARCS_WIFI_AP_MAX; count++) { arcs_wifi_ap_configure(&aps[count], NULL, 0); }
     qobject_unref(root); return true;
 invalid:
     qobject_unref(root);
-    error_setg(errp, "Expected access_points array (max 16): SSID 1..32 UTF-8 bytes, RSSI -127..0, channel 1..14, connectable boolean");
+    error_setg(errp, "Expected access_points array (max 16): SSID 1..32 UTF-8 bytes, RSSI -127..0, channel 1..14, connectable boolean, open or wpa2-psk with 8..63 printable ASCII password");
     return false;
 }
 
@@ -304,6 +503,7 @@ char *arcs_wifi_environment_json(ArcsWiFiAP *aps)
         g_autofree char *ssid = g_strndup((const char *)s->ssid, s->ssid_length);
         qdict_put_str(ap, "ssid", ssid); qdict_put_int(ap, "rssi", s->rssi);
         qdict_put_int(ap, "channel", s->channel); qdict_put_bool(ap, "connectable", s->connectable);
+        if (s->wpa2) { qdict_put_str(ap, "security", "wpa2-psk"); }
         qlist_append_obj(list, QOBJECT(ap));
     }
     GString *json = qobject_to_json(QOBJECT(root));

@@ -2,8 +2,11 @@
 """HSU checksum independent network-order oracle, clock/IRQ and cancellation."""
 import json
 import hashlib
+import hmac
 import struct
 import time
+from fractions import Fraction
+from math import ceil
 from qemu_test import Machine, ROOT
 from qemu_test import write_bytes, read_bytes
 from run_qemu_wifi_tx import step
@@ -29,7 +32,7 @@ def begin(m,addr,length):
 def functional(hart):
     m=Machine(OUTPUT/('hart%d'%hart),hart=hart,budget_ns=10000000)
     try:
-        m.write(AP+8,0x2000); assert m.read(HSU)==0x3c0000
+        m.write(AP+8,0x2000); assert m.read(HSU)==0xfc0000
         vectors=[b'',b'\xab',b'\1\2\3',b'\xff'*9,bytes(range(20)),
                  bytes((i*29+7)&255 for i in range(313)),b'\xff'*65535,b'\x12\x34\x56']
         for phase in (0,1,137,500,999):
@@ -185,10 +188,136 @@ def sha_rejected():
             assert json.loads((m.directory / 'report.json').read_text())['status'] == 'unsupported-mmio'
         finally:
             m.close()
-    print('SHA unknown HMAC/context, invalid segment/bounds, missing/mismatched context, busy START and gate rejected: PASS')
+    print('SHA invalid HMAC/context, invalid segment/bounds, missing/mismatched context, busy START and gate rejected: PASS')
+
+
+def hmac_hashes():
+    for hart in (0, 1):
+        m = Machine(OUTPUT / f'hmac-sha1-{hart}', hart=hart, budget_ns=10000000)
+        try:
+            m.write(AP + 8, 0x2000)
+            m.write(0x46100000, 0x210000)  # Select 24 MHz for boundary checks.
+            # The SDK sets FIRST before MODE with separate read/modify/writes.
+            m.write(HSU + 4, 0x10)
+            assert m.read(HSU + 4) == 0x10 and m.read(HSU + 8) == 0
+            for mode, algorithm, digest_size in ((6, 'sha1', 20), (7, 'sha256', 32), (8, 'sha224', 28)):
+                for key in (b'', b'key', bytes(range(64))):
+                    for size in (0, 1, 63, 64, 65, 129):
+                        data = bytes((i * 17 + 3) & 255 for i in range(size))
+                        for segment, control in [(key, mode << 8 | 0x11), (data, mode << 8 | 0x21)]:
+                            if segment: write_bytes(m, 0x20001000, segment)
+                            m.write(HSU + 0x20, 0x20001000)
+                            m.write(HSU + 0x24, len(segment))
+                            m.write(HSU + 0xc, 1)
+                            previous = [m.read(HSU + 0x34 + i) for i in range(0, digest_size, 4)]
+                            m.write(HSU + 4, control)
+                            # HCLK is 24 MHz. The measured conservative
+                            # envelope covers key16/64 and LAST20/55/56/64/128.
+                            # Additional blocks use the declared functional bound.
+                            blocks = len(segment) // 64 + (2 if len(segment) % 64 >= 56 else 1) + 2
+                            if mode == 6:
+                                cycles = (223 if len(segment) <= 16 else 248) if control & 16 else 394 + (89 + 107 * (blocks - 4) if blocks > 3 else 0)
+                            else:
+                                cycles = (172 if len(segment) <= 32 else 248) if control & 16 else 327 + 69 * (blocks - 3)
+                            duration = (cycles * 10**9 + 24000000 - 1) // 24000000
+                            step(m, duration - 1)
+                            assert m.read(HSU + 8) & 0x10000 == 0
+                            assert [m.read(HSU + 0x34 + i) for i in range(0, digest_size, 4)] == previous
+                            step(m, 1)
+                            assert m.read(HSU + 8) & 0x10000
+                        actual = b''.join(m.read(HSU + 0x34 + i).to_bytes(4, 'little') for i in range(0, digest_size, 4))
+                        assert actual == hmac.digest(key, data, algorithm)
+            # Non-LAST compression publishes context without applying final
+            # padding or the outer hash. Validate all digest lengths.
+            for mode, algorithm, digest_size in ((6, 'sha1', 20), (7, 'sha256', 32), (8, 'sha224', 28)):
+                key = bytes(range(64)); data = bytes(range(84))
+                for segment, control in ((key, mode << 8 | 0x11),
+                                         (data[:64], mode << 8 | 1),
+                                         (data[64:], mode << 8 | 0x21)):
+                    write_bytes(m, 0x20001000, segment)
+                    m.write(HSU + 0x20, 0x20001000); m.write(HSU + 0x24, len(segment))
+                    m.write(HSU + 0xc, 1); m.write(HSU + 4, control)
+                    step(m, 30000)
+                actual = b''.join(m.read(HSU + 0x34 + i).to_bytes(4, 'little') for i in range(0, digest_size, 4))
+                assert actual == hmac.digest(key, data, algorithm)
+            # A reset cancels a pending key segment and invalidates its stream.
+            m.write(HSU + 0x24, 3); m.write(HSU + 0xc, 1); m.write(HSU + 4, 0x611)
+            m.write(AP, 4); step(m, 10000)
+            assert m.read(HSU + 8) == 0
+            assert all(m.read(HSU + 0x34 + i) == 0 for i in range(0, 20, 4))
+        finally:
+            m.close()
+        print(f'Hart {hart}: HMAC-SHA1/224/256 key/message segments, empty input, timing and reset PASS')
+
+
+def hmac_clocks():
+    pll = 0x46100000
+    for hart in (0, 1):
+        m = Machine(OUTPUT / f'hmac-clock-{hart}', hart=hart)
+        try:
+            m.write(AP + 8, 0x2000)
+            m.write(pll + 8, 1)
+            write_bytes(m, 0x20001000, bytes(range(16)))
+            def key():
+                m.write(HSU + 0xc, 1)
+                m.write(HSU + 0x20, 0x20001000)
+                m.write(HSU + 0x24, 16)
+                m.write(HSU + 4, 0x611)
+            for control, hz in ((0x210000, 24000000), (0x220001, 150000000), (0x210001, 300000000)):
+                m.write(pll, control)
+                key()
+                duration = (223 * 10**9 + hz - 1) // hz
+                step(m, duration - 1)
+                assert m.read(HSU + 8) == 0
+                step(m, 1)
+                assert m.read(HSU + 8) == 0x10000
+            # Pause after 41.1 cycles, change frequency while gated, consume
+            # 15 cycles, then change it live. Fractional work must survive.
+            key(); step(m, 137); m.write(AP + 8, 0)
+            m.write(pll, 0x220001); step(m, 100000)
+            assert m.read(HSU + 8) == 0
+            m.write(AP + 8, 0x2000); step(m, 100)
+            m.write(pll, 0x210000)
+            m.write(HSU + 0x94, 1)
+            step(m, 6954)
+            assert m.read(HSU + 8) == 0 and not pending(m)
+            step(m, 1)
+            assert m.read(HSU + 8) == 0x10000 and pending(m)
+            m.write(HSU + 0xc, 1); assert not pending(m)
+            # Repeated subcycle pauses must not round away each interval.
+            m.write(pll, 0x210001); key()
+            for _ in range(11):
+                step(m, 1); m.write(AP + 8, 0); step(m, 100)
+                m.write(AP + 8, 0x2000)
+            step(m, 732); assert not pending(m)
+            step(m, 1); assert pending(m)
+            # Noninteger Hz (300 MHz / 7 -> / 11 -> 48 MHz / 13) must
+            # preserve exact rational progress, including while gated.
+            m.write(pll, 0x270001); key(); step(m, 137)
+            m.write(AP + 8, 0); m.write(pll, 0x2b0001); step(m, 1000)
+            m.write(AP + 8, 0x2000); step(m, 97)
+            m.write(pll, 0x4d0000)
+            work = 223 * 10**9 - 137 * Fraction(300000000, 7) - 97 * Fraction(300000000, 11)
+            duration = ceil(work / Fraction(48000000, 13))
+            step(m, duration - 1); assert not pending(m)
+            step(m, 1); assert pending(m)
+            key(); step(m, 1); m.qmp_command('system_reset'); step(m, 20000)
+            assert m.read(HSU + 8) == 0 and not pending(m)
+            # Frequency changes do not silently alter legacy SHA's contract.
+            m.write(AP + 8, 0x2000); m.write(pll + 8, 1)
+            m.write(HSU + 0x20, 0x20001000); m.write(HSU + 0x24, 16)
+            m.write(HSU + 4, 0x331); step(m, 100)
+            m.write(pll, 0x210001); step(m, 9899)
+            assert m.read(HSU + 8) == 0
+            step(m, 1); assert m.read(HSU + 8) == 0x1000
+        finally:
+            m.close()
+        print(f'Hart {hart}: HMAC HCLK scaling, fractional gate/live frequency changes, IRQ/reset and legacy SHA timing PASS')
 
 
 if __name__=='__main__':
+    hmac_clocks()
+    hmac_hashes()
     for hart in (0,1):functional(hart)
     for hart in (0,1):sha(hart)
     sha_rejected()

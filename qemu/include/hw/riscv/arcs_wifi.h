@@ -12,7 +12,8 @@ typedef struct ArcsWiFiTX {
     uint32_t current, last, seen[256];
     uint8_t frame[4096];
     uint64_t completed;
-    bool halted, needs_ack;
+    bool halted, needs_ack, encrypt;
+    unsigned key_index;
 } ArcsWiFiTX;
 typedef struct ArcsWiFiIO {
     ArcsWiFi *wifi;

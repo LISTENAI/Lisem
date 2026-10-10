@@ -5,6 +5,7 @@
 #include "system/address-spaces.h"
 #include "qemu/bswap.h"
 #include "qemu/error-report.h"
+#include "hw/riscv/arcs_wifi_security.h"
 
 #define CORE(off) s->core[(off) / 4]
 #define PL(off) s->platform[(off) / 4]
@@ -54,7 +55,7 @@ bool arcs_wifi_receive(ArcsWiFi *s, const uint8_t *frame, unsigned length, int r
     }
     bool data_frame = (frame[0] & 12) == 8, scan = false;
     if (data_frame) {
-        if ((frame[0] != 8 && frame[0] != 0x88) || (frame[1] & 3) != 2 || (frame[1] & ~0x2a) ||
+        if ((frame[0] != 8 && frame[0] != 0x88) || (frame[1] & 3) != 2 || (frame[1] & ~0x6a) ||
             (frame[0] == 0x88 && (length < 26 || (frame[24] & ~15) || frame[25]))) {
             fail(s, "unsupported FromDS data header, QoS or aggregation");
         }
@@ -76,6 +77,8 @@ bool arcs_wifi_receive(ArcsWiFi *s, const uint8_t *frame, unsigned length, int r
             i += 2 + frame[i + 1];
         }
     }
+    uint8_t plaintext[2304];
+    unsigned decryption = 0;
     uint32_t filter = CORE(0x60);
     bool beacon = frame[0] == 0x80, group = frame[4] & 1, broadcast = true;
     for (unsigned i = 4; i < 10; i++) { broadcast &= frame[i] == 255; }
@@ -87,6 +90,22 @@ bool arcs_wifi_receive(ArcsWiFi *s, const uint8_t *frame, unsigned length, int r
     if ((CORE(0x38) & 15) != 3 || !category || !address || (!data_frame && !scan && !own) ||
         (!bssid && !(filter & 0x10) && !scan_bssid)) {
         s->rx_filtered++; return false;
+    }
+    if (data_frame && (frame[1] & 0x40)) {
+        unsigned header = frame[0] == 0x88 ? 26 : 24;
+        if (length < header + 16) { s->rx_filtered++; return false; }
+        int slot = group ? frame[header + 3] >> 6 : station(s, ldl_le_p(frame + 10), lduw_le_p(frame + 14));
+        if (slot < 0 || slot >= 8 || (s->keys[slot][10] & 0x3700) != 0x300) {
+            s->rx_filtered++; return false;
+        }
+        uint8_t key[16];
+        for (unsigned i = 0; i < 4; i++) { stl_le_p(key + i * 4, s->keys[slot][i]); }
+        memcpy(plaintext, frame, length);
+        unsigned size = length;
+        bool valid = arcs_wifi_ccmp(key, plaintext, &size, false);
+        memset(key, 0, sizeof(key));
+        if (!valid) { s->rx_filtered++; return false; }
+        frame = plaintext; decryption = 3 << 2;
     }
     if ((CORE(0x10c) & (data_frame ? 0x40030 : 0x2000c)) != (data_frame ? 0x40020 : 0x20004) ||
         PL(0x1e8) != 0x20001504) { fail(s, "unsupported wrapping or reservation layout"); }
@@ -120,10 +139,12 @@ bool arcs_wifi_receive(ArcsWiFi *s, const uint8_t *frame, unsigned length, int r
     hd[41] = 1 | ((r >> 8) << 4) | ((r >> 8) << 6);
     hd[42] = r; hd[43] = fcs_length; hd[44] = 0xb0 | ((fcs_length >> 8) & 15);
     hd[45] = r; hd[46] = 0x80;
+    /* Address-match metadata identifies the transmitter, independently of
+     * the pairwise/group slot used to decrypt this MPDU. */
     int key = station(s, ldl_le_p(frame + 10), lduw_le_p(frame + 14));
     uint32_t address_status = key < 0 ? 0 : 0x02000000 | ((unsigned)key << 15);
     stl_le_p(hd + 64, ((uint32_t)(frame[0] >> 4) << 28) | ((uint32_t)(frame[0] & 12) << 24) |
-                      0x6000 | (group ? 0x400 : 0) | address_status);
+                      0x6000 | decryption | (group ? 0x400 : 0) | address_status);
     stl_le_p(pd + 8, data); stl_le_p(pd + 12, data + fcs_length - 1); stl_le_p(pd + 16, 3);
     uint32_t crc = UINT32_MAX;
     for (unsigned i = 0; i < length; i++) {
