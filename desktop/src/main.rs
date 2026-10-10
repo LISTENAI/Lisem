@@ -5,6 +5,7 @@ mod backend;
 mod camera_selector;
 mod display;
 mod icons;
+mod peripheral_controls;
 mod theme;
 
 use backend::{Backend, Device, Snapshot};
@@ -13,8 +14,8 @@ use gpui::component::{
     ActiveTheme, Disableable, Icon, TitleBar,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
-    menu::{DropdownMenu, PopupMenuItem},
-    select::{Select, SelectEvent, SelectState},
+    menu::{DropdownMenu, PopupMenu, PopupMenuItem},
+    select::{Select, SelectEvent, SelectItem, SelectState},
     switch::Switch,
     tab::{Tab, TabBar},
     tooltip::Tooltip,
@@ -24,6 +25,7 @@ use gpui::{
     MouseButton, PathPromptOptions, PromptLevel, SharedString, TitlebarOptions, WeakEntity, Window,
     WindowBounds, WindowOptions, actions, div, img, prelude::*, px, rgb, size,
 };
+use peripheral_controls::settings_row;
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
@@ -66,8 +68,6 @@ enum Action {
     SaveName,
     Detach,
     Open,
-    SerialMenu,
-    AudioMenu,
     RegenerateUid,
     Reset,
     ResetDownload,
@@ -198,22 +198,16 @@ impl Desktop {
             Mode::Device(id) => Some(id.clone()),
             Mode::Library => None,
         };
+        if matches!(mode, Mode::Device(_)) && cfg!(target_os = "macos") {
+            backend.send("camera_devices", json!({}));
+        }
         let camera_select =
             cx.new(|cx| SelectState::new(Vec::<CameraOption>::new(), None, window, cx));
         cx.subscribe_in(&camera_select, window, |view, _, event, window, cx| {
             let SelectEvent::Confirm(Some(choice)) = event else {
                 return;
             };
-            match choice {
-                CameraChoice::Off => view.act(Action::ClearCamera, window, cx),
-                CameraChoice::Image => view.act(Action::Camera, window, cx),
-                CameraChoice::Refresh => view.act(Action::RefreshCameras, window, cx),
-                CameraChoice::Device(id) => {
-                    let mut params = view.params();
-                    params["device_id"] = json!(id);
-                    view.send("camera", params);
-                }
-            }
+            view.choose_camera(choice, window, cx);
             // A picker or pending backend request does not change the confirmed source.
             cx.notify();
         })
@@ -298,6 +292,9 @@ impl Desktop {
         self.release_buttons();
         self.settings = true;
         self.settings_tab = "general";
+        if self.state.data["capabilities"]["host_camera"] == true {
+            self.backend.send("camera_devices", json!({}));
+        }
         if let Some(d) = self.device() {
             self.name
                 .update(cx, |name, cx| name.set_value(&d.name, window, cx));
@@ -366,7 +363,7 @@ impl Desktop {
                 self.creating = false;
                 self.settings = false;
             }
-            Action::Details | Action::SerialMenu | Action::AudioMenu => {}
+            Action::Details => {}
             Action::Settings => self.show_settings(window, cx),
             Action::SaveName => self.send("rename", json!({
                 "id": self.selected, "name": self.name.read(cx).value()
@@ -411,7 +408,13 @@ impl Desktop {
             }
             Action::Microphone => {
                 if let Some(d) = self.device() {
-                    self.send("settings", json!({"id": d.id, "microphone": d.host["microphone"] != true}));
+                    let mut params = if self.powered() {
+                        self.params()
+                    } else {
+                        json!({"id": d.id})
+                    };
+                    params["enabled"] = json!(!self.host_microphone_enabled(&d));
+                    self.send("microphone", params);
                 }
             }
             Action::SerialToggle(channel) => {
@@ -495,48 +498,6 @@ impl Desktop {
         let idle = !self.state.busy;
         let on = self.powered();
         match action {
-            Action::SerialMenu => (0..3u8)
-                .flat_map(|channel| {
-                    let ready = self.serial_path(channel).is_some();
-                    [
-                        (
-                            format!("UART {channel}"),
-                            Action::SerialToggle(channel),
-                            idle,
-                            ready,
-                        ),
-                        (
-                            format!("复制 UART {channel} 连接命令"),
-                            Action::Serial(channel),
-                            idle && ready,
-                            false,
-                        ),
-                    ]
-                })
-                .collect(),
-            Action::AudioMenu => vec![
-                (
-                    "声音输出".into(),
-                    Action::Sound,
-                    idle,
-                    self.device().is_some_and(|d| d.host["sound"] == true),
-                ),
-                (
-                    "麦克风".into(),
-                    Action::Microphone,
-                    idle && !on && self.state.data["capabilities"]["microphone"] == true,
-                    self.device().is_some_and(|d| d.host["microphone"] == true),
-                ),
-                (
-                    "输入 WAV…".into(),
-                    Action::Audio,
-                    idle && on
-                        && self.device().is_some_and(|d| d.host["microphone"] != true)
-                        && self.state.data["session"]["input_pending"] != true
-                        && self.state.data["session"]["input_busy"] != true,
-                    false,
-                ),
-            ],
             _ => vec![
                 ("实例设置…".into(), Action::Settings, true, false),
                 ("复制 UID".into(), Action::CopyUid, true, false),
@@ -574,10 +535,9 @@ impl Desktop {
             .tooltip(label)
             .disabled(!enabled)
             .when(lit, |b| b.text_color(cx.theme().primary))
-            .when(
-                (id == "power" || matches!(action, Action::AudioMenu)) && lit,
-                |b| b.primary().text_color(cx.theme().primary_foreground),
-            )
+            .when(id == "power" && lit, |b| {
+                b.primary().text_color(cx.theme().primary_foreground)
+            })
             .when(id == "power", |b| {
                 b.loading(matches!(
                     self.lifecycle(),
@@ -588,10 +548,7 @@ impl Desktop {
                     |b| b.danger().text_color(cx.theme().danger_foreground),
                 )
             });
-        if matches!(
-            action,
-            Action::Details | Action::AudioMenu | Action::SerialMenu
-        ) {
+        if matches!(action, Action::Details) {
             let view = cx.entity().downgrade();
             button
                 .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |mut menu, _, cx| {
@@ -853,250 +810,142 @@ impl Desktop {
                 )),
         )
     }
-    fn settings_panel(&mut self, d: &Device, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let (options, selected) = camera_selector::options(
-            &d.host,
-            &self.state.cameras,
-            self.state.data["capabilities"]["host_camera"] == true,
-        );
-        let options_changed = self.camera_options != options;
-        if options_changed || self.camera_select.read(cx).selected_value() != Some(&selected) {
-            self.camera_select.update(cx, |select, cx| {
-                if options_changed {
-                    select.set_items(options.clone(), window, cx);
-                }
-                select.set_selected_value(&selected, window, cx);
-            });
-            self.camera_options = options;
-        }
-        let mutable = !self.powered() && !self.state.busy;
+    fn settings_panel(&mut self, d: &Device, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let idle = !self.state.busy;
-        let selected = match self.settings_tab {
-            "storage" => 1,
-            "connections" => 2,
-            _ => 0,
-        };
+        let mutable = !self.running() && idle;
         let tabs = TabBar::new("settings-tabs")
-            .segmented()
-            .selected_index(selected)
-            .child(Tab::new().label("概览"))
+            .underline()
+            .selected_index(match self.settings_tab {
+                "connections" => 1,
+                "storage" => 2,
+                _ => 0,
+            })
+            .child(Tab::new().label("常规"))
+            .child(Tab::new().label("连接与媒体"))
             .child(Tab::new().label("身份与存储"))
-            .child(Tab::new().label("连接"))
             .on_click(cx.listener(|v, index: &usize, _, cx| {
-                v.settings_tab = ["general", "storage", "connections"][*index];
-                if v.settings_tab == "connections"
-                    && v.state.data["capabilities"]["host_camera"] == true
-                    && !v.state.busy
-                {
-                    v.send("camera_devices", json!({}));
-                }
+                v.settings_tab = ["general", "connections", "storage"][*index];
                 cx.notify();
             }));
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap_5()
-            .max_w(px(600.))
-            .w_full();
+        let mut body = div().w_full().max_w(px(700.)).flex().flex_col().gap_3();
         match self.settings_tab {
+            "connections" => {
+                body = body.child(self.media_settings(d, cx));
+            }
             "storage" => {
                 body = body
-                    .child(info("芯片 UID", &d.uid))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(self.control(
-                                "复制 UID",
-                                "copy-uid",
-                                Action::CopyUid,
-                                true,
-                                false,
-                                cx,
-                            ))
-                            .child(self.control(
-                                "重新生成…",
-                                "regen",
-                                Action::RegenerateUid,
-                                mutable,
-                                false,
-                                cx,
-                            )),
-                    )
-                    .child(info(
-                        "Flash",
-                        &format!(
-                            "{} MiB",
-                            d.hardware["board"]["flash_bytes"].as_u64().unwrap_or(0) / 1048576
-                        ),
-                    ))
-                    .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .child(self.control(
-                                "从 LPK 写入 Flash…",
-                                "import",
-                                Action::Import,
-                                mutable,
-                                true,
-                                cx,
-                            ))
-                            .child(self.control(
-                                "清空 Flash…",
-                                "erase",
-                                Action::Erase,
-                                mutable,
-                                false,
-                                cx,
-                            )),
-                    )
-                    .when(!mutable, |e| e.child(caption("下电后可修改身份和 Flash")));
-            }
-            "connections" => {
-                body = body
-                    .child(
-                        Switch::new("network")
-                            .label("宿主网络")
-                            .checked(
-                                d.host["online"] == true
-                                    && self.state.data["capabilities"]["host_network"] == true,
-                            )
-                            .disabled(
-                                !mutable || self.state.data["capabilities"]["host_network"] != true,
-                            )
-                            .on_change(cx.listener(|v, _, w, cx| v.act(Action::Network, w, cx))),
-                    )
-                    .child(caption("热点 Lisem，无密码；开启后通过电脑访问网络"))
-                    .child(
-                        Switch::new("output-sound")
-                            .label("声音输出")
-                            .checked(d.host["sound"] == true)
-                            .disabled(!idle)
-                            .on_change(cx.listener(|v, _, w, cx| v.act(Action::Sound, w, cx))),
-                    )
-                    .child(
-                        Switch::new("microphone")
-                            .label("麦克风")
-                            .checked(d.host["microphone"] == true)
-                            .disabled(
-                                !mutable || self.state.data["capabilities"]["microphone"] != true,
-                            )
-                            .on_change(cx.listener(|v, _, w, cx| v.act(Action::Microphone, w, cx))),
-                    )
-                    .child(caption("下电后可切换；开启后连续录播"))
-                    .child(self.control(
-                        "输入 WAV…",
-                        "audio",
-                        Action::Audio,
-                        idle && self.powered() && d.host["microphone"] != true,
-                        false,
-                        cx,
-                    ));
-                if d.hardware["board"]["camera"].is_object() {
-                    let change = &self.state.data["session"]["camera_change"];
-                    let pending = change["status"] == "pending";
-                    let waiting_first_frame = pending && change["phase"] == "waiting-first-frame";
-                    let host_camera = self.state.data["capabilities"]["host_camera"] == true;
-                    let selected_device = d.host["camera_device"].as_str();
-                    let capture = &self.state.data["session"]["camera_capture"];
-                    let camera_notice = if let Some(error) = change["error"].as_str() {
-                        error.to_owned()
-                    } else if waiting_first_frame {
-                        "正在打开摄像头，等待授权或第一帧；可关闭输入取消".into()
-                    } else if pending {
-                        "正在确认输入切换结果…".into()
-                    } else if change["status"] == "unknown" {
-                        "未能确认输入切换结果，请检查设备状态".into()
-                    } else if selected_device.is_some() && self.powered() {
-                        match capture["state"].as_str() {
-                            Some("starting") => "正在打开摄像头，等待第一帧…".into(),
-                            Some("live") => format!(
-                                "实时取景 · 已接收 {} 帧 · 丢弃 {} 帧",
-                                capture["frames"].as_u64().unwrap_or(0),
-                                capture["dropped"].as_u64().unwrap_or(0)
-                            ),
-                            Some("disconnected") => "摄像头已断开，请重新连接后选择".into(),
-                            Some("error") => capture["error"]
-                                .as_str()
-                                .unwrap_or("摄像头无法采集，请检查系统权限或重新选择")
-                                .into(),
-                            _ => "等待摄像头输入".into(),
-                        }
-                    } else if selected_device.is_some() {
-                        "已选择，上电后开启摄像头".into()
-                    } else if d.host["camera_image"].is_string() {
-                        "保持比例，居中裁切；重新上电时读取原文件".into()
-                    } else if host_camera {
-                        "选择图片或宿主摄像头作为场景输入".into()
-                    } else {
-                        "选择图片作为场景输入".into()
-                    };
-                    let enabled = idle && (!pending || waiting_first_frame);
-                    body = body
-                        .child(
+                    .child(settings_row(
+                        "芯片 UID",
+                        div().flex().flex_col().gap_3().child(d.uid.clone()).child(
                             div()
                                 .flex()
-                                .flex_col()
                                 .gap_2()
-                                .w_full()
-                                .child(caption("摄像头输入"))
-                                .child(
-                                    Select::new(&self.camera_select)
-                                        .id("camera-source")
-                                        .accessibility_label("摄像头输入")
-                                        .w_full()
-                                        .disabled(!enabled),
-                                ),
-                        )
-                        .child(caption(&camera_notice));
-                    if host_camera {
-                        let authorization = match self.state.cameras["authorization"].as_str() {
-                            Some("denied") => {
-                                "摄像头权限已拒绝，请在系统设置中允许 Lisem 使用摄像头"
-                            }
-                            Some("restricted") => "系统限制了摄像头访问",
-                            Some("not-determined") => "首次开启时会请求系统摄像头权限",
-                            _ => "只使用所选摄像头；画面不保存",
-                        };
-                        body = body.child(caption(authorization));
-                    } else {
-                        body = body.child(caption("当前系统暂不支持宿主摄像头，可选择图片输入"));
-                    }
-                }
+                                .child(self.control(
+                                    "复制",
+                                    "copy-uid",
+                                    Action::CopyUid,
+                                    true,
+                                    false,
+                                    cx,
+                                ))
+                                .child(self.control(
+                                    "重新生成…",
+                                    "regen",
+                                    Action::RegenerateUid,
+                                    mutable,
+                                    false,
+                                    cx,
+                                )),
+                        ),
+                    ))
+                    .child(settings_row(
+                        "Flash",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_3()
+                            .child(format!(
+                                "{} MiB",
+                                d.hardware["board"]["flash_bytes"].as_u64().unwrap_or(0) / 1048576
+                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(self.control(
+                                        "从 LPK 写入…",
+                                        "import",
+                                        Action::Import,
+                                        mutable,
+                                        false,
+                                        cx,
+                                    ))
+                                    .child(self.control(
+                                        "清空 Flash…",
+                                        "erase",
+                                        Action::Erase,
+                                        mutable,
+                                        false,
+                                        cx,
+                                    )),
+                            ),
+                    ))
+                    .when(self.running(), |body| {
+                        body.child(caption("下电后可修改 UID 和 Flash"))
+                    });
             }
             _ => {
                 body = body
-                    .child(field("名称", self.name.clone()))
-                    .child(self.control("保存名称", "save-name", Action::SaveName, idle, false, cx))
-                    .child(info(
+                    .child(settings_row(
+                        "名称",
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(Input::new(&self.name).w(px(300.)))
+                            .child(self.control(
+                                "保存",
+                                "save-name",
+                                Action::SaveName,
+                                idle,
+                                false,
+                                cx,
+                            )),
+                    ))
+                    .child(settings_row(
                         "板型",
-                        &format!(
-                            "{} · v{}",
-                            d.hardware["board"]["name"].as_str().unwrap_or(""),
-                            d.hardware["board"]["version"].as_u64().unwrap_or(1)
-                        ),
-                    ))
-                    .child(info(
-                        "芯片",
-                        &format!(
-                            "{} · {}",
-                            d.hardware["chip"]["name"].as_str().unwrap_or(""),
-                            d.hardware["chip"]["family"]
+                        div().child(
+                            d.hardware["board"]["name"]
                                 .as_str()
-                                .unwrap_or("")
-                                .to_uppercase()
+                                .unwrap_or("不可用")
+                                .to_owned(),
                         ),
                     ))
-                    .child(info("实例位置", &d.path))
-                    .child(self.control(
-                        "打开所在文件夹",
-                        "settings-folder",
-                        Action::Folder,
-                        true,
-                        false,
-                        cx,
+                    .child(settings_row(
+                        "芯片",
+                        div().child(
+                            d.hardware["chip"]["name"]
+                                .as_str()
+                                .unwrap_or("不可用")
+                                .to_owned(),
+                        ),
+                    ))
+                    .child(settings_row(
+                        "实例位置",
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap_3()
+                            .child(div().text_sm().child(d.path.clone()))
+                            .child(self.control(
+                                "打开所在文件夹",
+                                "settings-folder",
+                                Action::Folder,
+                                true,
+                                false,
+                                cx,
+                            )),
                     ));
             }
         }
@@ -1105,8 +954,8 @@ impl Desktop {
             .min_w_0()
             .flex()
             .flex_col()
-            .gap_6()
             .p_6()
+            .gap_5()
             .child(
                 div()
                     .flex()
@@ -1128,7 +977,6 @@ impl Desktop {
     fn device_panel(&self, d: &Device, cx: &mut Context<Self>) -> Div {
         let on = self.powered();
         let idle = !self.state.busy;
-        let sound = d.host["sound"] == true;
         let indicators = d.hardware["board"]["indicators"]
             .as_array()
             .cloned()
@@ -1291,22 +1139,23 @@ impl Desktop {
                                     .items_center()
                                     .gap_1()
                                     .child(status_lights)
-                                    .child(self.icon(
-                                        if sound { "speaker" } else { "mute" },
-                                        "声音",
-                                        Action::AudioMenu,
-                                        true,
-                                        pa_enabled,
+                                    .when(d.hardware["board"]["camera"].is_object(), |bar| {
+                                        let active = on && self.state.data["session"]["camera_input"]["receiver_enabled"] == true;
+                                        bar.child(self.peripheral_menu("camera", active, cx))
+                                    })
+                                    .child(self.peripheral_menu(
+                                        "microphone",
+                                        on && self.state.data["session"]["audio_input_enabled"]
+                                            == true,
                                         cx,
                                     ))
-                                    .child(self.icon(
-                                        "serial",
-                                        "串口",
-                                        Action::SerialMenu,
-                                        true,
-                                        false,
+                                    .child(self.peripheral_menu("speaker", pa_enabled, cx))
+                                    .child(self.peripheral_menu(
+                                        "network",
+                                        d.host["online"] == true,
                                         cx,
                                     ))
+                                    .child(self.peripheral_menu("serial", false, cx))
                                     .child(self.icon(
                                         "power",
                                         match self.lifecycle() {
@@ -1400,6 +1249,9 @@ fn info(label: &str, value: &str) -> Div {
 }
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(d) = self.device() {
+            self.sync_camera_options(&d, window, cx);
+        }
         let frame = if matches!(self.mode, Mode::Device(_)) && !self.settings && self.powered() {
             self.state.frame.clone()
         } else {

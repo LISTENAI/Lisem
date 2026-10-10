@@ -55,7 +55,7 @@ pub fn options(
         .map(|name| format!("图片 · {}…", name.to_string_lossy()))
         .unwrap_or_else(|| "图片…".into());
     let mut options = vec![
-        CameraOption::new(CameraChoice::Off, "关闭输入"),
+        CameraOption::new(CameraChoice::Off, "关闭"),
         CameraOption::new(CameraChoice::Image, image_label),
     ];
     if supported {
