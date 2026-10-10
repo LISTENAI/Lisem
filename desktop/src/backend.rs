@@ -135,7 +135,6 @@ impl Backend {
                                     "import" => "LPK 已写入，设备身份保持不变。".into(),
                                     "erase" => "Flash 已清空".into(),
                                     "regenerate_uid" => "UID 已重新生成".into(),
-                                    "audio" => "语音已送入输入队列。".into(),
                                     "button" => String::new(),
                                     "serial" if value.is_null() => "串口已关闭".into(),
                                     "serial" => format!(

@@ -1,5 +1,6 @@
 //! Toolbar menus and settings share peripheral state and availability.
 use crate::*;
+use gpui::{assets::IconName, component::WindowExt};
 
 impl Desktop {
     pub(super) fn sync_camera_options(
@@ -149,54 +150,82 @@ impl Desktop {
             "network" => "网络",
             _ => "串口",
         };
+        let disabled = self.device().is_some_and(|d| match kind {
+            "camera" => !d.host["camera_device"].is_string() && !d.host["camera_image"].is_string(),
+            "microphone" => !self.host_microphone_enabled(&d),
+            "speaker" => d.host["sound"] != true,
+            _ => false,
+        });
+        let icon = match (kind, disabled) {
+            ("camera", true) => Icon::new(IconName::CameraOff),
+            ("camera", false) => Icon::new(IconName::Camera),
+            ("microphone", true) => Icon::new(IconName::MicOff),
+            ("microphone", false) => Icon::new(IconName::Mic),
+            ("speaker", true) => Icon::new(IconName::VolumeOff),
+            ("speaker", false) => Icon::new(IconName::Volume2),
+            _ => Icon::empty().path(kind),
+        };
         let view = cx.entity().downgrade();
         Button::new(kind)
             .ghost()
-            .icon(Icon::empty().path(kind))
+            .icon(icon)
             .accessibility_label(label)
             .tooltip(label)
-            .when(active, |b| b.text_color(cx.theme().primary))
-            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |mut menu, window, cx| {
+            .when(active && !disabled, |b| b.text_color(cx.theme().primary))
+            .dropdown_menu_with_anchor(gpui::Anchor::TopRight, move |menu, _, cx| {
                 let Some(view) = view.upgrade() else {
                     return menu;
                 };
-                if kind == "serial" {
-                    for channel in 0..3u8 {
-                        let owner = view.downgrade();
-                        menu = menu.submenu(
-                            format!("UART {channel}"),
-                            window,
-                            cx,
-                            move |submenu, _, cx| {
-                                let Some(owner) = owner.upgrade() else {
-                                    return submenu;
-                                };
-                                owner.update(cx, |v, cx| {
-                                    let ready = v.serial_path(channel).is_some();
-                                    submenu
-                                        .item(v.menu_action(
-                                            "启用",
-                                            Action::SerialToggle(channel),
-                                            !v.state.busy,
-                                            ready,
-                                            cx,
-                                        ))
-                                        .item(v.menu_action(
-                                            "复制连接命令",
-                                            Action::Serial(channel),
-                                            !v.state.busy && ready,
-                                            false,
-                                            cx,
-                                        ))
-                                })
-                            },
-                        );
-                    }
-                    menu
-                } else {
-                    view.update(cx, |v, cx| v.populate_peripheral_menu(kind, menu, cx))
-                }
+                view.update(cx, |v, cx| v.populate_peripheral_menu(kind, menu, cx))
             })
+    }
+
+    pub(super) fn show_serial_info(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let owner = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _, cx| {
+            let dialog = dialog.title("串口连接").width(px(480.));
+            let Some(owner) = owner.upgrade() else {
+                return dialog;
+            };
+            let view = owner.read(cx);
+            let mut content = div().flex().flex_col().gap_3();
+            let mut count = 0;
+            for channel in 0..3u8 {
+                let Some(path) = view.serial_path(channel) else {
+                    continue;
+                };
+                count += 1;
+                let weak = owner.downgrade();
+                content = content.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(format!("UART {channel}"))
+                                .child(caption(path.to_owned())),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("copy-uart-{channel}")))
+                                .ghost()
+                                .icon(IconName::Copy)
+                                .label("复制路径")
+                                .on_click(move |_, window, cx| {
+                                    let _ = weak.update(cx, |v, cx| {
+                                        v.act(Action::CopySerialPath(channel), window, cx)
+                                    });
+                                }),
+                        ),
+                );
+            }
+            if count == 0 {
+                content = content.child(caption("尚未启用串口"));
+            }
+            dialog.child(content)
+        });
     }
 
     fn populate_peripheral_menu(
@@ -209,6 +238,24 @@ impl Desktop {
             return menu;
         };
         match kind {
+            "serial" => {
+                for channel in 0..3u8 {
+                    menu = menu.item(self.menu_action(
+                        format!("UART {channel}"),
+                        Action::SerialToggle(channel),
+                        !self.state.busy,
+                        self.serial_path(channel).is_some(),
+                        cx,
+                    ));
+                }
+                menu.separator().item(self.menu_action(
+                    "连接信息…",
+                    Action::SerialInfo,
+                    true,
+                    false,
+                    cx,
+                ))
+            }
             "camera" => {
                 let (options, selected) = camera_selector::options(
                     &d.host,
@@ -250,15 +297,7 @@ impl Desktop {
             "microphone" => {
                 menu = menu
                     .item(self.audio_choice("关闭", true, false, &d, cx))
-                    .item(self.audio_choice("系统麦克风", true, true, &d, cx))
-                    .separator()
-                    .item(self.menu_action(
-                        "输入 WAV…",
-                        Action::Audio,
-                        self.wav_input_enabled(&d),
-                        false,
-                        cx,
-                    ));
+                    .item(self.audio_choice("系统麦克风", true, true, &d, cx));
                 let change = &self.state.data["session"]["microphone_change"];
                 if self.microphone_pending()
                     || change["error"].is_string()
@@ -328,10 +367,6 @@ impl Desktop {
             && self.state.data["session"]["input_busy"] != true
     }
 
-    pub(super) fn wav_input_enabled(&self, d: &Device) -> bool {
-        self.microphone_change_enabled() && self.powered() && !self.host_microphone_enabled(d)
-    }
-
     pub(super) fn microphone_notice(&self, d: &Device) -> String {
         let change = &self.state.data["session"]["microphone_change"];
         if change["status"] == "unknown" {
@@ -341,13 +376,11 @@ impl Desktop {
         } else if self.microphone_pending() {
             "正在切换麦克风…".into()
         } else if self.state.data["session"]["input_busy"] == true {
-            "正在输入 WAV，结束后可切换麦克风".into()
+            "正在输入音频，结束后可切换麦克风".into()
         } else if self.host_microphone_enabled(d) && !self.powered() {
             "已启用，上电后采集系统麦克风".into()
         } else if self.host_microphone_enabled(d) {
-            "使用电脑的麦克风；关闭后可输入 WAV".into()
-        } else if !self.powered() {
-            "上电后可输入 WAV".into()
+            "正在采集系统麦克风".into()
         } else {
             "未采集系统麦克风".into()
         }
@@ -399,15 +432,7 @@ impl Desktop {
                             .disabled(!self.microphone_change_enabled())
                             .on_change(cx.listener(|v, _, w, cx| v.act(Action::Microphone, w, cx))),
                     )
-                    .child(caption(self.microphone_notice(d)))
-                    .child(self.control(
-                        "输入 WAV…",
-                        "settings-wav",
-                        Action::Audio,
-                        self.wav_input_enabled(d),
-                        false,
-                        cx,
-                    )),
+                    .child(caption(self.microphone_notice(d))),
             ))
             .child(settings_row(
                 "摄像头",
@@ -445,11 +470,11 @@ impl Desktop {
                         Button::new(("settings-uart-copy", channel as usize))
                             .ghost()
                             .icon(Icon::empty().path("copy"))
-                            .tooltip("复制连接命令")
-                            .accessibility_label(format!("复制 UART {channel} 连接命令"))
+                            .tooltip("复制连接路径")
+                            .accessibility_label(format!("复制 UART {channel} 连接路径"))
                             .disabled(!ready || self.state.busy)
                             .on_click(cx.listener(move |v, _, w, cx| {
-                                v.act(Action::Serial(channel), w, cx)
+                                v.act(Action::CopySerialPath(channel), w, cx)
                             })),
                     ),
             ));

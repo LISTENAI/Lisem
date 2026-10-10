@@ -1,6 +1,11 @@
 use gpui::{AssetSource, SharedString};
 use std::borrow::Cow;
 
+gpui::assets::icon_assets!(
+    PeripheralIcons,
+    [Camera, CameraOff, Mic, MicOff, Volume2, VolumeOff, Copy]
+);
+
 pub struct Assets;
 
 impl AssetSource for Assets {
@@ -18,12 +23,21 @@ impl AssetSource for Assets {
             "more" => include_bytes!("../assets/more.svg"),
             "audio" => include_bytes!("../assets/audio.svg"),
             "network" => include_bytes!("../assets/network.svg"),
-            _ => return gpui::assets::Assets.load(path),
+            _ => {
+                if let Some(icon) = PeripheralIcons.load(path)? {
+                    return Ok(Some(icon));
+                }
+                return gpui::assets::Assets.load(path);
+            }
         };
         Ok(Some(Cow::Borrowed(bytes)))
     }
 
     fn list(&self, path: &str) -> gpui::Result<Vec<SharedString>> {
-        gpui::assets::Assets.list(path)
+        let mut paths = gpui::assets::Assets.list(path)?;
+        paths.extend(PeripheralIcons.list(path)?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
     }
 }

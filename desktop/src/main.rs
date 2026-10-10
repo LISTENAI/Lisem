@@ -79,15 +79,15 @@ enum Action {
     Erase,
     Start,
     Stop,
-    Audio,
     Camera,
     ClearCamera,
     RefreshCameras,
     Sound,
     Network,
     Microphone,
-    Serial(u8),
+    CopySerialPath(u8),
     SerialToggle(u8),
+    SerialInfo,
     Folder,
     CopyUid,
 }
@@ -311,7 +311,6 @@ impl Desktop {
             prompt: Some(
                 match action {
                     Action::Attach => "打开实例目录",
-                    Action::Audio => "选择 16 kHz 单声道 PCM16 WAV",
                     Action::Camera => "选择摄像头图片（PNG / JPEG / PNM）",
                     _ => "选择要写入 Flash 的 LPK",
                 }
@@ -327,9 +326,6 @@ impl Desktop {
                             Action::Attach => v.send("attach", json!({"path":path})),
                             Action::Camera => {
                                 v.send("camera", json!({"id":selected,"run":run,"path":path}))
-                            }
-                            Action::Audio => {
-                                v.send("audio", json!({"id":selected,"run":run,"path":path}))
                             }
                             _ => v.send("import", json!({"id":selected,"package":path})),
                         }
@@ -373,7 +369,7 @@ impl Desktop {
                     show_device(&d, self.backend.clone(), self.windows.clone(), cx);
                 }
             }
-            Action::ChoosePackage | Action::Attach | Action::Import | Action::Audio | Action::Camera => {
+            Action::ChoosePackage | Action::Attach | Action::Import | Action::Camera => {
                 self.choose_file(action, cx);
             }
             Action::RefreshCameras => self.send("camera_devices", json!({})),
@@ -421,16 +417,11 @@ impl Desktop {
                 let enabled = self.serial_path(channel).is_none();
                 self.send("serial", json!({"id": self.selected, "channel": channel, "enabled": enabled}));
             }
-            Action::Serial(channel) => {
+            Action::SerialInfo => self.show_serial_info(window, cx),
+            Action::CopySerialPath(channel) => {
                 if let Some(path) = self.serial_path(channel) {
-                    let command = if let Some(address) = path.strip_prefix("tcp://") {
-                        let (host, port) = address.rsplit_once(':').unwrap();
-                        format!("putty -raw {host} -P {port}")
-                    } else { format!("picocom {path}") };
-                    cx.write_to_clipboard(ClipboardItem::new_string(command));
-                    self.notice = "连接命令已复制".into();
-                } else {
-                    self.send("serial", json!({"id": self.selected, "channel": channel}));
+                    cx.write_to_clipboard(ClipboardItem::new_string(path.to_owned()));
+                    self.notice = "连接路径已复制".into();
                 }
             }
             Action::Folder => {
