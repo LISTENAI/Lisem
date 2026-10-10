@@ -385,7 +385,7 @@ mod tests {
     }
     #[cfg(unix)]
     #[test]
-    fn stdout_eof_waits_for_native_error_without_blocking_poll() {
+    fn stdout_eof_preserves_native_error_after_stderr_drains() {
         let mut command = std::process::Command::new("/bin/sh");
         command.args([
             "-c",
@@ -393,13 +393,17 @@ mod tests {
         ]);
         let mut capture = Capture::spawn(command, "test", 0).unwrap();
         let deadline = Instant::now() + Duration::from_secs(2);
-        while !capture.ended() && Instant::now() < deadline {
-            let before = Instant::now();
-            assert!(capture.take().is_none());
-            assert!(before.elapsed() < Duration::from_millis(20));
+        // The grace period can expire before stderr is scheduled on a busy
+        // host. Wait for both readers before checking the final diagnostic.
+        // The held-open-stderr test below checks bounded, nonblocking polling.
+        while !(capture.ended() && capture.errors_done.load(Ordering::Acquire))
+            && Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(1));
         }
         assert!(capture.ended());
+        assert!(capture.errors_done.load(Ordering::Acquire));
+        assert!(capture.take().is_none());
         assert_eq!(capture.status(true)["error"], "Camera permission denied");
     }
     #[cfg(unix)]
