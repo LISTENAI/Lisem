@@ -9,7 +9,7 @@
 - `make test`：Python 验证工具与 Rust workspace 测试。
 - `make check-qemu`：CPU、时钟、器件、存储、控制和宿主传输回归。
 
-单项保留 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
+单项测试使用 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
 `make qemu-camera qemu-camera-capture qemu-camera-input` 验证 GC0328 SCCB 的重复起始、FIFO
 背压与取消，并核对静态图片经 DVP FIFO/GPDMA 写入 RAM 的字节、内存边界、
 帧快照、SOF/EOF 中断及复位取消。共享输入另覆盖连续发布、代际隔离、SOF
@@ -117,11 +117,10 @@ macOS/Linux 使用保留执行权限的 tar.gz，Windows 使用 zip。正式发�
 
 macOS 的 Homebrew 分发使用 [LISTENAI 公共 tap](https://github.com/LISTENAI/homebrew-tap)
 中的 `lisem` cask。cask 的 `app` 安装 `Lisem.app`，`binary` 链接包内
-`Contents/MacOS/lisem`；安装和升级共用同一应用包。首次接入需在 tap 添加
-`Casks/lisem.rb` 及 `projects.yaml` 的 `cask` 项，资产分别匹配
-`Lisem-darwin-aarch64.tar.gz` 和 `Lisem-darwin-x86_64.tar.gz`。初始校验值
-取自正式 Release，后续版本由 tap 的现有更新流程维护。cask 普通卸载保留
-实例数据，不在升级时终止或删除设备实例。
+`Contents/MacOS/lisem`；安装和升级共用同一应用包。cask 定义位于
+`Casks/lisem.rb`，由 `projects.yaml` 的 `cask` 项配置更新。按架构匹配
+`Lisem-darwin-aarch64.tar.gz` 或 `Lisem-darwin-x86_64.tar.gz`，版本与校验值
+对应正式 Release 资产。cask 普通卸载保留实例数据，升级保留运行中的设备实例。
 
 ## 原固件验证
 

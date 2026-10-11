@@ -167,7 +167,7 @@ enum Action {
         #[arg(long)]
         disable: bool,
     },
-    /// Send raw bytes to a firmware UART, through its real FIFO.
+    /// Send raw bytes to a firmware UART.
     Send {
         id: String,
         channel: u8,

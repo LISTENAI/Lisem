@@ -224,7 +224,7 @@ fn camera_params(value: Value) -> Result<Value> {
 fn camera_definition() -> Tool {
     let mut tool = definition::<Camera>(
         "lisem_camera_input",
-        "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) or an explicit host camera device_id. Path and device_id are mutually exclusive. Sources preserve aspect ratio and center-crop to 640x480; board mounting and firmware control orientation. Selection persists for next power-on. Null or omitted path with no device_id clears all input; capture waits without synthetic frames. Requires run while powered on. Pending is unconfirmed: poll lisem_status runtime.session.camera_change for applied, rejected or unknown. Phase waiting-first-frame permits clearing or replacing the candidate; phase selecting must not be retried until resolved. camera_capture reports host capture state and failures. Applied can include a persistence error. Camera pixels are not saved.",
+        "Select a PNG/JPEG/PNM image (at most 32 MiB and 4096x4096) or an explicit host camera device_id. Path and device_id are mutually exclusive. Sources preserve aspect ratio and center-crop to 640x480; board mounting and firmware control orientation. Selection persists for next power-on. Null or omitted path with no device_id clears all input; the sensor waits for input. Requires run while powered on. Pending is unconfirmed: poll lisem_status runtime.session.camera_change for applied, rejected or unknown. Phase waiting-first-frame permits clearing or replacing the candidate; phase selecting must not be retried until resolved. camera_capture reports host capture state and failures. Applied can include a persistence error. Camera pixels are not saved.",
         false,
     );
     let schema = Arc::make_mut(&mut tool.input_schema);
@@ -275,7 +275,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Confirm>(
             "lisem_uid_regenerate",
-            "Generate a new persistent UID without erasing Flash. Requires power off and the current UID; firmware cloud binding may need updating.",
+            "Generate a new persistent UID without erasing Flash. Requires power off and the current UID.",
             false,
         ),
         definition::<Start>(
@@ -325,7 +325,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<WriteUart>(
             "lisem_uart_write",
-            "Send raw bytes through the firmware UART FIFO. Include CR explicitly for shell commands. Does not synthesize firmware replies.",
+            "Send raw bytes through the firmware UART FIFO. Include CR explicitly for shell commands.",
             false,
         ),
         definition::<Instance>(
@@ -335,7 +335,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Empty>(
             "lisem_camera_devices",
-            "List host camera IDs, names and camera authorization without starting capture. Select an explicit device_id with lisem_camera_input. Does not automatically choose or open a camera.",
+            "List host camera IDs, names and camera authorization without starting capture. Select a device_id with lisem_camera_input.",
             true,
         ),
         camera_definition(),

@@ -35,7 +35,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_uart`、`lisem_uart_read`、`lisem_uart_write` | 连接、观察和输入原始 UART |
 | `lisem_screenshot`、`lisem_audio_input` | 返回 PNG 图像、向 ADC 输入 WAV |
 | `lisem_access_point` | 运行中切换外部热点可用性 |
-| `lisem_camera_input` | 选择或清除 GC0328 静态图片场景 |
+| `lisem_camera_devices`、`lisem_camera_input` | 枚举宿主摄像头，选择或清除摄像头场景输入 |
 
 `lisem_status` 的 `runtime.session.output` 是运行标识；输入、复位和 UART
 读取携带它，防止请求落到另一轮运行。复位后重新获取标识，UART 游标归零。
@@ -70,14 +70,15 @@ QEMU 从受理时刻按虚拟时间执行每次按下和松开，不依赖 MCP �
 显式取消和复位会释放序列按键；下电、运行结束或 MCP 所拥有运行的连接关闭也会
 终止序列。序列状态同时出现在 `runtime.session.button_sequence`。
 
-`lisem_camera_input` 接受 `id`、图片 `path`；`path=null` 清除输入。运行中必须
-携带当前 `run`，下电时保存来源用于下次启动。它不代替固件拍照：之后通过
-真实按键输入触发业务，并观察 UART 或画面确认采集结果。选图、下电、复位
-都不清除 Flash/OTP；没有场景时不伪造空白帧或采集成功。控制超时不等于换图
-失败：返回 `status=pending` 表示请求尚未完成；
+`lisem_camera_devices` 列出宿主摄像头及其 ID。`lisem_camera_input` 接受
+`id` 和图片 `path` 或摄像头 `device_id`，两种来源互斥；未指定 `device_id`
+且 `path` 为 null 或省略时清除输入。运行中必须携带当前 `run`，下电时保存
+来源用于下次启动。拍照由固件业务触发，通过 UART 或画面确认结果。没有场景
+输入时，传感器等待输入。返回 `status=pending` 表示来源切换尚未完成；
 `runtime.session.camera_change` 的 `pending` 表示尚待确认，最终为
-`applied`、`rejected` 或 `unknown`；`path` 是请求来源，`error` 提供失败或
-持久化错误。等待期间不要重试；只有确认应用后才更新实例的图片配置。
+`applied`、`rejected` 或 `unknown`；`path` 或 `device_id` 是请求来源，
+`error` 提供失败或持久化错误。等待阶段 `waiting-first-frame` 可清除或替换
+来源；`selecting` 阶段须等待确认结果。只有确认应用后才更新实例的来源配置。
 
 串口观察使用每路 64 KiB 的内存历史，不消耗终端数据。每次返回至多 16 KiB；
 用返回的 `cursor` 继续读取。`lost` 表示较早的字节已过期，`hex` 保留精确
@@ -89,13 +90,14 @@ QEMU 从受理时刻按虚拟时间执行每次按下和松开，不依赖 MCP �
 与像素在同一个共享槽内读取，不使用工具响应时间代替。比较截图时先核对
 `run`，再比较序号；相同序号代表同一帧，重启后不能跨运行比较序号。
 `source=active_run` 表示当前运行最近发布的帧，不保证发生在某次操作之后；
-`last_run` 表示下电后保留的最后帧。读取截图不会主动推进虚拟时间。连接旧版
-后台时 `metadata_available=false`，不能据此证明截图新鲜度。
+`last_run` 表示下电后保留的最后帧。读取截图不会主动推进虚拟时间。
+后台未提供帧元数据时
+`metadata_available=false`，此时无法根据元数据判断截图新鲜度。
 
 `lisem_status` 和 `lisem --json status <id>` 返回 `client_build`、
 `runtime.worker` 及 `client_worker_build`。后者为 `same`、`different` 或
 `unknown`，比较的是编译时嵌入的 Rust 源码指纹和目标平台；不是协议兼容性
-判断，也不是可执行文件字节相等的保证。旧后台没有身份信息时返回 `unknown`。
+判断，也不是可执行文件字节相等的保证。后台缺少身份信息时返回 `unknown`。
 worker 的 `id` 区分进程生命周期，`pid` 便于定位进程；
 `runtime.session.qemu` 保留本轮启动时的 QEMU 文件 SHA256、PID 和 QMP
 报告的版本，运行中替换安装文件不会改变这些已记录值。
