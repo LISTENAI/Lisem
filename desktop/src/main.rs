@@ -1120,15 +1120,9 @@ fn application_menu() -> impl IntoElement {
         .label("Lisem")
         .ghost()
         .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, |menu, _, _| {
-            menu.item(
-                PopupMenuItem::new("关于 Lisem")
-                    .on_click(|_, _, cx| cx.dispatch_action(&ShowAbout)),
-            )
-            .item(
-                PopupMenuItem::new("安装命令行工具")
-                    .on_click(|_, _, cx| cx.dispatch_action(&InstallCli)),
-            )
-            .item(PopupMenuItem::new("退出 Lisem").on_click(|_, _, cx| cx.dispatch_action(&Quit)))
+            menu.item(PopupMenuItem::new("关于 Lisem").action(Box::new(ShowAbout)))
+                .item(PopupMenuItem::new("安装命令行工具").action(Box::new(InstallCli)))
+                .item(PopupMenuItem::new("退出 Lisem").action(Box::new(Quit)))
         })
 }
 
