@@ -5,6 +5,7 @@ mod backend;
 mod camera_selector;
 mod display;
 mod icons;
+mod library;
 mod peripheral_controls;
 mod theme;
 mod wifi_environment;
@@ -66,6 +67,7 @@ enum Action {
     Cancel,
     Details,
     Settings,
+    WifiSettings,
     SaveName,
     Detach,
     Open,
@@ -102,6 +104,8 @@ struct Desktop {
     notice: String,
     creating: bool,
     settings: bool,
+    wifi_visible: bool,
+    wifi: Option<Entity<wifi_environment::WifiEnvironment>>,
     settings_tab: &'static str,
     held: HashSet<String>,
     new_board: Option<String>,
@@ -213,15 +217,22 @@ impl Desktop {
             cx.notify();
         })
         .detach();
+        let mut state = backend.snapshot.lock().unwrap().clone();
+        if let Some(id) = &selected {
+            state.data["session"] = state.data["sessions"][id].clone();
+            state.frame = state.frames.get(id).cloned();
+        }
         Self {
             backend,
             windows,
             mode,
-            state: Snapshot::default(),
+            state,
             selected,
             notice: String::new(),
             creating: false,
             settings: false,
+            wifi_visible: false,
+            wifi: None,
             settings_tab: "general",
             held: HashSet::new(),
             new_board: None,
@@ -291,8 +302,11 @@ impl Desktop {
     }
     fn show_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.release_buttons();
+        if self.settings {
+            return;
+        }
+        self.wifi_visible = false;
         self.settings = true;
-        self.settings_tab = "general";
         if self.state.data["capabilities"]["host_camera"] == true {
             self.backend.send("camera_devices", json!({}));
         }
@@ -359,9 +373,32 @@ impl Desktop {
             Action::Cancel => {
                 self.creating = false;
                 self.settings = false;
+                self.wifi_visible = false;
             }
             Action::Details => {}
+            Action::Settings if matches!(self.mode, Mode::Library) => {
+                if let Some(d) = self.device() {
+                    let handle = show_device(&d, self.backend.clone(), self.windows.clone(), cx);
+                    let _ = handle.handle.update(cx, |_, window, cx| {
+                        let _ = handle.view.update(cx, |view, cx| {
+                            view.show_settings(window, cx);
+                            cx.notify();
+                        });
+                    });
+                }
+            }
             Action::Settings => self.show_settings(window, cx),
+            Action::WifiSettings => {
+                if let Some(d) = self.device() {
+                    self.release_buttons();
+                    self.settings = false;
+                    self.wifi_visible = true;
+                    if self.wifi.is_none() {
+                        self.wifi = Some(cx.new(|cx| wifi_environment::WifiEnvironment::new(
+                            self.backend.clone(), d, window, cx)));
+                    }
+                }
+            }
             Action::SaveName => self.send("rename", json!({
                 "id": self.selected, "name": self.name.read(cx).value()
             })),
@@ -585,78 +622,7 @@ impl Desktop {
             .when(primary, |b| b.primary())
             .on_click(cx.listener(move |v, _, w, cx| v.act(action, w, cx)))
     }
-    fn sidebar(&self, cx: &mut Context<Self>) -> Div {
-        let mut list = div()
-            .id("instances")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap_2();
-        for d in self.devices() {
-            let id = d.id.clone();
-            let selected = self.selected.as_ref() == Some(&id) && !self.creating;
-            let on = self.state.data["sessions"][&id]["finished"] == false;
-            list = list.child(
-                div()
-                    .id(SharedString::from(id.clone()))
-                    .p_3()
-                    .rounded_md()
-                    .bg(rgb(if selected { 0x2a343f } else { 0x191d24 }))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(cx.theme().secondary))
-                    .child(div().text_sm().truncate().child(d.name))
-                    .child(caption(format!(
-                        "{}{}",
-                        d.hardware["board"]["name"].as_str().unwrap_or("路径不可用"),
-                        if on { " · ●" } else { "" }
-                    )))
-                    .on_click(cx.listener(move |v, ev: &gpui::ClickEvent, _, cx| {
-                        v.release_buttons();
-                        v.selected = Some(id.clone());
-                        v.creating = false;
-                        v.settings = false;
-                        if ev.click_count() == 2 {
-                            if let Some(d) = v.device() {
-                                show_device(&d, v.backend.clone(), v.windows.clone(), cx);
-                            }
-                        }
-                        cx.notify();
-                    })),
-            );
-        }
-        div()
-            .w(px(232.))
-            .flex_shrink_0()
-            .h_full()
-            .flex()
-            .flex_col()
-            .gap_4()
-            .p_4()
-            .bg(cx.theme().sidebar)
-            .border_r_1()
-            .border_color(cx.theme().border)
-            .child(div().text_lg().py_2().child("实例库"))
-            .child(list)
-            .child(self.control(
-                "＋ 新建实例",
-                "new",
-                Action::New,
-                !self.state.busy,
-                true,
-                cx,
-            ))
-            .child(self.control(
-                "打开实例…",
-                "attach",
-                Action::Attach,
-                !self.state.busy,
-                false,
-                cx,
-            ))
-    }
-    fn new_panel(&self, cx: &mut Context<Self>) -> Div {
+    fn new_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let mut form = div()
             .flex()
             .flex_col()
@@ -739,70 +705,15 @@ impl Desktop {
                     .child(self.control("取消", "cancel", Action::Cancel, true, false, cx)),
             );
         div()
+            .id("new-instance-form")
             .flex_1()
-            .flex()
-            .items_center()
-            .justify_center()
-            .p_8()
-            .child(form)
-    }
-    fn overview(&self, d: &Device, cx: &mut Context<Self>) -> Div {
-        let mut v = div()
-            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
             .flex()
             .flex_col()
+            .items_center()
             .p_8()
-            .gap_6()
-            .child(div().text_2xl().child(d.name.clone()))
-            .child(caption(self.lifecycle().to_owned()))
-            .child(info(
-                "板型",
-                d.hardware["board"]["name"].as_str().unwrap_or("不可用"),
-            ))
-            .child(info(
-                "芯片",
-                d.hardware["chip"]["name"].as_str().unwrap_or("—"),
-            ))
-            .child(info("UID", &d.uid));
-        if let Some(error) = &d.unavailable {
-            v = v.child(caption(error.clone()));
-        }
-        v.child(
-            div()
-                .flex()
-                .gap_3()
-                .child(self.control(
-                    "打开设备",
-                    "open",
-                    Action::Open,
-                    d.unavailable.is_none(),
-                    true,
-                    cx,
-                ))
-                .child(self.control(
-                    "设置",
-                    "settings",
-                    Action::Settings,
-                    d.unavailable.is_none(),
-                    false,
-                    cx,
-                )),
-        )
-        .child(div().flex_1())
-        .child(
-            div()
-                .flex()
-                .gap_3()
-                .child(self.control("打开所在文件夹", "folder", Action::Folder, true, false, cx))
-                .child(self.control(
-                    "从列表移除",
-                    "detach",
-                    Action::Detach,
-                    !self.powered() && !self.state.busy,
-                    false,
-                    cx,
-                )),
-        )
+            .child(form.flex_shrink_0())
     }
     fn settings_panel(&mut self, d: &Device, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let idle = !self.state.busy;
@@ -956,7 +867,7 @@ impl Desktop {
                     .justify_between()
                     .items_center()
                     .child(div().text_xl().child(format!("{} · 设置", d.name)))
-                    .child(self.control("完成", "done", Action::Cancel, true, false, cx)),
+                    .child(self.control("返回设备", "done", Action::Cancel, true, false, cx)),
             )
             .child(tabs)
             .child(
@@ -1246,7 +1157,11 @@ impl Render for Desktop {
         if let Some(d) = self.device() {
             self.sync_camera_options(&d, window, cx);
         }
-        let frame = if matches!(self.mode, Mode::Device(_)) && !self.settings && self.powered() {
+        let frame = if matches!(self.mode, Mode::Device(_))
+            && !self.settings
+            && !self.wifi_visible
+            && self.powered()
+        {
             self.state.frame.clone()
         } else {
             None
@@ -1279,20 +1194,19 @@ impl Render for Desktop {
             window.set_window_title(&title);
             self.title = title;
         }
-        if !window.is_window_active() || self.creating || self.settings {
+        if !window.is_window_active() || self.creating || self.settings || self.wifi_visible {
             self.release_buttons();
         }
         let mut layout = div().flex_1().min_h_0().flex();
-        if matches!(self.mode, Mode::Library) {
-            layout = layout.child(self.sidebar(cx));
-        }
         if self.creating {
             layout = layout.child(self.new_panel(cx));
+        } else if matches!(self.mode, Mode::Library) {
+            layout = layout.child(self.library_panel(cx));
         } else if let Some(d) = self.device() {
             if self.settings {
                 layout = layout.child(self.settings_panel(&d, window, cx));
-            } else if matches!(self.mode, Mode::Library) {
-                layout = layout.child(self.overview(&d, cx));
+            } else if self.wifi_visible {
+                layout = layout.child(self.wifi_panel(&d, cx));
             } else {
                 layout = layout.child(self.device_panel(&d, cx));
             }
@@ -1333,6 +1247,7 @@ impl Render for Desktop {
             .when(
                 matches!(self.mode, Mode::Library)
                     || self.settings
+                    || self.wifi_visible
                     || self.creating
                     || self.device().is_none(),
                 |e| {
@@ -1342,22 +1257,37 @@ impl Render for Desktop {
                             .bg(cx.theme().background)
                             .when(!cfg!(target_os = "macos"), |bar| {
                                 bar.child(application_menu())
-                            }),
+                            })
+                            .when(
+                                matches!(self.mode, Mode::Library) && !self.creating,
+                                |bar| {
+                                    bar.child(
+                                        div()
+                                            .flex_1()
+                                            .flex()
+                                            .justify_end()
+                                            .pr_6()
+                                            .child(self.library_add_button(cx)),
+                                    )
+                                },
+                            ),
                     )
                 },
             )
             .child(layout)
-            .child(
-                div()
-                    .min_h(px(32.))
-                    .px_5()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .text_xs()
-                    .text_color(rgb(if error.is_some() { 0xffa495 } else { 0xa5b2c3 }))
-                    .child(message),
-            )
+            .when(!message.is_empty(), |view| {
+                view.child(
+                    div()
+                        .min_h(px(32.))
+                        .px_5()
+                        .py_2()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .text_xs()
+                        .text_color(rgb(if error.is_some() { 0xffa495 } else { 0xa5b2c3 }))
+                        .child(message),
+                )
+            })
     }
 }
 
@@ -1369,7 +1299,7 @@ fn open_window(
 ) -> ManagedWindow {
     let library = matches!(mode, Mode::Library);
     let dimensions = if library {
-        size(px(1000.), px(720.))
+        size(px(640.), px(480.))
     } else {
         size(px(800.), px(720.))
     };
@@ -1379,7 +1309,7 @@ fn open_window(
                 None, dimensions, cx,
             ))),
             window_min_size: Some(if library {
-                size(px(880.), px(640.))
+                size(px(480.), px(360.))
             } else {
                 size(px(700.), px(660.))
             }),
@@ -1424,7 +1354,12 @@ fn show_library(backend: Arc<Backend>, windows: WindowBook, cx: &mut App) -> Man
     cx.activate(true);
     handle
 }
-fn show_device(device: &Device, backend: Arc<Backend>, windows: WindowBook, cx: &mut App) {
+fn show_device(
+    device: &Device,
+    backend: Arc<Backend>,
+    windows: WindowBook,
+    cx: &mut App,
+) -> ManagedWindow {
     let old = windows.borrow().devices.get(&device.id).cloned();
     if let Some(handle) = old {
         if handle
@@ -1432,7 +1367,7 @@ fn show_device(device: &Device, backend: Arc<Backend>, windows: WindowBook, cx: 
             .update(cx, |_, w, _| w.activate_window())
             .is_ok()
         {
-            return;
+            return handle;
         }
     }
     let handle = open_window(
@@ -1444,8 +1379,9 @@ fn show_device(device: &Device, backend: Arc<Backend>, windows: WindowBook, cx: 
     windows
         .borrow_mut()
         .devices
-        .insert(device.id.clone(), handle);
+        .insert(device.id.clone(), handle.clone());
     cx.activate(true);
+    handle
 }
 fn main() {
     lisem_core::process::init().expect("Cannot initialize process handles");

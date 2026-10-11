@@ -4,7 +4,7 @@ use std::borrow::Cow;
 gpui::assets::icon_assets!(
     PeripheralIcons,
     [
-        Camera, CameraOff, Mic, MicOff, Volume2, VolumeOff, Copy, Wifi, WifiOff
+        Camera, CameraOff, Mic, MicOff, Volume2, VolumeOff, Copy, Wifi, WifiOff, Settings, Plus
     ]
 );
 

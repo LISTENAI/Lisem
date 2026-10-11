@@ -322,6 +322,13 @@ impl Desktop {
                     self.access_point_present(&d),
                     cx,
                 ));
+                menu = menu.separator().item(self.menu_action(
+                    "热点设置…",
+                    Action::WifiSettings,
+                    true,
+                    false,
+                    cx,
+                ));
                 if let Some(notice) = self.access_point_notice() {
                     menu = menu.separator().label(notice);
                 }
