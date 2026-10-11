@@ -1,3 +1,4 @@
+mod audio;
 mod mcp;
 mod output;
 use anyhow::{Result, ensure};
@@ -132,6 +133,30 @@ enum Action {
         /// Remove any input; sensor capture waits for a new source.
         #[arg(long)]
         clear: bool,
+    },
+    /// Set Wi-Fi access point availability.
+    AccessPoint {
+        id: String,
+        #[arg(value_parser=["on", "off"])]
+        state: String,
+        /// Reject a stale run; otherwise use the currently inspected run.
+        #[arg(long)]
+        run: Option<String>,
+    },
+    /// Inject a WAV in real time; wait for completion, Ctrl+C cancels input only.
+    AudioInput {
+        id: String,
+        path: PathBuf,
+        /// Host deadline, including time waiting for the firmware ADC.
+        #[arg(long, default_value_t = 90, value_parser = clap::value_parser!(u64).range(1..=850))]
+        timeout: u64,
+    },
+    /// Record raw DAC output to WAV until Ctrl+C; keeps the device running.
+    AudioOutput {
+        id: String,
+        /// New output WAV path. Existing files are never overwritten.
+        #[arg(long)]
+        capture: PathBuf,
     },
     /// Save the current device display as PNG.
     Screenshot { id: String, output: PathBuf },
@@ -295,6 +320,16 @@ fn run() -> Result<i32> {
             if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
             json!({"id":id,"run":run,"sequence":sequence}),
         )?,
+        Action::AccessPoint { id, state, run } => {
+            let current = manager.call("inspect", json!({"id":id}))?;
+            let running = current["runtime"]["session"]["finished"] == false;
+            let run = run.map(serde_json::Value::String).unwrap_or_else(|| if running {
+                current["runtime"]["session"]["output"].clone()
+            } else { serde_json::Value::Null });
+            manager.call("access_point", json!({"id":id,"run":run,"enabled":state == "on"}))?
+        }
+        Action::AudioInput { id, path, timeout } => audio::input(&mut manager, &id, &absolute(&path)?, timeout, &stop)?,
+        Action::AudioOutput { id, capture } => audio::output(&mut manager, &id, &absolute(&capture)?, &stop)?,
         Action::CameraDevices => manager.call("camera_devices", json!({}))?,
         Action::Camera { id, image, device, .. } => {
             let state = manager.call("inspect", json!({"id":id}))?;

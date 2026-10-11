@@ -3770,6 +3770,7 @@ name = "lisem-cli"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "ctrlc",
  "lisem-core",

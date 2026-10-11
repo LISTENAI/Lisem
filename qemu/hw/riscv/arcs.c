@@ -51,6 +51,13 @@ struct ArcsMachine {
     bool reported;
     uint8_t *pcm_input;
     size_t pcm_length, pcm_position;
+    uint64_t input_sequence;
+    bool input_cancelled;
+    GByteArray *audio_tap;
+    uint64_t tap_sequence, tap_offset, tap_started_ns, tap_ended_ns;
+    bool tap_active;
+    const char *tap_error;
+    QEMUTimer *tap_lease;
     unsigned pcm_rate, pcm_channels, output_rate;
     uint64_t input_frames, nonzero_samples;
     GByteArray *pcm_output;
@@ -342,11 +349,12 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
         return;
     }
     if (s->pcm_input && rate != s->pcm_rate) { audio_error(s, "input rate differs from ADC; resampling unsupported"); }
-    if (s->pcm_position < s->pcm_length) {
+    if (!s->input_cancelled && s->pcm_position < s->pcm_length) {
         values[0] = lduw_le_p(s->pcm_input + s->pcm_position); s->pcm_position += 2;
         if (s->pcm_channels == 2) {
             values[1] = lduw_le_p(s->pcm_input + s->pcm_position); s->pcm_position += 2;
         }
+        if (s->input_sequence && s->pcm_position == s->pcm_length) { g_clear_pointer(&s->pcm_input, g_free); }
     }
     s->input_frames++;
 }
@@ -378,6 +386,20 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
         uint8_t bytes[2]; stw_le_p(bytes, value); g_byte_array_append(s->pcm_output, bytes, 2);
     } else {
         s->desktop_rate = rate;
+    }
+    /* Explicit diagnostic observer, independent of playback and PA gating.
+     * Never block the Codec callback; an overrun fails only the recording. */
+    if (s->tap_active) {
+        if (s->audio_tap->len >= 1024 * 1024) {
+            s->tap_error = "Audio recording buffer overflow"; s->tap_active = false;
+            s->tap_ended_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        } else {
+            uint8_t frame[16] = {0};
+            stq_le_p(frame, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+            stl_le_p(frame + 8, rate); stw_le_p(frame + 12, value);
+            frame[14] = pa_enabled(s);
+            g_byte_array_append(s->audio_tap, frame, sizeof(frame));
+        }
     }
     s->output_samples++;
     s->desktop_samples++;
@@ -1080,6 +1102,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"controls\":{\"buttons\":{\"function\":%s}},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
+        "\"audio_input\":{\"sequence\":%" PRIu64 ",\"samples\":%zu,\"consumed\":%zu,\"status\":\"%s\"},"
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
@@ -1089,7 +1112,10 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
         ((ArcsN300State *)s->soc.cpu[1].env.arcs_state)->exceptions,
         s->desktop_samples, s->desktop_rate,
-        s->pcm_position < s->pcm_length ? "true" : "false",
+        !s->input_cancelled && s->pcm_position < s->pcm_length ? "true" : "false",
+        s->input_sequence, s->pcm_length / 2, s->pcm_position / 2,
+        !s->input_sequence ? "idle" : s->input_cancelled ? "cancelled" :
+            s->pcm_position < s->pcm_length ? "running" : "completed",
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_skipped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_dropped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_resyncs) : 0,
@@ -1207,7 +1233,7 @@ static void desktop_input(Object *obj, const char *path, Error **errp)
     if (s->host_audio.stream && lisa_audio_load(&s->host_audio.stream->capture)) {
         error_setg(errp, "Microphone owns the ADC input for this run"); return;
     }
-    if (s->pcm_position < s->pcm_length) {
+    if (!s->input_cancelled && s->pcm_position < s->pcm_length) {
         error_setg(errp, "Previous ADC input is still being consumed"); return;
     }
     /* The host normalizes WAV to mono 16 kHz PCM16, bounded to 60 seconds. */
@@ -1223,6 +1249,76 @@ static void desktop_input(Object *obj, const char *path, Error **errp)
     g_free(s->pcm_input); s->pcm_input = pcm;
     s->pcm_rate = 16000; s->pcm_channels = 1;
     s->pcm_length = size; s->pcm_position = 0;
+    s->input_sequence++; s->input_cancelled = false;
+    /* A newly injected clip is not catch-up work from a slow boot. Only
+     * future host waits change; ADC events and virtual time stay intact. */
+    icount_clock_audio_epoch();
+}
+
+static void desktop_input_cancel(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    uint64_t sequence;
+    if (qemu_strtou64(value, NULL, 10, &sequence) || !sequence || sequence != s->input_sequence) {
+        error_setg(errp, "Audio input belongs to an earlier injection"); return;
+    }
+    if (s->pcm_position < s->pcm_length) {
+        s->input_cancelled = true; g_clear_pointer(&s->pcm_input, g_free);
+    }
+}
+
+static void audio_tap_expire(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    if (s->tap_active) { s->tap_active = false; s->tap_error = "Audio recording client timed out";
+        s->tap_ended_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); }
+}
+
+static void audio_tap_control(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (!strcmp(value, "start")) {
+        if (s->tap_active || (s->audio_tap && s->audio_tap->len && !s->tap_error)) {
+            error_setg(errp, "Previous audio recording is still active or undrained"); return;
+        }
+        if (!s->audio_tap) { s->audio_tap = g_byte_array_sized_new(1024 * 1024); }
+        g_byte_array_set_size(s->audio_tap, 0);
+        s->tap_started_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->tap_sequence++; s->tap_offset = 0; s->tap_error = NULL; s->tap_active = true;
+        timer_mod(s->tap_lease, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 5000);
+        return;
+    }
+    bool discard = g_str_has_prefix(value, "discard:");
+    uint64_t sequence;
+    if (qemu_strtou64(discard ? value + 8 : value, NULL, 10, &sequence) || !sequence || sequence != s->tap_sequence) {
+        error_setg(errp, "Audio recording belongs to an earlier session"); return;
+    }
+    if (s->tap_active) { s->tap_ended_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL); }
+    s->tap_active = false; timer_del(s->tap_lease);
+    if (discard && s->audio_tap) { g_byte_array_set_size(s->audio_tap, 0); }
+}
+
+static char *audio_tap_status(Object *obj, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    return g_strdup_printf("{\"sequence\":%" PRIu64 ",\"active\":%s}",
+        s->tap_sequence, s->tap_active ? "true" : "false");
+}
+
+static char *audio_tap_read(Object *obj, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    unsigned length = s->audio_tap ? MIN(s->audio_tap->len, 65536) : 0;
+    g_autofree char *bytes = g_base64_encode(s->audio_tap ? s->audio_tap->data : NULL, length);
+    char *result = g_strdup_printf("{\"sequence\":%" PRIu64 ",\"offset\":%" PRIu64
+        ",\"started_ns\":%" PRIu64 ",\"virtual_ns\":%" PRIu64
+        ",\"active\":%s,\"remaining\":%u,\"error\":\"%s\",\"data\":\"%s\"}",
+        s->tap_sequence, s->tap_offset, s->tap_started_ns, s->tap_active ? (uint64_t)qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) : s->tap_ended_ns,
+        s->tap_active ? "true" : "false",
+        s->audio_tap ? s->audio_tap->len - length : 0, s->tap_error ? s->tap_error : "", bytes);
+    if (length) { g_byte_array_remove_range(s->audio_tap, 0, length); s->tap_offset += length / 16; }
+    if (s->tap_active) { timer_mod(s->tap_lease, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 5000); }
+    return result;
 }
 
 static void desktop_init(ArcsMachine *s)
@@ -1238,6 +1334,10 @@ static void desktop_init(ArcsMachine *s)
     s->button_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, button_sequence_step, s);
     object_property_add_str(OBJECT(s), "x-lisa-button-sequence", button_sequence_get, button_sequence_set);
     object_property_add_str(OBJECT(s), "x-lisa-audio-input", NULL, desktop_input);
+    object_property_add_str(OBJECT(s), "x-lisa-audio-input-cancel", NULL, desktop_input_cancel);
+    s->tap_lease = timer_new_ms(QEMU_CLOCK_REALTIME, audio_tap_expire, s);
+    object_property_add_str(OBJECT(s), "x-lisa-audio-record", audio_tap_read, audio_tap_control);
+    object_property_add_str(OBJECT(s), "x-lisa-audio-record-status", audio_tap_status, NULL);
 }
 
 static void machine_class_init(ObjectClass *klass, const void *data)
@@ -1255,6 +1355,8 @@ static void machine_class_init(ObjectClass *klass, const void *data)
 static void machine_finalize(Object *obj)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->tap_lease) { timer_free(s->tap_lease); }
+    if (s->audio_tap) { g_byte_array_unref(s->audio_tap); }
     if (s->camera_poll) { timer_free(s->camera_poll); }
     lisa_mapping_close(&s->camera_mapping);
 }

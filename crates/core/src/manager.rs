@@ -251,6 +251,8 @@ impl Manager {
             | "uart_write"
             | "screenshot"
             | "audio"
+            | "audio_cancel"
+            | "audio_record"
             | "uart_read"
             | "button_sequence"
             | "button_sequence_status"

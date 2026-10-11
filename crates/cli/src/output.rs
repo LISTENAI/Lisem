@@ -30,7 +30,11 @@ impl Output {
                 Self::Message(format!("Button {button}: {state}."))
             }
             Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } => Self::Json,
-            Action::Camera { .. } | Action::CameraDevices => Self::Json,
+            Action::Camera { .. }
+            | Action::CameraDevices
+            | Action::AccessPoint { .. }
+            | Action::AudioInput { .. }
+            | Action::AudioOutput { .. } => Self::Json,
             Action::Screenshot { output, .. } => {
                 Self::Message(format!("Screenshot saved: {}", output.display()))
             }

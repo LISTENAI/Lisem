@@ -49,6 +49,13 @@ MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 持久化、当前运行保持、过期请求拒绝和延迟确认恢复；源码运行另加 `--root .`。
 POSIX 使用进程暂停注入控制延迟，不联网，不修改固件或设备身份。
 
+`python3 tests/run_cli_audio.py --binary /path/to/lisem --lpk /path/to/original.lpk`
+在独立实例通过原始按键启动固件，验证 WAV 实际采样速度、阻塞完成、Ctrl+C
+取消、连续侧录、WAV 文件完整性及运行标识不变。也可用 `--flash` 提供完整原始
+Flash；测试只写新建实例，不改输入镜像。固件应在开机后启用 16 kHz ADC/DAC；
+默认通过固件 shell 的 `power_policy tone` 播放本地提示音，可用
+`--playback-command` 指定被测固件已有的播放命令。
+
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、

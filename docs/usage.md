@@ -39,7 +39,7 @@ Linux 录播需要可用的 PulseAudio 或 PipeWire pulse 服务；不启用音�
 摄像头、麦克风、扬声器、网络和串口的快捷菜单。音视频菜单统一以勾选
 表示当前输入或输出，可选择「关闭」；热点可用和串口使用勾选开关。「连接与媒体」保留相同配置，两个入口共享状态。
 Wi-Fi 菜单与设置中的「热点可用」模拟热点出现或消失，可在运行中切换。
-热点消失不关闭芯片内的 Wi-Fi 控制器，固件自行检测掉线和重新连接。
+固件自行检测掉线和重新连接。
 GUI 上电时启用宿主网络桥接；无头 CLI/MCP 仍通过运行选项显式选择网络。
 
 开启宿主网络后，固件可连接开放 AP `Lisem` 并访问宿主网络。固件的设备
@@ -153,6 +153,31 @@ lisem button-sequence-status INSTANCE_ID SEQUENCE_ID --run RUN_ID --cancel
 `reset --download` 进入 ROM 烧录模式；`write --offset` 写入原始二进制。
 `send INSTANCE_ID 0 TEXT` 向 UART 发送 UTF-8 字节，`--hex` 发送二进制。
 默认输出列表、状态和操作结果；`--json` 输出结构化数据，供脚本读取；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
+
+运行中可以通过 CLI 操作热点和音频：
+
+```sh
+lisem access-point INSTANCE_ID off
+lisem access-point INSTANCE_ID on
+lisem audio-input INSTANCE_ID input.wav
+lisem audio-output INSTANCE_ID --capture output.wav
+```
+
+`access-point` 设置热点是否可用，配置会保存。
+可加 `--run RUN_ID` 拒绝过期运行，否则自动读取当前运行标识。下电也可配置。
+返回 `pending` 时需查询状态确认，不能当作已经切换成功。
+
+`audio-input` 接受最长 60 秒的 16 kHz 单声道 PCM16 WAV，要求系统麦克风关闭。
+按 1:1 实时速度注入；模拟器运行速度不足或固件暂停采样可能延长等待。
+命令阻塞至实际消耗完毕，Ctrl+C 取消剩余
+输入，均不停止设备。默认宿主等待上限 90 秒，可用 `--timeout` 调整；超时取消
+剩余输入并返回错误。返回的 `completed` 仅表示音频输入完成，不表示业务识别成功。
+
+`audio-output --capture` 显式开启侧录，Ctrl+C 结束并封好 WAV，设备继续运行。
+录制原始 DAC 输出，独立于宿主静音和板级 PA 开关；按虚拟时间补齐 DAC 停止
+期间的静音。既有输出文件不会覆盖。录制期间采样率变化、读取积压、运行结束
+或重置均明确报错，并尽力保留已经写入的有效 WAV；不会静默丢样本。录制命令
+异常退出后，模拟器至多等待 5 秒停止该观测通道，不留下无限增长的缓冲。
 
 前台 `run` 有明确虚拟时间和宿主时间上限，Ctrl-C 停止本轮运行；失败返回
 非零退出码。后台 `start` 在 CLI 返回后继续运行，`stop` 保留 UART 端点，

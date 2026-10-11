@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 lisem-core = { path = "../core" }
 anyhow = "1"
+base64 = "0.22"
 serde_json = "1"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"

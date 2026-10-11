@@ -105,9 +105,9 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 23
+            assert len(names) == 24
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
-                    'lisem_button_sequence_status', 'lisem_button_sequence_cancel'} <= names
+                    'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert all(tool['inputSchema'].get('additionalProperties') is False for tool in definitions)
             assert client.rpc('tools/call', {'name': 'missing', 'arguments': {}})['error']
             client.tool('lisem_create', {'board': 'missing'}, error=True)
@@ -117,6 +117,9 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            for present in (False, True):
+                assert client.tool('lisem_access_point', {'id': identifier, 'enabled': present})['status'] == 'saved'
+            client.tool('lisem_access_point', {'id': identifier, 'enabled': 'true'}, error=True)
             cameras = client.tool('lisem_camera_devices', {})
             assert isinstance(cameras['supported'], bool)
             assert isinstance(cameras['devices'], list)
@@ -151,6 +154,13 @@ def main():
             assert status['available_qemu_sha256'] == qemu['sha256']
             assert qemu['version']['qemu']['major'] >= 10
             assert started['session']['camera_image'] == str(camera_image)
+            client.tool('lisem_access_point', {'id': identifier, 'run': 'stale', 'enabled': False}, error=True)
+            client.tool('lisem_access_point', {'id': identifier, 'enabled': False}, error=True)
+            for present in (False, True):
+                changed = client.tool('lisem_access_point', {'id': identifier, 'run': run, 'enabled': present})
+                assert changed['status'] == 'applied'
+                status = client.tool('lisem_status', {'id': identifier})['runtime']['session']
+                assert status['output'] == run and status['wifi_ap_present'] == present
             client.tool('lisem_camera_input', {'id': identifier, 'run': 'stale', 'path': None}, error=True)
             client.tool('lisem_camera_input', {'id': identifier, 'path': None}, error=True)
             client.camera({'id': identifier, 'run': run, 'path': None})

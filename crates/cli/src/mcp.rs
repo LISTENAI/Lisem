@@ -153,6 +153,14 @@ struct WriteUart {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct AccessPoint {
+    id: String,
+    /// Required while powered on. Omit when powered off.
+    run: Option<String>,
+    enabled: bool,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Audio {
     id: String,
     run: String,
@@ -331,9 +339,14 @@ fn tools() -> Vec<Tool> {
             true,
         ),
         camera_definition(),
+        definition::<AccessPoint>(
+            "lisem_access_point",
+            "Set Wi-Fi access point availability. Persists for next power-on. Requires run while powered on. Pending is not success: poll lisem_status runtime.session.access_point_change. Headless host uplink requires network=true at power-on.",
+            false,
+        ),
         definition::<Audio>(
             "lisem_audio_input",
-            "Feed a 16 kHz mono PCM16 WAV of at most 60 seconds through ADC. Requires microphone capture off and no queued input.",
+            "Feed a 16 kHz mono PCM16 WAV of at most 60 seconds through ADC. Requires microphone capture off and no queued input. Returns injection sequence and progress; poll lisem_status runtime.session.audio_input for completed. Submission does not imply completion.",
             false,
         ),
         definition::<Instance>(
@@ -421,6 +434,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
                 "hex":if p.hex { p.data } else { storage::hex(p.data.as_bytes()) }}),
             )?
         }
+        "lisem_access_point" => call(manager, "access_point", arguments::<AccessPoint>(value)?)?,
         "lisem_audio_input" => call(manager, "audio", arguments::<Audio>(value)?)?,
         "lisem_shutdown" => call(manager, "shutdown", arguments::<Instance>(value)?)?,
         "lisem_screenshot" => {

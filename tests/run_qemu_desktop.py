@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """QMP snapshots and board controls must preserve virtual time and storage."""
+import base64
 import json
 import struct
 import time
@@ -88,7 +89,7 @@ def button_sequences():
 
 
 def main():
-    m = Machine(OUTPUT, desktop=True)
+    m = Machine(OUTPUT, desktop=True, budget_ns=10_000_000_000)
     try:
         def get(name):
             return m.qmp_command('qom-get', {'path': '/machine', 'property': name})
@@ -156,6 +157,54 @@ def main():
         assert m.read(APC + 0x104) == (-123 << 16) & 0xffffffff
         assert json.loads(get('x-lisa-snapshot'))['audio_samples'] == 2
         assert (OUTPUT / 'live/audio.pcm').read_bytes() == struct.pack('<2h', VALUES[0], VALUES[0])
+        progress = json.loads(get('x-lisa-snapshot'))['audio_input']
+        assert progress == {'sequence': 1, 'samples': 3, 'consumed': 2, 'status': 'running'}
+        set_value('x-lisa-audio-input-cancel', '1')
+        m.command('clock_step 62500')
+        assert m.read(APC + 0x104) == 0
+        progress = json.loads(get('x-lisa-snapshot'))['audio_input']
+        assert progress['consumed'] == 2 and progress['status'] == 'cancelled'
+        set_value('x-lisa-audio-input', str(pcm))
+        rejected = m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-input-cancel', 'value': '1'}, error=True)
+        assert 'earlier' in rejected['desc']
+        m.command('clock_step 187500')
+        assert json.loads(get('x-lisa-snapshot'))['audio_input'] == {'sequence': 2, 'samples': 3, 'consumed': 3, 'status': 'completed'}
+        set_value('x-lisa-audio-record', 'start')
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-record', 'value': 'start'}, error=True)
+        m.write(APC + 0xf4, 0x12340000)
+        m.command('clock_step 62500')
+        packet = json.loads(get('x-lisa-audio-record'))
+        assert packet['sequence'] == 1 and packet['offset'] == 0 and packet['active']
+        frame = base64.b64decode(packet['data'])
+        assert len(frame) == 16 and struct.unpack_from('<Ih', frame, 8) == (16000, VALUES[5])
+        assert frame[14] == 0  # Raw DAC stays observable with PA disabled.
+        set_value('x-lisa-audio-record', '1')
+        stopped = json.loads(get('x-lisa-audio-record'))
+        assert not stopped['active'] and stopped['offset'] == 1
+        m.command('clock_step 62500')
+        assert json.loads(get('x-lisa-audio-record')) == stopped
+        set_value('x-lisa-audio-record', 'start')
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-record', 'value': '1'}, error=True)
+        # Slow observer must fail explicitly without stopping the emulator.
+        m.command('clock_step 4200000000')
+        packet = json.loads(get('x-lisa-audio-record'))
+        assert not packet['active'] and packet['error'] == 'Audio recording buffer overflow'
+        assert len(base64.b64decode(packet['data'])) == 65536
+        set_value('x-lisa-audio-record', 'start')  # Expired/failed observer can be replaced.
+        m.command('clock_step 62500')
+        set_value('x-lisa-audio-record', 'discard:3')
+        discarded = json.loads(get('x-lisa-audio-record'))
+        assert not discarded['active'] and discarded['remaining'] == 0 and discarded['data'] == ''
+        set_value('x-lisa-audio-record', 'start')
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-record', 'value': 'discard:3'}, error=True)
+        # A lost client expires in host time even if the guest has no DAC activity.
+        deadline = time.monotonic() + 7
+        while json.loads(get('x-lisa-audio-record-status'))['active']:
+            assert time.monotonic() < deadline, 'Recording client lease did not expire'
+            time.sleep(.1)
+        assert json.loads(get('x-lisa-audio-record'))['error'] == 'Audio recording client timed out'
+        set_value('x-lisa-audio-record', 'start')
+        set_value('x-lisa-audio-record', '5')
         print('QEMU desktop snapshots, PB4, PCM boundaries and reset continuity: PASS')
     finally:
         m.close()

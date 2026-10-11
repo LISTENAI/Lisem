@@ -1622,8 +1622,83 @@ impl Runtime {
                 result["fit"] = json!("center-crop");
                 Ok(result)
             }
+            "audio_cancel" | "audio_record" => {
+                ensure!(
+                    params["run"].is_string(),
+                    "Audio controls require a run identifier"
+                );
+                let session = self
+                    .session
+                    .as_mut()
+                    .filter(|s| !s.finished)
+                    .context("Instance is not running")?;
+                if method == "audio_cancel" {
+                    let sequence = params["sequence"]
+                        .as_u64()
+                        .context("Missing injection sequence")?;
+                    session.qmp.set(
+                        "x-lisa-audio-input-cancel",
+                        json!(sequence.to_string()),
+                        &mut session.uart,
+                    )?;
+                    session.capture()?;
+                    Ok(session.state["audio_input"].clone())
+                } else {
+                    let action = params["action"]
+                        .as_str()
+                        .context("Missing recording action")?;
+                    ensure!(
+                        ["start", "read", "stop", "discard"].contains(&action),
+                        "Invalid recording action"
+                    );
+                    if action == "start" {
+                        session.qmp.set(
+                            "x-lisa-audio-record",
+                            json!("start"),
+                            &mut session.uart,
+                        )?;
+                    } else {
+                        let sequence = params["sequence"]
+                            .as_u64()
+                            .context("Missing recording sequence")?;
+                        let status = session
+                            .qmp
+                            .get("x-lisa-audio-record-status", &mut session.uart)?;
+                        let status: Value = serde_json::from_str(
+                            status.as_str().context("Invalid recording state")?,
+                        )?;
+                        ensure!(
+                            sequence > 0 && status["sequence"] == sequence,
+                            "Recording belongs to an earlier session"
+                        );
+                        if action == "stop" || action == "discard" {
+                            session.qmp.set(
+                                "x-lisa-audio-record",
+                                json!(if action == "discard" {
+                                    format!("discard:{sequence}")
+                                } else {
+                                    sequence.to_string()
+                                }),
+                                &mut session.uart,
+                            )?;
+                        }
+                    }
+                    let data = session.qmp.get("x-lisa-audio-record", &mut session.uart)?;
+                    Ok(serde_json::from_str(
+                        data.as_str().context("Invalid recording response")?,
+                    )?)
+                }
+            }
             "audio" => {
-                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(
+                    params["run"].is_string(),
+                    "Audio input requires a run identifier"
+                );
+                let session = self
+                    .session
+                    .as_mut()
+                    .filter(|s| !s.finished)
+                    .context("Instance is not running")?;
                 ensure!(
                     !session.options.microphone
                         && session
@@ -1659,8 +1734,8 @@ impl Runtime {
                 } else {
                     fs::remove_file(&target)?;
                 }
-                session.state["input_busy"] = json!(true);
-                Ok(json!(true))
+                session.capture()?;
+                Ok(session.state["audio_input"].clone())
             }
             "uart_read" => {
                 let channel = params["channel"].as_u64().context("Missing UART channel")?;
