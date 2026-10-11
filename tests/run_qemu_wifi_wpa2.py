@@ -67,15 +67,20 @@ def unwrap(m, key, wrapped):
     return b''.join(parts[1:])
 
 
+def live_state(m):
+    return json.loads(get(m, 'wifi-status'))['access_points'][0]['state']
+
+
 def handshake(m, station_rsn=RSN):
     put(m, 'wifi-environment', json.dumps({'access_points':[dict(ssid=SSID.decode(),
-        rssi=-42, channel=1, connectable=True, security='wpa2-psk', password=PASSWORD.decode())]}))
+        rssi=-42, channel=1, internet=True, security='wpa2-psk', password=PASSWORD.decode())]}))
     send(m, probe(), False); advertisement = response(m)
     assert advertisement[34] & 16 and advertisement.endswith(RSN)
     send(m, packet(0xb0, b'\0\0\1\0\0\0')); response(m)
     send(m, packet(0, b'\x11\0\1\0'+bytes([0,len(SSID)])+SSID+station_rsn))
     association = response(m)
     assert association[26:28] == bytes(2) and association[24] & 16
+    assert live_state(m) == 'authenticating'
     step(m,100000); first = consume(m)[32:]
     assert first[5:7] == bytes.fromhex('008a')
     snonce = bytes(range(32)); ptk = derive(PASSWORD, first[17:49], snonce)
@@ -101,7 +106,9 @@ def handshake(m, station_rsn=RSN):
     replay=int.from_bytes(third[9:17],'big')
     send(m, packet(8, LLC+eapol(wrong,0x030a,replay)))
     send(m, arp()); step(m,100000); assert empty(m)
+    assert live_state(m) == 'authenticating'
     send(m, packet(8, LLC+eapol(ptk,0x030a,replay)))
+    assert live_state(m) == 'connected'
     key(m,ptk[32:48]); key(m,gtk,index=1,group=True); return ptk
 
 
@@ -168,7 +175,7 @@ def validation():
     try:
         setup(m)
         original=get(m,'wifi-environment')
-        valid=dict(ssid='Secure',rssi=-45,channel=1,connectable=True,security='wpa2-psk',password='testing-password')
+        valid=dict(ssid='Secure',rssi=-45,channel=1,internet=True,security='wpa2-psk',password='testing-password')
         for changes in ({'security':'wpa3'}, {'password':'short'}, {'password':'x'*64},
                         {'password':'bad\0password'}, {'password':'non-ascii-密码'},
                         {'security':'open'}, {'password':42}):
@@ -203,7 +210,7 @@ def association_security():
         try:
             setup(m)
             put(m, 'wifi-environment', json.dumps({'access_points':[dict(ssid=SSID.decode(),
-                rssi=-42, channel=1, connectable=True, security='wpa2-psk', password=PASSWORD.decode())]}))
+                rssi=-42, channel=1, internet=True, security='wpa2-psk', password=PASSWORD.decode())]}))
             send(m, packet(0xb0, bytes.fromhex('000001000000'))); response(m)
             association = packet(0, b'\x11\0\1\0' + bytes([0, len(SSID)]) + SSID + rsn_ie)
             if status < 0:

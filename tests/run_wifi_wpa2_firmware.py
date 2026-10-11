@@ -45,7 +45,7 @@ def check(binary, lpk, correct):
         try:
             device = call('create', board='arcs-mini', name='WPA2 verification', package=str(lpk))['id']
             call('wifi_environment', id=device, environment={'access_points': [dict(
-                ssid='SecureLab', rssi=-42, channel=1, connectable=True,
+                ssid='SecureLab', rssi=-42, channel=1, internet=True,
                 security='wpa2-psk', password='testing-password')]})
             state = call('start', id=device, options=dict(seconds=45, timeout=100,
                 network=False, host_audio=False, microphone=False, sound=False,

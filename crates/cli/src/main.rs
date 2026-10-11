@@ -53,11 +53,13 @@ enum Action {
     Attach { path: PathBuf },
     /// Show live state and persisted instance identity.
     Status { id: Option<String> },
-    /// Show or replace the logical Wi-Fi environment (JSON file; power off to save).
+    /// Show or replace nearby Wi-Fi hotspots from a JSON file.
     WifiEnvironment {
         id: String,
         #[arg(long)]
         file: Option<PathBuf>,
+        #[arg(long)]
+        run: Option<String>,
     },
     /// Write only the ranges specified by a validated LPK.
     Import { id: String, package: PathBuf },
@@ -286,10 +288,14 @@ fn run() -> Result<i32> {
         Action::Attach { path } => manager.call("attach", json!({"path": absolute(&path)?}))?,
         Action::Status { id: None } => manager.status()?,
         Action::Status { id: Some(id) } => manager.call("inspect", json!({"id":id}))?,
-        Action::WifiEnvironment { id, file } => {
+        Action::WifiEnvironment { id, file, run } => {
             if let Some(path) = file {
                 let environment = storage::read_json(&path)?;
-                manager.call("wifi_environment", json!({"id":id,"environment":environment}))?["environment"]["wifi"].clone()
+                let current = manager.call("inspect", json!({"id":id}))?;
+                let session = &current["runtime"]["session"];
+                let run = run.map(serde_json::Value::String).unwrap_or_else(||
+                    if session["finished"] == false { session["output"].clone() } else { serde_json::Value::Null });
+                manager.call("wifi_environment", json!({"id":id,"run":run,"environment":environment}))?["environment"]["wifi"].clone()
             } else {
                 manager.catalog.device(&id)?["environment"]["wifi"].clone()
             }

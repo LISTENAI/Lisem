@@ -401,6 +401,7 @@ impl Qmp {
                         "x-lisa-camera-frame",
                         "x-lisa-camera-source",
                         "wifi-ap-present",
+                        "wifi-environment",
                     ]
                     .contains(&args["property"].as_str().unwrap_or_default())),
         });

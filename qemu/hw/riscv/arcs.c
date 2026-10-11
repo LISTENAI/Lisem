@@ -193,6 +193,11 @@ static char *wifi_environment_get(Object *obj, Error **errp)
     return arcs_wifi_environment_json(ARCS_MACHINE(obj)->access_points);
 }
 
+static char *wifi_status_get(Object *obj, Error **errp)
+{
+    return arcs_wifi_environment_status(ARCS_MACHINE(obj)->access_points);
+}
+
 static void wifi_environment_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
@@ -1082,6 +1087,7 @@ static void machine_init(MachineState *machine)
     const char *ssid = getenv("ARCS_QEMU_WIFI_AP");
     if (ssid) { wifi_ap_set(OBJECT(s), ssid, &error_fatal); }
     object_property_add_str(OBJECT(s), "wifi-environment", wifi_environment_get, wifi_environment_set);
+    object_property_add_str(OBJECT(s), "wifi-status", wifi_status_get, NULL);
     const char *environment = getenv("ARCS_QEMU_WIFI_ENVIRONMENT");
     if (environment) { wifi_environment_set(OBJECT(s), environment, &error_fatal); }
     const char *network_library = getenv("ARCS_QEMU_NETWORK_LIBRARY");
@@ -1151,7 +1157,8 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     desktop_capture(s);
     g_autofree char *sequence = button_sequence_get(obj, errp);
     g_autofree char *camera = camera_input_status(s);
-    return g_strdup_printf("{\"backend\":\"qemu\",\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+    g_autofree char *wifi = arcs_wifi_environment_status(s->access_points);
+    return g_strdup_printf("{\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":{\"function\":%s}},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
@@ -1159,7 +1166,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        s->access_points_present ? "true" : "false",
+        wifi, s->access_points_present ? "true" : "false",
         camera, sequence, s->desktop_pressed ? "true" : "false",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,

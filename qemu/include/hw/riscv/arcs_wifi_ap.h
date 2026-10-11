@@ -11,8 +11,8 @@ typedef struct ArcsWiFiAP {
     uint8_t ssid[32], bssid[6], station[6], xid[4], client[255];
     unsigned ssid_length, client_length, retries;
     int rssi;
-    unsigned channel;
-    bool connectable, wpa2, authorized;
+    unsigned channel, order;
+    bool internet, wpa2, authorized;
     uint8_t pmk[32], ptk[48], gtk[16], anonce[32], snonce[32];
     uint8_t eapol[256], station_rsn[28];
     unsigned station_rsn_length;
@@ -36,4 +36,5 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 void arcs_wifi_ap_ethernet(ArcsWiFiAP *s, const uint8_t *frame, unsigned length);
 bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **errp);
 char *arcs_wifi_environment_json(ArcsWiFiAP *aps);
+char *arcs_wifi_environment_status(ArcsWiFiAP *aps);
 #endif

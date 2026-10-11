@@ -12,9 +12,9 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 ENVIRONMENT = {'access_points': [
-    {'ssid': 'Near', 'rssi': -35, 'channel': 6, 'connectable': True},
-    {'ssid': 'Far', 'rssi': -92, 'channel': 11, 'connectable': False},
-    {'ssid': 'Lisem', 'rssi': -61, 'channel': 1, 'connectable': True},
+    {'ssid': 'Near', 'rssi': -35, 'channel': 6, 'internet': True},
+    {'ssid': 'Far', 'rssi': -92, 'channel': 11, 'internet': False},
+    {'ssid': 'Lisem', 'rssi': -61, 'channel': 1, 'internet': True},
 ]}
 
 
@@ -57,7 +57,7 @@ def main():
             device_id = item['id']
             call('wifi_environment', id=device_id, environment=ENVIRONMENT)
             state = call('start', id=device_id, options={
-                'seconds': 35, 'timeout': 100, 'network': False, 'host_audio': False,
+                'seconds': 60, 'timeout': 120, 'network': False, 'host_audio': False,
                 'microphone': False, 'sound': False, 'download': False,
                 'capture': str(args.output / 'capture')})['sessions'][device_id]
             run = state['output']
@@ -88,9 +88,62 @@ def main():
                 time.sleep(.1)
             else:
                 raise AssertionError('Original firmware scan did not match the configured SSID/channel/RSSI')
+            changed = {'access_points': [dict(ssid='LiveHotspot', rssi=-49, channel=3, internet=False)]}
+            pid = state['qemu']['pid']
+            call('wifi_environment', id=device_id, run=run, environment=changed)
+            assert call('status')['sessions'][device_id]['qemu']['pid'] == pid
+            raw.clear()
+            call('uart_write', id=device_id, channel=0, hex=b'wifi scan\r'.hex())
+            deadline = time.monotonic() + 35
+            retry_at = None
+            pattern = re.compile(rb'\d+\s+LiveHotspot\s+\S+\s+3\s+-49\s')
+            while time.monotonic() < deadline:
+                state = call('status')['sessions'][device_id]
+                history = call('uart_read', id=device_id, channel=0, cursor=cursor, limit=16384)
+                assert not history['lost']
+                cursor = history['cursor']; raw.extend(bytes.fromhex(history['hex']))
+                assert state['output'] == run and not state.get('finished'), 'Live update restarted firmware'
+                if pattern.search(raw):
+                    break
+                # The firmware's background manager also scans; retry only
+                # after its shell explicitly reports a concurrent scan.
+                if b'scan is in progress' in raw and retry_at is None:
+                    retry_at = state.get('seconds', 0) + 1
+                    raw.clear()
+                if retry_at is not None and state.get('seconds', 0) >= retry_at:
+                    call('uart_write', id=device_id, channel=0, hex=b'wifi scan\r'.hex())
+                    retry_at = None
+                time.sleep(.1)
+            else: raise AssertionError('Original firmware did not observe live hotspot update')
+            aps = state['wifi']['access_points']
+            assert len(aps) == 1 and aps[0]['state'] == 'disconnected'
+            bssid = aps[0]['bssid']
+            call('uart_write', id=device_id, channel=0, hex=b'wifi connect LiveHotspot\r'.hex())
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                state = call('status')['sessions'][device_id]
+                assert state['output'] == run and not state.get('finished')
+                connected = [ap for ap in state['wifi']['access_points'] if ap['state'] == 'connected']
+                if connected:
+                    assert len(connected) == 1 and connected[0]['bssid'] == bssid
+                    assert connected[0]['ssid'] == 'LiveHotspot' and not connected[0]['internet']
+                    break
+                time.sleep(.1)
+            else:
+                raise AssertionError('Original firmware association was not reflected in runtime status')
+            call('uart_write', id=device_id, channel=0, hex=b'wifi disconnect\r'.hex())
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                state = call('status')['sessions'][device_id]
+                assert state['output'] == run and not state.get('finished')
+                if all(ap['state'] == 'disconnected' for ap in state['wifi']['access_points']):
+                    break
+                time.sleep(.1)
+            else:
+                raise AssertionError('Original firmware disconnect was not reflected in runtime status')
             call('stop', id=device_id)
             result = {'passed': True, 'lpk_sha256': hashlib.sha256(args.lpk.read_bytes()).hexdigest(),
-                      'environment': ENVIRONMENT, 'scope': 'Original firmware scan through MAC, RX DMA and Wi-Fi manager; no host network/audio'}
+                      'environment': ENVIRONMENT, 'scope': 'Original firmware scan through MAC, RX DMA and Wi-Fi manager; live updates and association/disconnection status with unchanged run; no host network/audio'}
             (args.output / 'verification.json').write_text(json.dumps(result, indent=2) + '\n')
             print(json.dumps(result))
         finally:

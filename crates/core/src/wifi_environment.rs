@@ -24,7 +24,8 @@ pub struct AccessPoint {
     pub ssid: String,
     pub rssi: i16,
     pub channel: u8,
-    pub connectable: bool,
+    #[serde(alias = "connectable")]
+    pub internet: bool,
     #[serde(default, skip_serializing_if = "Security::is_open")]
     pub security: Security,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -37,7 +38,7 @@ impl std::fmt::Debug for AccessPoint {
             .field("ssid", &self.ssid)
             .field("rssi", &self.rssi)
             .field("channel", &self.channel)
-            .field("connectable", &self.connectable)
+            .field("internet", &self.internet)
             .field("security", &self.security)
             .field("password", &"[redacted]")
             .finish()
@@ -57,7 +58,7 @@ impl Default for WifiEnvironment {
                 ssid: "Lisem".into(),
                 rssi: -45,
                 channel: 1,
-                connectable: true,
+                internet: true,
                 security: Security::Open,
                 password: String::new(),
             }],
@@ -160,7 +161,7 @@ mod tests {
         env.access_points[0].ssid = "热点".repeat(5);
         env.access_points[0].rssi = -127;
         env.access_points[0].channel = 14;
-        env.access_points[0].connectable = false;
+        env.access_points[0].internet = false;
         env.access_points = vec![env.access_points[0].clone(); MAX_ACCESS_POINTS];
         assert!(env.validate().is_ok());
         env.access_points.push(env.access_points[0].clone());
@@ -173,7 +174,7 @@ mod tests {
             ("rssi", json!(1)),
             ("channel", json!(0)),
             ("channel", json!(15)),
-            ("connectable", json!("yes")),
+            ("internet", json!("yes")),
             ("ssid", json!("")),
             ("ssid", json!("a\0b")),
             ("security", json!("wpa2")),

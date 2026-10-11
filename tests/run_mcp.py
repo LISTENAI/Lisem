@@ -105,9 +105,10 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 24
+            assert len(names) == 25
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
+            assert 'lisem_set_wifi_environment' in names
             assert all(tool['inputSchema'].get('additionalProperties') is False for tool in definitions)
             assert client.rpc('tools/call', {'name': 'missing', 'arguments': {}})['error']
             client.tool('lisem_create', {'board': 'missing'}, error=True)
@@ -120,6 +121,21 @@ def main():
             for present in (False, True):
                 assert client.tool('lisem_access_point', {'id': identifier, 'enabled': present})['status'] == 'saved'
             client.tool('lisem_access_point', {'id': identifier, 'enabled': 'true'}, error=True)
+            wifi = {'access_points': [{'ssid': 'Lisem', 'rssi': -45,
+                                      'channel': 1, 'internet': True}]}
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': wifi})
+            environment = client.tool('lisem_status', {'id': identifier})['device']['environment']
+            assert environment['wifi'] == wifi
+            secured = {'access_points': [{**wifi['access_points'][0],
+                                         'security': 'wpa2-psk', 'password': 'test-password'}]}
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': secured})
+            assert client.tool('lisem_status', {'id': identifier})['device']['environment']['wifi'] == secured
+            for changes in ({'password': 'short'}, {'security': 'wpa3'}):
+                invalid = {'access_points': [{**secured['access_points'][0], **changes}]}
+                client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': invalid}, error=True)
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': wifi})
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': {'access_points': [
+                {'ssid': 'Invalid', 'rssi': -500, 'channel': 1, 'internet': True}]}}, error=True)
             cameras = client.tool('lisem_camera_devices', {})
             assert isinstance(cameras['supported'], bool)
             assert isinstance(cameras['devices'], list)
@@ -143,6 +159,11 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': wifi}, error=True)
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'run': 'old', 'environment': wifi}, error=True)
+            wifi['access_points'][0]['internet'] = False
+            client.tool('lisem_set_wifi_environment', {'id': identifier, 'run': run, 'environment': wifi})
+            assert client.tool('lisem_status', {'id': identifier})['device']['environment']['wifi'] == wifi
             status = client.tool('lisem_status', {'id': identifier})
             worker = status['runtime']['worker']
             assert status['client_worker_build'] == 'same'

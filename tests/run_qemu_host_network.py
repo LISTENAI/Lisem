@@ -169,5 +169,47 @@ def sockets():
     print('Real localhost UDP/TCP bytes/checksums, dropped TCP response retransmission, stop/start and SoC reset: PASS')
 
 
+def internet_switch():
+    s = Station('internet-switch')
+    listener = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    listener.bind(('127.0.0.1', 0)); listener.settimeout(.15)
+    port = listener.getsockname()[1]
+    def configure(internet):
+        put(s.m, 'wifi-environment', json.dumps({'access_points': [dict(
+            ssid=SSID.decode(), rssi=-53, channel=1, internet=internet)]}))
+        send(s.m, packet(0x48))  # Association and MAC acknowledgement survive.
+    try:
+        configure(False)
+        send(s.m, dhcp(1))
+        assert b'\x35\x01\x02' in response(s.m)[300:]
+        s.arp()
+        s.udp(port, b'blocked')
+        for _ in range(20): s.pump()
+        try: listener.recvfrom(2048)
+        except socket.timeout: pass
+        else: raise AssertionError('Disabled AP forwarded Internet data')
+        configure(True)
+        s.udp(port, b'allowed')
+        data, peer = listener.recvfrom(2048)
+        assert data == b'allowed'
+        # Frames already outside cannot return after the uplink disappears.
+        configure(False)
+        listener.sendto(b'blocked-return', peer)
+        for _ in range(20):
+            s.pump(); time.sleep(.001)
+        assert not any(b'blocked-return' in f for f in s.frames)
+        configure(True)
+        s.udp(port, b'restored')
+        data, peer = listener.recvfrom(2048)
+        assert data == b'restored'
+        listener.sendto(b'reply', peer)
+        assert s.wait(lambda f: b'reply' in f)
+        report = finish(s.m, s.budget)
+        assert report['wifi_ap']['associated']
+    finally:
+        s.close(); listener.close()
+    print('Per-AP Internet switch: local DHCP/ARP, preserved association, blocked traffic and recovery PASS')
+
+
 if __name__=='__main__':
-    protocol();sockets()
+    protocol();sockets();internet_switch()

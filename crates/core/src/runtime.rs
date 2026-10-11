@@ -948,6 +948,28 @@ fn finish_access_point_change(
     state["access_point_change"] = change;
 }
 
+fn finish_wifi_environment_change(
+    catalog: &Catalog, id: &str, state: &mut Value,
+    request: &str, environment: Value, result: Result<()>,
+) {
+    let mut change = json!({"request":request,"status":"applied"});
+    match result {
+        Ok(()) => {
+            if let Err(error) = catalog.device(id).and_then(|item| {
+                catalog.update(Path::new(item["path"].as_str().unwrap()),
+                               &json!({"wifi_environment":environment})).map(|_| ())
+            }) {
+                change["error"] = json!(format!("Wi-Fi environment applied but not saved: {error}"));
+            }
+        }
+        Err(error) => {
+            change["status"] = json!("rejected");
+            change["error"] = json!(error.to_string());
+        }
+    }
+    state["wifi_environment_change"] = change;
+}
+
 pub struct Runtime {
     catalog: Catalog,
     id: String,
@@ -958,6 +980,7 @@ pub struct Runtime {
     last_uart: Vec<transport::Output>,
     pending_camera: Option<(u64, u64, CameraSource)>,
     pending_access_point: Option<(u64, bool)>,
+    pending_wifi_environment: Option<(u64, String, Value)>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -984,6 +1007,7 @@ impl Runtime {
             last_uart: Vec::new(),
             pending_camera: None,
             pending_access_point: None,
+            pending_wifi_environment: None,
             ports,
             shutdown: false,
         })
@@ -993,7 +1017,11 @@ impl Runtime {
             if !session.finished
                 && let Some((id, result)) = session.qmp.recover(&mut session.uart)?
             {
-                if self
+                if self.pending_wifi_environment.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                    let (_, request, environment) = self.pending_wifi_environment.take().unwrap();
+                    finish_wifi_environment_change(&self.catalog, &self.id, &mut session.state,
+                        &request, environment, result.map(|_| ()));
+                } else if self
                     .pending_access_point
                     .is_some_and(|(pending, _)| pending == id)
                 {
@@ -1090,6 +1118,10 @@ impl Runtime {
             }
             Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
+            if session.finished && let Some((_, request, _)) = self.pending_wifi_environment.take() {
+                session.state["wifi_environment_change"] = json!({"request":request,"status":"unknown",
+                    "error":"Runtime ended before Wi-Fi environment change was confirmed"});
+            }
             if session.finished && self.pending_access_point.take().is_some() {
                 session.state["access_point_change"] = json!({"status":"unknown",
                     "error":"Runtime ended before access point change was confirmed"});
@@ -1292,6 +1324,7 @@ impl Runtime {
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
                 self.pending_access_point = None;
+                self.pending_wifi_environment = None;
                 let options: Options = serde_json::from_value(params["options"].clone())?;
                 let mut session =
                     Session::start(&self.catalog, &self.catalog.device(&self.id)?, options)?;
@@ -1308,6 +1341,10 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    if let Some((_, request, _)) = self.pending_wifi_environment.take() {
+                        session.state["wifi_environment_change"] = json!({"request":request,"status":"unknown",
+                            "error":"Runtime stopped before Wi-Fi environment change was confirmed"});
+                    }
                     if self.pending_access_point.take().is_some() {
                         session.state["access_point_change"] = json!({"status":"unknown",
                             "error":"Runtime stopped before access point change was confirmed"});
@@ -1435,6 +1472,33 @@ impl Runtime {
                     }
                 }
                 Ok(state)
+            }
+            "wifi_environment" => {
+                let value = params.get("environment").context("Missing Wi-Fi environment")?;
+                let environment = serde_json::to_value(
+                    crate::wifi_environment::WifiEnvironment::from_value(value)?)?;
+                if let Some(session) = self.session.as_mut().filter(|s| !s.finished) {
+                    ensure!(params["run"].is_string(), "Running Wi-Fi changes require a run identifier");
+                    session.qmp.ensure_idle()?;
+                    let request = Uuid::new_v4().simple().to_string();
+                    match session.qmp.set("wifi-environment", json!(environment.to_string()), &mut session.uart) {
+                        Err(error) if error.is::<transport::ControlPending>() => {
+                            self.pending_wifi_environment = Some((session.qmp.pending_id().unwrap(), request.clone(), environment));
+                            session.state["wifi_environment_change"] = json!({"request":request,"status":"pending"});
+                        }
+                        result => finish_wifi_environment_change(&self.catalog, &self.id,
+                            &mut session.state, &request, environment, result),
+                    }
+                    Ok(session.state["wifi_environment_change"].clone())
+                } else {
+                    ensure!(params["run"].is_null(), "The request belongs to an earlier run");
+                    let item = self.catalog.device(&self.id)?;
+                    let path = Path::new(item["path"].as_str().context("Instance path missing")?);
+                    let layout = self.catalog.layout(item["board"].as_str().context("Board missing")?)?;
+                    let _storage = storage::locked(path, &layout)?;
+                    self.catalog.update(path, &json!({"wifi_environment":environment}))?;
+                    Ok(json!({"status":"saved"}))
+                }
             }
             "access_point" => {
                 let present = params["enabled"]

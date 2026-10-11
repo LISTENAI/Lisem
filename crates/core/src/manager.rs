@@ -323,17 +323,28 @@ impl Manager {
                 }
             }
             "wifi_environment" => {
-                ensure!(
-                    params["run"].is_null(),
-                    "Wi-Fi environment can only be changed while powered off"
-                );
-                let environment = params
-                    .get("environment")
-                    .context("Missing Wi-Fi environment")?;
+                let environment = params.get("environment").context("Missing Wi-Fi environment")?;
                 crate::wifi_environment::WifiEnvironment::from_value(environment)?;
-                let _storage = storage::locked(&path, &layout)?;
-                self.catalog
-                    .update(&path, &json!({"wifi_environment":environment}))
+                if let Ok(client) = Client::connect(&path) {
+                    let mut change = client.call(method, params.clone())?;
+                    let request = change["request"].clone();
+                    let deadline = Instant::now() + Duration::from_secs(30);
+                    while change["status"] == "pending" && Instant::now() < deadline {
+                        thread::sleep(Duration::from_millis(50));
+                        let current = client.call("status", json!({}))?;
+                        ensure!(current["session"]["output"] == params["run"], "The request belongs to an earlier run");
+                        change = current["session"]["wifi_environment_change"].clone();
+                        ensure!(change["request"] == request, "Wi-Fi environment confirmation was superseded");
+                    }
+                    ensure!(change["status"] == "applied" || change["status"] == "saved",
+                        "Wi-Fi environment was not confirmed; check runtime status");
+                    if let Some(error) = change["error"].as_str() { bail!("{error}"); }
+                    self.catalog.describe(&path)
+                } else {
+                    ensure!(params["run"].is_null(), "The request belongs to an earlier run");
+                    let _storage = storage::locked(&path, &layout)?;
+                    self.catalog.update(&path, &json!({"wifi_environment":environment}))
+                }
             }
             "settings" | "rename" | "sound" => {
                 let changes = if method == "sound" {
@@ -341,6 +352,12 @@ impl Manager {
                 } else {
                     params.clone()
                 };
+                if let Some(environment) = changes.get("wifi_environment") {
+                    ensure!(changes.as_object().unwrap().keys().all(|key|
+                        ["id", "run", "wifi_environment"].contains(&key.as_str())),
+                        "Change Wi-Fi environment separately");
+                    return self.call("wifi_environment", json!({"id":id,"run":params["run"],"environment":environment}));
+                }
                 if let Some(present) = changes.get("wifi_ap_present") {
                     ensure!(
                         changes.as_object().unwrap().keys().all(|key| [

@@ -71,6 +71,25 @@ def main():
                     assert current['output'] == run and current['qemu']['pid'] == pid
                     assert json.loads((path / 'device.json').read_text())['host']['wifi_ap_present'] == present
 
+                wifi = {'access_points': [dict(ssid='Live', rssi=-70, channel=6, internet=False)]}
+                assert 'error' in command('wifi_environment', environment=wifi)
+                assert 'error' in command('wifi_environment', run='stale', environment=wifi)
+                bridge.call('wifi_environment', id=device, run=run, environment=wifi)
+                assert bridge.call('inspect', id=device)['device']['environment']['wifi'] == wifi
+                if os.name == 'posix':
+                    previous = state()['seconds']
+                    wait(lambda value: value['seconds'] != previous)
+                    os.kill(pid, signal.SIGSTOP); paused = pid
+                    changed = {'access_points': [dict(wifi['access_points'][0], rssi=-32, internet=True)]}
+                    reply = command('wifi_environment', run=run, environment=changed)
+                    assert reply['result']['status'] == 'pending', reply
+                    assert json.loads((path / 'device.json').read_text())['environment']['wifi'] == wifi
+                    assert 'error' in command('wifi_environment', run=run, environment=wifi)
+                    os.kill(pid, signal.SIGCONT); paused = None
+                    current = wait(lambda value: value['wifi_environment_change']['status'] == 'applied')
+                    assert current['output'] == run and current['qemu']['pid'] == pid
+                    assert json.loads((path / 'device.json').read_text())['environment']['wifi'] == changed
+
                 if os.name == 'posix':
                     # Stop just after a snapshot so the mutation owns the pending QMP request.
                     previous = state()['seconds']

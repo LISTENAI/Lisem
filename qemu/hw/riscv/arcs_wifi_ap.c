@@ -238,6 +238,36 @@ static void send_dhcp(ArcsWiFiAP *s, const uint8_t *request, unsigned message)
     if (message == 2) { s->dhcp_offers++; } else { s->dhcp_acks++; }
 }
 
+/* DHCP and ARP belong to the local AP even when its uplink is absent. */
+static bool local_network_frame(const uint8_t *frame, unsigned length)
+{
+    if (length < 14) { return false; }
+    if (lduw_be_p(frame + 12) == 0x0806) { return true; }
+    if (lduw_be_p(frame + 12) != 0x0800 || length < 42) { return false; }
+    const uint8_t *ip = frame + 14;
+    unsigned ihl = (ip[0] & 15) * 4;
+    if ((ip[0] >> 4) != 4 || ihl < 20 || length < 14 + ihl + 8 ||
+        ip[9] != 17 || (lduw_be_p(ip + 6) & 0x3fff)) { return false; }
+    const uint8_t *udp = ip + ihl;
+    unsigned src = lduw_be_p(udp), dst = lduw_be_p(udp + 2);
+    return (src == 68 && dst == 67 &&
+            (ldl_be_p(ip + 16) == 0xffffffff || !memcmp(ip + 16, server, 4))) ||
+           (src == 67 && dst == 68 && !memcmp(ip + 12, server, 4));
+}
+
+static void discard_queued_data(ArcsWiFiAP *s)
+{
+    for (GList *entry = s->queue.head, *next; entry; entry = next) {
+        next = entry->next;
+        GByteArray *p = entry->data;
+        if (p->len >= 32 && p->data[0] == 8 &&
+            ((p->data[1] & 0x40) || lduw_be_p(p->data + 30) != 0x888e)) {
+            g_queue_delete_link(&s->queue, entry);
+            g_byte_array_unref(p);
+        }
+    }
+}
+
 static void data(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 {
     unsigned header = frame[0] == 0x88 ? 26 : 24, at = header + 8;
@@ -249,7 +279,10 @@ static void data(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
         if (size + 14 > sizeof(ethernet)) { return; }
         memcpy(ethernet, frame + 16, 6); memcpy(ethernet + 6, frame + 10, 6);
         memcpy(ethernet + 12, frame + header + 6, 2); memcpy(ethernet + 14, p, size);
-        s->ethernet_transmit(s->ethernet_opaque, ethernet, size + 14); return;
+        if (s->internet || local_network_frame(ethernet, size + 14)) {
+            s->ethernet_transmit(s->ethernet_opaque, ethernet, size + 14);
+        }
+        return;
     }
     if (type == 0x806) {
         if (size < 28 || lduw_be_p(p) != 1 || lduw_be_p(p + 2) != 0x800 || p[4] != 6 || p[5] != 4 ||
@@ -342,8 +375,7 @@ bool arcs_wifi_ap_transmit(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
     if (!frame[0]) {
         s->association_requests++;
         s->station_rsn_size = s->station_rsn_caps = s->station_rsn_length = 0;
-        unsigned status = !s->connectable ? 1 :
-            s->authenticated && !memcmp(frame + 10, s->station, 6) && has_ssid(s, frame, length, 28, false) ? 0 : 9;
+        unsigned status = s->authenticated && !memcmp(frame + 10, s->station, 6) && has_ssid(s, frame, length, 28, false) ? 0 : 9;
         if (!status && s->wpa2) {
             bool found = false, valid = true;
             for (unsigned i = 28; i < length;) {
@@ -389,6 +421,7 @@ void arcs_wifi_ap_ethernet(ArcsWiFiAP *s, const uint8_t *frame, unsigned length)
 {
     if (!s->running || !s->associated || !s->authorized || length < 14 || length > 2286 ||
         (memcmp(frame, s->station, 6) && memcmp(frame, broadcast, 6))) { return; }
+    if (!s->internet && !local_network_frame(frame, length)) { return; }
     uint8_t payload[2304] = {0xaa,0xaa,3,0,0,0};
     memcpy(payload + 6, frame + 12, length - 12);
     reply(s, 8, frame, payload, length - 6, frame + 6);
@@ -423,7 +456,7 @@ void arcs_wifi_ap_configure(ArcsWiFiAP *s, const uint8_t *ssid, unsigned length)
 
 void arcs_wifi_ap_init(ArcsWiFiAP *s, ArcsWiFi *wifi)
 {
-    s->rssi = -45; s->channel = 1; s->connectable = true;
+    s->rssi = -45; s->channel = 1; s->internet = true;
     s->wifi = wifi; s->bssid[0] = 2; s->bssid[5] = 1; g_queue_init(&s->queue);
     s->response = timer_new_ns(QEMU_CLOCK_VIRTUAL, deliver, s);
     s->beacon = timer_new_ns(QEMU_CLOCK_VIRTUAL, beacon, s);
@@ -461,51 +494,120 @@ bool arcs_wifi_environment_configure(ArcsWiFiAP *aps, const char *json, Error **
         const QDictEntry *field;
         for (field = qdict_first(ap); field; field = qdict_next(ap, field)) {
             if (strcmp(field->key, "ssid") && strcmp(field->key, "rssi") && strcmp(field->key, "channel") &&
-                strcmp(field->key, "connectable") && strcmp(field->key, "security") && strcmp(field->key, "password")) { goto invalid; }
+                strcmp(field->key, "internet") && strcmp(field->key, "security") && strcmp(field->key, "password")) { goto invalid; }
         }
         const char *ssid = qdict_get_try_str(ap, "ssid");
         QNum *rssi = qobject_to(QNum, qdict_get(ap, "rssi"));
         QNum *channel = qobject_to(QNum, qdict_get(ap, "channel"));
-        QBool *connectable = qobject_to(QBool, qdict_get(ap, "connectable"));
+        QBool *internet = qobject_to(QBool, qdict_get(ap, "internet"));
         int64_t r, c;
         if (!ssid || !*ssid || strlen(ssid) > 32 || !g_utf8_validate(ssid, -1, NULL) ||
-            !rssi || !channel || !connectable || !qnum_get_try_int(rssi, &r) ||
+            !rssi || !channel || !internet || !qnum_get_try_int(rssi, &r) ||
             !qnum_get_try_int(channel, &c) || r < -127 || r > 0 || c < 1 || c > 14) { goto invalid; }
     }
+    struct Configuration {
+        const char *ssid;
+        int rssi;
+        unsigned channel;
+        bool internet, wpa2;
+        uint8_t pmk[32];
+        int slot;
+    } configs[ARCS_WIFI_AP_MAX] = {0};
+    bool used[ARCS_WIFI_AP_MAX] = {0};
     QLIST_FOREACH_ENTRY(list, entry) {
         QDict *ap = qobject_to(QDict, qlist_entry_obj(entry));
-        const char *ssid = qdict_get_str(ap, "ssid");
-        ArcsWiFiAP *s = &aps[count++];
-        s->rssi = qdict_get_int(ap, "rssi"); s->channel = qdict_get_int(ap, "channel");
-        s->connectable = qdict_get_bool(ap, "connectable");
-        arcs_wifi_ap_configure(s, (const uint8_t *)ssid, strlen(ssid));
+        struct Configuration *c = &configs[count++];
+        c->ssid = qdict_get_str(ap, "ssid");
+        c->rssi = qdict_get_int(ap, "rssi");
+        c->channel = qdict_get_int(ap, "channel");
+        c->internet = qdict_get_bool(ap, "internet");
         const char *security = qdict_get_try_str(ap, "security");
-        s->wpa2 = security && !strcmp(security, "wpa2-psk");
-        memset(s->pmk, 0, sizeof(s->pmk));
-        if (s->wpa2) { arcs_wifi_psk(qdict_get_str(ap, "password"), (const uint8_t *)ssid, strlen(ssid), s->pmk); }
+        c->wpa2 = security && !strcmp(security, "wpa2-psk");
+        if (c->wpa2) { arcs_wifi_psk(qdict_get_str(ap, "password"),
+                                  (const uint8_t *)c->ssid, strlen(c->ssid), c->pmk); }
+        c->slot = -1;
     }
-    for (; count < ARCS_WIFI_AP_MAX; count++) { arcs_wifi_ap_configure(&aps[count], NULL, 0); }
+    /* Match unchanged identities first, then changed radios with the same
+     * SSID. Removing or reordering a neighbour must not move a live BSSID. */
+    for (unsigned pass = 0; pass < 2; pass++) {
+        for (unsigned i = 0; i < count; i++) {
+            struct Configuration *c = &configs[i];
+            if (c->slot >= 0) { continue; }
+            for (unsigned j = 0; j < ARCS_WIFI_AP_MAX; j++) {
+                ArcsWiFiAP *s = &aps[j];
+                if (used[j] || s->ssid_length != strlen(c->ssid) ||
+                    memcmp(s->ssid, c->ssid, s->ssid_length)) { continue; }
+                if (!pass && (s->channel != c->channel || s->wpa2 != c->wpa2 ||
+                              memcmp(s->pmk, c->pmk, sizeof(s->pmk)))) { continue; }
+                used[j] = true; c->slot = j; break;
+            }
+        }
+    }
+    for (unsigned i = 0; i < count; i++) {
+        struct Configuration *c = &configs[i];
+        if (c->slot < 0) {
+            for (unsigned j = 0; j < ARCS_WIFI_AP_MAX; j++) {
+                if (!used[j]) { c->slot = j; used[j] = true; break; }
+            }
+        }
+        ArcsWiFiAP *s = &aps[c->slot];
+        bool restart = s->ssid_length != strlen(c->ssid) ||
+            memcmp(s->ssid, c->ssid, s->ssid_length) || s->channel != c->channel ||
+            s->wpa2 != c->wpa2 || memcmp(s->pmk, c->pmk, sizeof(s->pmk));
+        if (s->internet && !c->internet) { discard_queued_data(s); }
+        s->rssi = c->rssi; s->channel = c->channel; s->internet = c->internet;
+        s->order = i;
+        if (restart) { arcs_wifi_ap_configure(s, (const uint8_t *)c->ssid, strlen(c->ssid)); }
+        s->wpa2 = c->wpa2; memcpy(s->pmk, c->pmk, sizeof(s->pmk));
+    }
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        if (!used[i] && aps[i].ssid_length) { arcs_wifi_ap_configure(&aps[i], NULL, 0); }
+    }
     qobject_unref(root); return true;
 invalid:
     qobject_unref(root);
-    error_setg(errp, "Expected access_points array (max 16): SSID 1..32 UTF-8 bytes, RSSI -127..0, channel 1..14, connectable boolean, open or wpa2-psk with 8..63 printable ASCII password");
+    error_setg(errp, "Expected access_points array (max 16): SSID 1..32 UTF-8 bytes, RSSI -127..0, channel 1..14, internet boolean, open or wpa2-psk with 8..63 printable ASCII password");
     return false;
 }
 
-char *arcs_wifi_environment_json(ArcsWiFiAP *aps)
+static char *environment_json(ArcsWiFiAP *aps, bool status)
 {
     QDict *root = qdict_new(); QList *list = qlist_new();
     qdict_put_obj(root, "access_points", QOBJECT(list));
-    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
-        ArcsWiFiAP *s = &aps[i];
-        if (!s->running) { continue; }
+    for (unsigned order = 0; order < ARCS_WIFI_AP_MAX; order++) {
+        ArcsWiFiAP *s = NULL;
+        for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+            if (aps[i].ssid_length && aps[i].order == order) { s = &aps[i]; break; }
+        }
+        if (!s) { continue; }
         QDict *ap = qdict_new();
         g_autofree char *ssid = g_strndup((const char *)s->ssid, s->ssid_length);
         qdict_put_str(ap, "ssid", ssid); qdict_put_int(ap, "rssi", s->rssi);
-        qdict_put_int(ap, "channel", s->channel); qdict_put_bool(ap, "connectable", s->connectable);
+        qdict_put_int(ap, "channel", s->channel); qdict_put_bool(ap, "internet", s->internet);
         if (s->wpa2) { qdict_put_str(ap, "security", "wpa2-psk"); }
+        if (status) {
+            g_autofree char *bssid = g_strdup_printf("%02x:%02x:%02x:%02x:%02x:%02x",
+                s->bssid[0], s->bssid[1], s->bssid[2], s->bssid[3], s->bssid[4], s->bssid[5]);
+            qdict_put_str(ap, "bssid", bssid);
+            qdict_put_bool(ap, "present", s->running);
+            qdict_put_bool(ap, "associated", s->running && s->associated);
+            qdict_put_bool(ap, "authorized", s->running && s->associated && s->authorized);
+            qdict_put_str(ap, "state", !s->running ? "unavailable" :
+                !s->associated ? "disconnected" :
+                s->authorized ? "connected" : "authenticating");
+        }
         qlist_append_obj(list, QOBJECT(ap));
     }
     GString *json = qobject_to_json(QOBJECT(root));
     qobject_unref(root); return g_string_free(json, false);
+}
+
+char *arcs_wifi_environment_json(ArcsWiFiAP *aps)
+{
+    return environment_json(aps, false);
+}
+
+char *arcs_wifi_environment_status(ArcsWiFiAP *aps)
+{
+    return environment_json(aps, true);
 }

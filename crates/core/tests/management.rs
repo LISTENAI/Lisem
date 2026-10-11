@@ -307,8 +307,8 @@ fn wifi_environment_preserves_other_environments_and_storage_and_rejects_busy_ch
     metadata["environment"] = json!({"ble":{"advertisers":[]}});
     storage::write_json(&path.join("device.json"), &metadata).unwrap();
     let environment = json!({"access_points":[
-        {"ssid":"Lisem","rssi":-60,"channel":6,"connectable":false},
-        {"ssid":"Other","rssi":-35,"channel":11,"connectable":true}]});
+        {"ssid":"Lisem","rssi":-60,"channel":6,"internet":false},
+        {"ssid":"Other","rssi":-35,"channel":11,"internet":true}]});
     let request = json!({"id":item["id"],"environment":environment});
     let layout = manager.catalog.layout("arcs-mini").unwrap();
     let lease = storage::locked(path, &layout).unwrap();

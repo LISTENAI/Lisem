@@ -169,6 +169,46 @@ struct Audio {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct WifiAccessPoint {
+    /// Nonempty UTF-8 SSID, at most 32 bytes.
+    ssid: String,
+    /// Reported signal strength in dBm, -127..0.
+    rssi: i16,
+    /// Advertised channel, 1..14; RF tuning/interference is not modeled.
+    channel: u8,
+    /// Allow this hotspot to forward Internet traffic; local DHCP remains available.
+    internet: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Defaults to open. WPA2 Personal uses AES-CCMP.
+    security: Option<WifiSecurity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// WPA2-PSK passphrase, 8..63 printable ASCII characters; empty for open APs.
+    password: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+enum WifiSecurity {
+    Open,
+    Wpa2Psk,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct WifiEnvironment {
+    /// At most 16 access points. An empty list means no nearby APs.
+    access_points: Vec<WifiAccessPoint>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SetWifiEnvironment {
+    id: String,
+    /// Current run identifier from lisem_status; required while powered on.
+    #[serde(default)]
+    run: Option<String>,
+    environment: WifiEnvironment,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Camera {
     id: String,
     /// Required while powered on; identifies the run being updated.
@@ -238,6 +278,11 @@ fn camera_definition() -> Tool {
 
 fn tools() -> Vec<Tool> {
     vec![
+        definition::<SetWifiEnvironment>(
+            "lisem_set_wifi_environment",
+            "Configure nearby Wi-Fi hotspots while running or powered off. Each hotspot has an Internet access switch and open or WPA2-Personal security. Supply the current run identifier while powered on. Read saved settings through lisem_status.",
+            false,
+        ),
         definition::<Empty>(
             "lisem_catalog",
             "List supported boards, chips and declared buttons/indicators. A board is hardware configuration, an instance owns Flash and OTP.",
@@ -364,6 +409,11 @@ fn call<T: Serialize>(manager: &mut Manager, method: &str, arguments: T) -> Resu
 }
 fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolResult> {
     let result = match name {
+        "lisem_set_wifi_environment" => call(
+            manager,
+            "wifi_environment",
+            arguments::<SetWifiEnvironment>(value)?,
+        )?,
         "lisem_catalog" => {
             let _: Empty = arguments(value)?;
             json!({"boards":manager.catalog.boards.values().collect::<Vec<_>>(),"chips":manager.catalog.chips.values().collect::<Vec<_>>()})

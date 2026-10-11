@@ -11,16 +11,17 @@ use gpui::{Context, Entity, Render, Window, div, prelude::*, px};
 use lisem_core::wifi_environment::{
     AccessPoint, MAX_ACCESS_POINTS, Security, WifiEnvironment as Configuration,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
 
 struct Row {
     ssid: Entity<InputState>,
     rssi: Entity<InputState>,
     channel: Entity<InputState>,
-    connectable: bool,
+    internet: bool,
     security: Security,
     password: Entity<InputState>,
+    saved_index: Option<usize>,
 }
 
 pub struct WifiEnvironment {
@@ -30,6 +31,7 @@ pub struct WifiEnvironment {
     saved: Configuration,
     pending: bool,
     message: String,
+    observed: Value,
 }
 
 impl WifiEnvironment {
@@ -43,8 +45,29 @@ impl WifiEnvironment {
         let rows = saved
             .access_points
             .iter()
-            .map(|ap| Self::row(ap, window, cx))
+            .enumerate()
+            .map(|(index, ap)| Self::row(ap, Some(index), window, cx))
             .collect();
+        cx.spawn(async move |view, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                if view
+                    .update(cx, |view, cx| {
+                        let current = view.live_wifi();
+                        if current != view.observed {
+                            view.observed = current;
+                            cx.notify();
+                        }
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         Self {
             backend,
             id: device.id,
@@ -52,11 +75,28 @@ impl WifiEnvironment {
             saved,
             pending: false,
             message: String::new(),
+            observed: Value::Null,
         }
     }
 
-    fn row(ap: &AccessPoint, window: &mut Window, cx: &mut Context<Self>) -> Row {
+    fn live_wifi(&self) -> Value {
+        let snapshot = self.backend.snapshot.lock().unwrap();
+        let session = &snapshot.data["sessions"][&self.id];
+        if session["finished"] == false {
+            session["wifi"].clone()
+        } else {
+            Value::Null
+        }
+    }
+
+    fn row(
+        ap: &AccessPoint,
+        saved_index: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Row {
         let row = Row {
+            saved_index,
             ssid: cx.new(|cx| {
                 InputState::new(window, cx)
                     .default_value(&ap.ssid)
@@ -64,7 +104,7 @@ impl WifiEnvironment {
             }),
             rssi: cx.new(|cx| InputState::new(window, cx).default_value(ap.rssi.to_string())),
             channel: cx.new(|cx| InputState::new(window, cx).default_value(ap.channel.to_string())),
-            connectable: ap.connectable,
+            internet: ap.internet,
             security: ap.security,
             password: cx.new(|cx| {
                 InputState::new(window, cx)
@@ -83,10 +123,6 @@ impl WifiEnvironment {
             .detach();
         }
         row
-    }
-
-    fn powered(&self) -> bool {
-        self.backend.snapshot.lock().unwrap().data["sessions"][&self.id]["finished"] == false
     }
 
     fn configuration(&self, cx: &Context<Self>) -> Result<Configuration, String> {
@@ -116,7 +152,7 @@ impl WifiEnvironment {
                 ssid,
                 rssi,
                 channel,
-                connectable: row.connectable,
+                internet: row.internet,
                 security: row.security,
                 password: if row.security == Security::Open {
                     String::new()
@@ -133,7 +169,7 @@ impl WifiEnvironment {
     }
 
     fn save(&mut self, cx: &mut Context<Self>) {
-        if self.pending || self.powered() {
+        if self.pending {
             return;
         }
         let configuration = match self.configuration(cx) {
@@ -144,9 +180,18 @@ impl WifiEnvironment {
                 return;
             }
         };
+        let run = {
+            let snapshot = self.backend.snapshot.lock().unwrap();
+            let session = &snapshot.data["sessions"][&self.id];
+            if session["finished"] == false {
+                session["output"].clone()
+            } else {
+                serde_json::Value::Null
+            }
+        };
         let receiver = self.backend.query(
             "wifi_environment",
-            json!({"id":self.id,"environment":configuration}),
+            json!({"id":self.id,"run":run,"environment":configuration}),
         );
         self.pending = true;
         self.message.clear();
@@ -165,6 +210,9 @@ impl WifiEnvironment {
                 match result {
                     Ok(_) => {
                         view.saved = configuration;
+                        for (index, row) in view.rows.iter_mut().enumerate() {
+                            row.saved_index = Some(index);
+                        }
                         view.message = "已保存".into();
                     }
                     Err(error) => view.message = error,
@@ -178,60 +226,147 @@ impl WifiEnvironment {
 
 impl Render for WifiEnvironment {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let powered = self.powered();
-        let locked = powered || self.pending;
+        let locked = self.pending;
         let dirty = self
             .configuration(cx)
             .as_ref()
             .map(|v| v != &self.saved)
             .unwrap_or(true);
-        let mut rows = div().flex().flex_col().gap_2();
+        let live = self.live_wifi();
+        // Match observations to saved rows, retaining identity during draft edits.
+        let matches_saved = live["access_points"].as_array().is_some_and(|aps| {
+            aps.len() == self.saved.access_points.len()
+                && aps
+                    .iter()
+                    .zip(&self.saved.access_points)
+                    .all(|(live, saved)| {
+                        live["ssid"] == saved.ssid
+                            && live["rssi"] == saved.rssi
+                            && live["channel"] == saved.channel
+                            && live["internet"] == saved.internet
+                            && (live["security"] == "wpa2-psk")
+                                == (saved.security == Security::Wpa2Psk)
+                    })
+        });
+        let connected = live["access_points"]
+            .as_array()
+            .and_then(|aps| aps.iter().find(|ap| ap["state"] == "connected"));
+        let connection_label = connected
+            .map(|ap| format!("已连接 {}", ap["ssid"].as_str().unwrap_or("")))
+            .unwrap_or_else(|| {
+                if live.is_null() {
+                    "未运行".into()
+                } else {
+                    "未连接".into()
+                }
+            });
+        let mut rows = div().flex().flex_col();
         for (index, row) in self.rows.iter().enumerate() {
             let owner = cx.entity().downgrade();
             let security = row.security;
+            let ap = row
+                .saved_index
+                .filter(|_| matches_saved)
+                .map(|index| &live["access_points"][index])
+                .unwrap_or(&Value::Null);
+            let connected = ap["state"] == "connected";
+            let state = match ap["state"].as_str() {
+                Some("connected") => "已连接",
+                Some("authenticating") => "认证中",
+                Some("unavailable") => "不可用",
+                _ => "",
+            };
+            let identity = ap["bssid"].as_str().map(str::to_owned).unwrap_or_else(|| {
+                if row.saved_index.is_none() {
+                    "新热点".into()
+                } else {
+                    String::new()
+                }
+            });
             rows = rows.child(
                 div()
+                    .py_2()
+                    .flex_shrink_0()
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .pb_3()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
                         div()
                             .flex()
-                            .items_center()
+                            .items_start()
                             .gap_3()
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .child(Input::new(&row.ssid).disabled(locked)),
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(Input::new(&row.ssid).disabled(locked))
+                                    .when(!identity.is_empty(), |view| {
+                                        view.child(
+                                            div()
+                                                .h(px(18.))
+                                                .flex()
+                                                .items_center()
+                                                .gap_2()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(div().truncate().child(identity))
+                                                .when(!state.is_empty(), |v| {
+                                                    v.child(
+                                                        div()
+                                                            .flex_shrink_0()
+                                                            .text_color(if connected {
+                                                                cx.theme().primary
+                                                            } else {
+                                                                cx.theme().muted_foreground
+                                                            })
+                                                            .child(state),
+                                                    )
+                                                }),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
-                                    .w(px(86.))
+                                    .w(px(80.))
+                                    .flex_shrink_0()
                                     .child(Input::new(&row.rssi).disabled(locked)),
                             )
                             .child(
                                 div()
-                                    .w(px(68.))
+                                    .w(px(60.))
+                                    .flex_shrink_0()
                                     .child(Input::new(&row.channel).disabled(locked)),
                             )
                             .child(
-                                div().w(px(74.)).flex().justify_center().child(
-                                    Switch::new(("wifi-connectable", index))
-                                        .checked(row.connectable)
-                                        .disabled(locked)
-                                        .on_click(cx.listener(move |view, enabled, _, cx| {
-                                            view.rows[index].connectable = *enabled;
-                                            view.message.clear();
-                                            cx.notify();
-                                        })),
-                                ),
+                                div()
+                                    .w(px(64.))
+                                    .h(px(32.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        Switch::new(("wifi-internet", index))
+                                            .checked(row.internet)
+                                            .disabled(locked)
+                                            .on_click(cx.listener(move |view, enabled, _, cx| {
+                                                view.rows[index].internet = *enabled;
+                                                view.message.clear();
+                                                cx.notify();
+                                            })),
+                                    ),
                             )
                             .child(
                                 Button::new(("wifi-remove", index))
                                     .label("移除")
+                                    .w(px(56.))
                                     .ghost()
+                                    .tooltip("移除热点")
                                     .disabled(locked)
                                     .on_click(cx.listener(move |view, _, _, cx| {
                                         view.rows.remove(index);
@@ -244,7 +379,7 @@ impl Render for WifiEnvironment {
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
+                            .gap_2()
                             .child(
                                 Button::new(("wifi-security", index))
                                     .label(if security == Security::Open {
@@ -267,7 +402,7 @@ impl Render for WifiEnvironment {
                                                     .checked(choice == security)
                                                     .on_click(move |_, _, cx| {
                                                         let _ = owner.update(cx, |view, cx| {
-                                                            if view.pending || view.powered() {
+                                                            if view.pending {
                                                                 return;
                                                             }
                                                             if let Some(row) =
@@ -284,8 +419,8 @@ impl Render for WifiEnvironment {
                                         menu
                                     }),
                             )
-                            .when(security == Security::Wpa2Psk, |view| {
-                                view.child(div().flex_1().min_w_0().child(
+                            .when(security == Security::Wpa2Psk, |v| {
+                                v.child(div().flex_1().min_w_0().child(
                                     Input::new(&row.password).mask_toggle().disabled(locked),
                                 ))
                             }),
@@ -295,20 +430,30 @@ impl Render for WifiEnvironment {
         div()
             .id("wifi-environment")
             .size_full()
+            .min_h_0()
             .overflow_y_scroll()
-            .p_5()
             .flex()
             .flex_col()
-            .gap_4()
+            .gap_3()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(div().text_lg().child("周围热点"))
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(connection_label),
+                    )
                     .child(
                         Button::new("wifi-add")
                             .label("添加热点")
+                            .icon(gpui::assets::IconName::Plus)
                             .disabled(locked || self.rows.len() >= MAX_ACCESS_POINTS)
                             .on_click(cx.listener(|view, _, window, cx| {
                                 view.rows.push(Self::row(
@@ -316,10 +461,11 @@ impl Render for WifiEnvironment {
                                         ssid: "".into(),
                                         rssi: -60,
                                         channel: 1,
-                                        connectable: true,
+                                        internet: true,
                                         security: Security::Open,
                                         password: String::new(),
                                     },
+                                    None,
                                     window,
                                     cx,
                                 ));
@@ -334,56 +480,73 @@ impl Render for WifiEnvironment {
                         .flex()
                         .items_center()
                         .gap_3()
-                        .text_sm()
+                        .text_xs()
                         .text_color(cx.theme().muted_foreground)
-                        .child(div().flex_1().child("名称"))
-                        .child(div().w(px(86.)).child("RSSI · dBm"))
-                        .child(div().w(px(68.)).child("信道"))
-                        .child(div().w(px(74.)).text_center().child("允许连接"))
+                        .child(div().flex_1().child("名称 / BSSID"))
+                        .child(div().w(px(80.)).child("RSSI · dBm"))
+                        .child(div().w(px(60.)).child("信道"))
+                        .child(div().w(px(64.)).text_center().child("互联网"))
                         .child(div().w(px(56.))),
                 )
             })
-            .child(rows)
-            .when(self.rows.is_empty(), |view| {
-                view.child(
-                    div()
-                        .py_6()
-                        .text_sm()
-                        .text_color(cx.theme().muted_foreground)
-                        .child("没有热点，固件将搜不到网络。"),
-                )
-            })
             .child(
                 div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("信道写入热点广播；当前不模拟射频调谐、干扰和信号衰减。"),
+                    .id("wifi-hotspot-list")
+                    .flex_shrink_0()
+                    .child(rows)
+                    .when(self.rows.is_empty(), |v| {
+                        v.child(
+                            div()
+                                .py_12()
+                                .text_center()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("没有热点"),
+                        )
+                    }),
             )
             .child(
                 div()
+                    .flex_shrink_0()
+                    .pt_1()
                     .flex()
                     .items_center()
-                    .gap_3()
-                    .child(
-                        Button::new("wifi-save")
-                            .label(if self.pending {
-                                "保存中…"
-                            } else {
-                                "保存"
-                            })
-                            .primary()
-                            .disabled(locked || !dirty)
-                            .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
-                    )
+                    .gap_2()
                     .child(
                         div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
-                            .child(if powered {
-                                "下电后可修改".to_owned()
+                            .child(if self.message.is_empty() && dirty {
+                                "未保存".to_owned()
                             } else {
                                 self.message.clone()
                             }),
+                    )
+                    .child(
+                        Button::new("wifi-revert")
+                            .label("还原")
+                            .ghost()
+                            .disabled(locked || !dirty)
+                            .on_click(cx.listener(|view, _, window, cx| {
+                                view.rows = view
+                                    .saved
+                                    .access_points
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, ap)| Self::row(ap, Some(index), window, cx))
+                                    .collect();
+                                view.message.clear();
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("wifi-save")
+                            .label(if locked { "保存中…" } else { "保存" })
+                            .primary()
+                            .disabled(locked || !dirty)
+                            .on_click(cx.listener(|view, _, _, cx| view.save(cx))),
                     ),
             )
     }

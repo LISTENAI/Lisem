@@ -9,10 +9,14 @@ from run_qemu_wifi_tx import step
 
 OUTPUT = ROOT / 'artifacts/qemu' / ('wifi-environment-' + time.strftime('%Y%m%d-%H%M%S'))
 ENVIRONMENT = {'access_points': [
-    {'ssid': 'Near', 'rssi': -35, 'channel': 6, 'connectable': True},
-    {'ssid': 'Far', 'rssi': -92, 'channel': 11, 'connectable': False},
-    {'ssid': 'Near', 'rssi': -61, 'channel': 1, 'connectable': True},
+    {'ssid': 'Near', 'rssi': -35, 'channel': 6, 'internet': True},
+    {'ssid': 'Far', 'rssi': -92, 'channel': 11, 'internet': False},
+    {'ssid': 'Near', 'rssi': -61, 'channel': 1, 'internet': True},
 ]}
+
+
+def live(m):
+    return json.loads(get(m, 'wifi-status'))['access_points']
 
 
 def receive(m):
@@ -51,10 +55,13 @@ def check(hart):
             assert rssi == ap['rssi'] * 4, (rssi, ap)
             found.append(frame[10:16])
         assert len(set(found)) == 3 and empty(m)
+        assert [ap['bssid'] for ap in live(m)] == [b.hex(':') for b in found]
+        assert all(ap['state'] == 'disconnected' for ap in live(m))
         # Availability gates every configured peer and cancels queued replies.
         send(m, probe(), False)
         put(m, 'wifi-ap-present', False)
         assert get(m, 'wifi-ap-present') is False
+        assert all(ap['state'] == 'unavailable' for ap in live(m))
         step(m, 100000)
         assert empty(m)
         put(m, 'wifi-environment', json.dumps(ENVIRONMENT))
@@ -77,7 +84,25 @@ def check(hart):
             assert response(m)[24:] == b'\0\0\2\0\0\0'
             ssid = ap['ssid'].encode()
             send(m, target_packet(0, b'\1\0\1\0' + bytes([0, len(ssid)]) + ssid, bssid))
-            assert response(m)[26:28] == (b'\0\0' if ap['connectable'] else b'\x01\0')
+            assert response(m)[26:28] == b'\0\0'
+            connected = [item for item in live(m) if item['state'] == 'connected']
+            assert len(connected) == 1 and connected[0]['bssid'] == bssid.hex(':')
+            assert connected[0]['associated'] and connected[0]['authorized']
+        # RSSI, uplink and neighbour edits preserve the associated AP's BSSID.
+        changed = {'access_points': [dict(ENVIRONMENT['access_points'][2], rssi=-72, internet=False)]}
+        put(m, 'wifi-environment', json.dumps(changed))
+        assert live(m)[0]['bssid'] == found[2].hex(':') and live(m)[0]['state'] == 'connected'
+        # A real deauthentication clears the selected AP immediately.
+        send(m, target_packet(0xc0, b'\3\0', found[2]))
+        assert live(m)[0]['state'] == 'disconnected'
+        assert not live(m)[0]['associated'] and not live(m)[0]['authorized']
+        send(m, target_packet(0xb0, b'\0\0\1\0\0\0', found[2])); response(m)
+        send(m, target_packet(0, b'\1\0\1\0\0\4Near', found[2])); response(m)
+        send(m, target_packet(0x48, b'', found[2]))
+        send(m, probe(), False); step(m, 100000)
+        frame, rssi = receive(m)
+        assert frame[10:16] == found[2] and rssi == -72 * 4 and empty(m)
+        put(m, 'wifi-environment', json.dumps(ENVIRONMENT))
         # Invalid reconfiguration does not partially mutate the live environment.
         for value in ({}, {'access_points': False}, {'access_points': ENVIRONMENT['access_points'] * 6},
                       {'access_points': [dict(ENVIRONMENT['access_points'][0], rssi=-128)]},
@@ -88,7 +113,7 @@ def check(hart):
             assert json.loads(get(m, 'wifi-environment')) == ENVIRONMENT
         put(m, 'wifi-environment', '{"access_points":[]}')
         send(m, probe(), False); step(m, 100000)
-        assert empty(m)
+        assert empty(m) and live(m) == []
         finish(m)
     finally:
         m.close()
@@ -99,7 +124,7 @@ def uplink():
     try:
         setup(m)
         environment = {'access_points': [dict(ap) for ap in ENVIRONMENT['access_points']]}
-        environment['access_points'][1]['connectable'] = True
+        environment['access_points'][1]['internet'] = True
         put(m, 'wifi-environment', json.dumps(environment))
         ap = environment['access_points'][1]
         bssid = bytes.fromhex('020000000002')
@@ -128,4 +153,4 @@ if __name__ == '__main__':
     for hart in (0, 1):
         check(hart)
     uplink()
-    print('Wi-Fi environment: multi-AP scan, BSSID, RSSI, channel, association policy and atomic validation passed')
+    print('Wi-Fi environment: multi-AP scan, BSSID, RSSI, channel, live availability, stable BSSIDs and atomic validation passed')
