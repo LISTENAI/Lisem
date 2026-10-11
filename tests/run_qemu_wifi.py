@@ -55,6 +55,9 @@ def functional(hart):
         m.write(CTRL + 0x19c, 1); assert m.read(CTRL + 0x19c) == 1
         m.write(CTRL + 0x24, 0xffffff); assert m.read(CTRL + 0x24) == 0xffffff
         m.write(CTRL + 0x1a4, 0); assert m.read(CTRL + 0x1a4) == 0
+        assert m.read(0x4b100070) == 0
+        for value in (1, 0, 1):
+            m.write(0x4b100070, value); assert m.read(0x4b100070) == value
         m.write(0x4b1000e0, 0x108); assert m.read(0x4b1000e0) == 0x108
         m.write(0x4b90000c, 1); assert m.read(0x4b90000c) == 1
         m.write(0x4b900008, 0x12); assert m.read(0x4b900008) == 0x12
@@ -163,6 +166,7 @@ def functional(hart):
         assert m.read(INTC + 0x14) == 1 << 22 and m.read(CTRL + 0xf8) == 0x11
         assert m.read(PHY + 0x300) == 0xabcdefff
         m.qmp_command('system_reset'); step(m, 40000)
+        assert m.read(0x4b100070) == 0
         assert m.read(0x4b300004) == m.read(0x4b900008) == m.read(0x4b900000) == 0
         assert m.read(INTC + 0x14) == m.read(CTRL + 0xf8) == m.read(PHY + 0x300) == 0
         assert not irq(m)
@@ -261,7 +265,7 @@ def calibration_bypass(hart):
 
 def rejection():
     commands = [
-        [(CTRL + 0xf0, 0x200)], [(CTRL + 0x150, 0x1000)], [(CTRL + 0x184, 0x800000)], [(0x4b900008, 0x100)], [(0x4b900000, 0x101)], [(0x4b300004, 0x4000)], [(0x4b300004, 0x10000)], [(0x4b300004, 0x40000)], [(CTRL + 0x14, 4)], [(CTRL + 0x180, 0x20)], [(0x4b100040, 0)], [(0x4b1000e0, 1)], [(0x4b90000c, 2)], [(0x4b900000, 1)], [(CTRL + 0x24, 0x1000000)], [(CTRL + 0x19c, 2)], [(CTRL + 0x1a4, 1)], [(CTRL + 0xf8, 2)], [(CTRL + 0x28, 0x40000000)], [(CTRL, 0)], [(CORE + 0x120, 1)],
+        [(CTRL + 0xf0, 0x200)], [(CTRL + 0x150, 0x1000)], [(CTRL + 0x184, 0x800000)], [(0x4b900008, 0x100)], [(0x4b900000, 0x101)], [(0x4b300004, 0x4000)], [(0x4b300004, 0x10000)], [(0x4b300004, 0x40000)], [(CTRL + 0x14, 4)], [(CTRL + 0x180, 0x20)], [(0x4b100040, 0)], [(0x4b100070, 2)], [(0x4b1000e0, 1)], [(0x4b90000c, 2)], [(0x4b900000, 1)], [(CTRL + 0x24, 0x1000000)], [(CTRL + 0x19c, 2)], [(CTRL + 0x1a4, 1)], [(CTRL + 0xf8, 2)], [(CTRL + 0x28, 0x40000000)], [(CTRL, 0)], [(CORE + 0x120, 1)],
         [(CORE + 0x124, 0)], [(CORE + 0x124, 0x80010000)],
         [(CORE + 0x38, 0x10)], [(CORE + 0x224, 1)], [(CORE + 0xc4, 0x40080000)],
         [(CORE + 0xc4, 0x20000001)], [(CORE + 0xc4, 0x20000000)],

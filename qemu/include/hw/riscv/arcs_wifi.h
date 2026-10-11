@@ -40,7 +40,7 @@ struct ArcsWiFi {
     int64_t epoch_ns;
     uint64_t counter_offset, pending_counter, tsf_offset, raw, unmask;
     uint32_t core[0x1000 / 4], platform[0x1000 / 4], phy[0x2000 / 4];
-    uint32_t keys[8][11], control[0x1b0 / 4], events, timer_mask, pending_airtime, bypass_clock, bypass_control, bypass_trigger, misc_gate, pta_config;
+    uint32_t keys[8][11], control[0x1b0 / 4], events, timer_mask, pending_airtime, bypass_clock, bypass_control, bypass_trigger, misc_gate, la_external_trigger, pta_config;
     bool software_update;
     uint64_t rx_accepted, rx_filtered, rx_no_space;
 };

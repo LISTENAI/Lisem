@@ -409,6 +409,7 @@ static uint64_t wifi_read(void *opaque, hwaddr off, unsigned size)
             qemu_guest_getrandom_nofail(&seed, sizeof(seed));
             return seed;
         }
+        if (off == 0x70) { return s->la_external_trigger; }
         if (off == 0xe0) { return s->misc_gate; }
         break;
     case PTA:
@@ -448,6 +449,9 @@ static void wifi_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (bypass_write(s, off, value)) { return; }
         goto fail;
     case SYSCTRL:
+        /* libplf la_ext_trigger drives the diagnostic trigger input.
+         * No analyzer capture is armed; capture registers remain unsupported. */
+        if (off == 0x70 && value <= 1) { s->la_external_trigger = value; return; }
         /* SDK RF calibration and MAC logic-analyzer clock gate options.
          * The functional analog mock does not model either gated clock. */
         if (off == 0xe0 && !(value & ~0x108u)) { s->misc_gate = value; return; }
@@ -494,7 +498,7 @@ void arcs_wifi_reset(ArcsSoC *soc)
     timer_del(s->bypass_event);
     s->bypass_payload = s->bypass_delay = 0; s->bypass_completed = 0;
     memset(s->bypass_vector, 0, sizeof(s->bypass_vector));
-    s->raw = s->unmask = 0; s->bypass_clock = s->bypass_control = s->bypass_trigger = s->misc_gate = s->pta_config = 0;
+    s->raw = s->unmask = 0; s->bypass_clock = s->bypass_control = s->bypass_trigger = s->misc_gate = s->la_external_trigger = s->pta_config = 0;
     memset(s->phy, 0, sizeof(s->phy)); memset(s->control, 0, sizeof(s->control));
     mac_reset(s);
 }
