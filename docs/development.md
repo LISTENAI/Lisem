@@ -45,6 +45,10 @@ MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 80 ms 按下、80 ms 间隔的三击并检查原始 UART 中的识别结果。固件主动复位
 会取消开机长按；输入完成与后续业务成功分别验证，外设未实现仍使集成失败。
 
+`python3 tests/run_access_point_runtime.py --binary /path/to/lisem` 验证热点可用的
+持久化、当前运行保持、过期请求拒绝和延迟确认恢复；源码运行另加 `--root .`。
+POSIX 使用进程暂停注入控制延迟，不联网，不修改固件或设备身份。
+
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、

@@ -382,7 +382,7 @@ impl Desktop {
             Action::Create => self.send("create", json!({
                 "name": self.name.read(cx).value(), "board": self.new_board, "package": self.package
             })),
-            Action::Start => self.send("start", json!({"id": self.selected})),
+            Action::Start => self.send("start", json!({"id": self.selected, "online":true})),
             Action::Reset | Action::ResetDownload | Action::Stop => {
                 self.release_buttons();
                 let method = match action {
@@ -399,7 +399,9 @@ impl Desktop {
             }
             Action::Network => {
                 if let Some(d) = self.device() {
-                    self.send("settings", json!({"id": d.id, "online": d.host["online"] != true}));
+                    let mut params = if self.powered() { self.params() } else { json!({"id":d.id}) };
+                    params["enabled"] = json!(!self.access_point_present(&d));
+                    self.send("access_point", params);
                 }
             }
             Action::Microphone => {
@@ -1143,7 +1145,7 @@ impl Desktop {
                                     .child(self.peripheral_menu("speaker", pa_enabled, cx))
                                     .child(self.peripheral_menu(
                                         "network",
-                                        d.host["online"] == true,
+                                        self.access_point_present(&d),
                                         cx,
                                     ))
                                     .child(self.peripheral_menu("serial", false, cx))

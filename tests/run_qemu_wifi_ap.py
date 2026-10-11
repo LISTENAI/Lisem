@@ -253,7 +253,35 @@ def beacons():
     print('Beacon: 102400 us interval, AP TSF survives chip reset, actual SSID/channel/TIM and disable cancellation: PASS')
 
 
+def presence(hart):
+    m = Machine(OUTPUT / f'presence-{hart}', hart=hart, budget_ns=500000000)
+    try:
+        setup(m); put(m, 'wifi-ap', SSID.decode()); associate(m)
+        registers = {at: m.read(at) for at in (CORE + 0x38, CORE + 0x60, PL + 0x1d4)}
+        send(m, dhcp(1))
+        put(m, 'wifi-ap-present', False)
+        assert not get(m, 'wifi-ap-present') and get(m, 'wifi-ap') == SSID.decode()
+        assert all(m.read(at) == value for at, value in registers.items())
+        step(m, 210000000)
+        assert empty(m), 'Absent AP emitted a beacon or queued reply'
+        send(m, probe(), False); send(m, packet(0x48), False)
+        step(m, 100000); assert empty(m)
+        put(m, 'wifi-ap-present', True)
+        send(m, probe(), False); assert response(m)[0] == 0x50
+        send(m, packet(0x48), False)
+        associate(m)
+        put(m, 'wifi-ap-present', True)  # Idempotent selection preserves association.
+        send(m, dhcp(1)); verify_dhcp(response(m), 2)
+        send(m, dhcp(3)); verify_dhcp(response(m), 5)
+        report = finish(m, 500000000)
+        assert report['wifi_ap']['associated']
+    finally:
+        m.close()
+    print(f'Hart {hart}: AP removal/reappearance, unchanged MAC, cancelled RX/beacons, real reassociation: PASS')
+
+
 if __name__=='__main__':
+    for hart in (0, 1): presence(hart)
     for hart in (0,1):protocol(hart)
     retries()
     queue_order()

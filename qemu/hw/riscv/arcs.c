@@ -156,6 +156,25 @@ static void wifi_ap_set(Object *obj, const char *value, Error **errp)
     arcs_wifi_ap_configure(&ARCS_MACHINE(obj)->access_point, (const uint8_t *)value, length);
 }
 
+static bool wifi_ap_present_get(Object *obj, Error **errp)
+{
+    return ARCS_MACHINE(obj)->access_point.running;
+}
+
+static void wifi_ap_present_set(Object *obj, bool present, Error **errp)
+{
+    ArcsMachine *machine = ARCS_MACHINE(obj);
+    ArcsWiFiAP *ap = &machine->access_point;
+    if (present && !ap->ssid_length) {
+        error_setg(errp, "No logical access point is configured"); return;
+    }
+    if (present == ap->running) { return; }
+    ap->running = present;
+    arcs_wifi_ap_reset(ap);
+    /* Remove the peer without touching the chip's MAC, IRQs or registers. */
+    if (machine->network.library) { arcs_network_reset(&machine->network); }
+}
+
 static bool network_get(Object *obj, Error **errp)
 {
     return ARCS_MACHINE(obj)->network.enabled;
@@ -984,6 +1003,7 @@ static void machine_init(MachineState *machine)
     arcs_wifi_ap_init(&s->access_point, &s->soc.wifi); s->wifi_rx_status = "idle";
     object_property_add_str(OBJECT(s), "wifi-rx", wifi_rx_get, wifi_rx_set);
     object_property_add_str(OBJECT(s), "wifi-ap", wifi_ap_get, wifi_ap_set);
+    object_property_add_bool(OBJECT(s), "wifi-ap-present", wifi_ap_present_get, wifi_ap_present_set);
     const char *ssid = getenv("ARCS_QEMU_WIFI_AP");
     if (ssid) { wifi_ap_set(OBJECT(s), ssid, &error_fatal); }
     const char *network_library = getenv("ARCS_QEMU_NETWORK_LIBRARY");
@@ -992,6 +1012,9 @@ static void machine_init(MachineState *machine)
     }
     arcs_network_init(&s->network, &s->access_point, network_library,
                       g_strcmp0(getenv("ARCS_QEMU_NETWORK_LOOPBACK"), "1") == 0);
+    if (g_strcmp0(getenv("ARCS_QEMU_WIFI_AP_PRESENT"), "0") == 0) {
+        wifi_ap_present_set(OBJECT(s), false, &error_fatal);
+    }
     object_property_add_bool(OBJECT(s), "host-network", network_get, network_set);
     object_property_add_str(OBJECT(s), "host-network-version", network_version_get, NULL);
     s->soc.wifi.medium_opaque = s; s->soc.wifi.transmit = radio_transmit;
@@ -1053,13 +1076,14 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     desktop_capture(s);
     g_autofree char *sequence = button_sequence_get(obj, errp);
     g_autofree char *camera = camera_input_status(s);
-    return g_strdup_printf("{\"backend\":\"qemu\",\"camera_input\":%s,\"button_sequence\":%s,"
+    return g_strdup_printf("{\"backend\":\"qemu\",\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":{\"function\":%s}},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
+        s->access_point.running ? "true" : "false",
         camera, sequence, s->desktop_pressed ? "true" : "false",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,

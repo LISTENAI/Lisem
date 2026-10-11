@@ -397,8 +397,12 @@ impl Qmp {
             expires: Instant::now() + Duration::from_secs(30),
             recoverable: method == "qom-get"
                 || (method == "qom-set"
-                    && ["x-lisa-camera-frame", "x-lisa-camera-source"]
-                        .contains(&args["property"].as_str().unwrap_or_default())),
+                    && [
+                        "x-lisa-camera-frame",
+                        "x-lisa-camera-source",
+                        "wifi-ap-present",
+                    ]
+                    .contains(&args["property"].as_str().unwrap_or_default())),
         });
         let result = self.finish(uart, deadline);
         if let Err(error) = &result

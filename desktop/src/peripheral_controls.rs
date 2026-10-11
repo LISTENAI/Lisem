@@ -147,13 +147,14 @@ impl Desktop {
             "camera" => "摄像头",
             "microphone" => "麦克风",
             "speaker" => "扬声器",
-            "network" => "网络",
+            "network" => "Wi-Fi",
             _ => "串口",
         };
         let disabled = self.device().is_some_and(|d| match kind {
             "camera" => !d.host["camera_device"].is_string() && !d.host["camera_image"].is_string(),
             "microphone" => !self.host_microphone_enabled(&d),
             "speaker" => d.host["sound"] != true,
+            "network" => !self.access_point_present(&d),
             _ => false,
         });
         let icon = match (kind, disabled) {
@@ -163,6 +164,8 @@ impl Desktop {
             ("microphone", false) => Icon::new(IconName::Mic),
             ("speaker", true) => Icon::new(IconName::VolumeOff),
             ("speaker", false) => Icon::new(IconName::Volume2),
+            ("network", true) => Icon::new(IconName::WifiOff),
+            ("network", false) => Icon::new(IconName::Wifi),
             _ => Icon::empty().path(kind),
         };
         let view = cx.entity().downgrade();
@@ -313,14 +316,14 @@ impl Desktop {
                 .item(self.audio_choice("系统扬声器", false, true, &d, cx)),
             "network" => {
                 menu = menu.item(self.menu_action(
-                    "允许联网",
+                    "热点可用",
                     Action::Network,
                     self.network_change_enabled(),
-                    d.host["online"] == true,
+                    self.access_point_present(&d),
                     cx,
                 ));
-                if self.running() {
-                    menu = menu.separator().label("下电后可更改");
+                if let Some(notice) = self.access_point_notice() {
+                    menu = menu.separator().label(notice);
                 }
                 menu
             }
@@ -334,10 +337,27 @@ impl Desktop {
             && (pending["status"] != "pending" || pending["phase"] == "waiting-first-frame")
     }
 
+    pub(super) fn access_point_present(&self, d: &Device) -> bool {
+        if self.powered() {
+            self.state.data["session"]["wifi_ap_present"]
+                .as_bool()
+                .unwrap_or(d.host["wifi_ap_present"] != false)
+        } else {
+            d.host["wifi_ap_present"] != false
+        }
+    }
+
+    fn access_point_notice(&self) -> Option<String> {
+        let change = &self.state.data["session"]["access_point_change"];
+        if change["status"] == "pending" {
+            Some("正在切换热点…".into())
+        } else {
+            change["error"].as_str().map(str::to_owned)
+        }
+    }
+
     pub(super) fn network_change_enabled(&self) -> bool {
-        !self.running()
-            && !self.state.busy
-            && self.state.data["capabilities"]["host_network"] == true
+        !self.state.busy && self.state.data["session"]["access_point_change"]["status"] != "pending"
     }
 
     pub(super) fn host_microphone_enabled(&self, d: &Device) -> bool {
@@ -399,16 +419,14 @@ impl Desktop {
                     .gap_2()
                     .child(
                         Switch::new("settings-network")
-                            .label("允许联网")
-                            .checked(d.host["online"] == true)
+                            .label("热点可用")
+                            .checked(self.access_point_present(&d))
                             .disabled(!self.network_change_enabled())
                             .on_change(cx.listener(|v, _, w, cx| v.act(Action::Network, w, cx))),
                     )
-                    .child(caption(if self.running() {
-                        "下电后可更改；下次上电生效"
-                    } else {
-                        "开启后，固件可通过热点 Lisem 访问网络"
-                    })),
+                    .when_some(self.access_point_notice(), |view, notice| {
+                        view.child(caption(notice))
+                    }),
             ))
             .child(settings_row(
                 "扬声器",

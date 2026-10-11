@@ -384,6 +384,14 @@ impl Session {
             options.capture.is_some(),
         );
         command.stdin(Stdio::null());
+        command.env(
+            "ARCS_QEMU_WIFI_AP_PRESENT",
+            if item["host"]["wifi_ap_present"] == false {
+                "0"
+            } else {
+                "1"
+            },
+        );
         if let Some(name) = &camera_shared {
             command.env("ARCS_QEMU_CAMERA_SHM", name);
         }
@@ -883,6 +891,38 @@ fn finish_camera_change(
     state["camera_change"] = change;
 }
 
+fn finish_access_point_change(
+    catalog: &Catalog,
+    id: &str,
+    state: &mut Value,
+    present: bool,
+    result: Result<()>,
+) {
+    let mut change = json!({"status":"applied","enabled":present});
+    match result {
+        Ok(()) => {
+            state["wifi_ap_present"] = json!(present);
+            if let Err(error) = catalog.device(id).and_then(|item| {
+                catalog
+                    .update(
+                        Path::new(item["path"].as_str().unwrap()),
+                        &json!({"wifi_ap_present":present}),
+                    )
+                    .map(|_| ())
+            }) {
+                change["error"] = json!(format!(
+                    "Access point changed but configuration was not saved: {error}"
+                ));
+            }
+        }
+        Err(error) => {
+            change["status"] = json!("rejected");
+            change["error"] = json!(error.to_string());
+        }
+    }
+    state["access_point_change"] = change;
+}
+
 pub struct Runtime {
     catalog: Catalog,
     id: String,
@@ -892,6 +932,7 @@ pub struct Runtime {
     last_frame: Option<Frame>,
     last_uart: Vec<transport::Output>,
     pending_camera: Option<(u64, u64, CameraSource)>,
+    pending_access_point: Option<(u64, bool)>,
     ports: BTreeMap<u8, SerialPort>,
     pub shutdown: bool,
 }
@@ -917,6 +958,7 @@ impl Runtime {
             last_frame: None,
             last_uart: Vec::new(),
             pending_camera: None,
+            pending_access_point: None,
             ports,
             shutdown: false,
         })
@@ -927,6 +969,18 @@ impl Runtime {
                 && let Some((id, result)) = session.qmp.recover(&mut session.uart)?
             {
                 if self
+                    .pending_access_point
+                    .is_some_and(|(pending, _)| pending == id)
+                {
+                    let (_, present) = self.pending_access_point.take().unwrap();
+                    finish_access_point_change(
+                        &self.catalog,
+                        &self.id,
+                        &mut session.state,
+                        present,
+                        result.map(|_| ()),
+                    );
+                } else if self
                     .pending_camera
                     .as_ref()
                     .is_some_and(|(pending, _, _)| *pending == id)
@@ -1011,6 +1065,10 @@ impl Runtime {
             }
             Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
+            if session.finished && self.pending_access_point.take().is_some() {
+                session.state["access_point_change"] = json!({"status":"unknown",
+                    "error":"Runtime ended before access point change was confirmed"});
+            }
         }
         for (&channel, port) in &mut self.ports {
             port.pump(
@@ -1208,6 +1266,7 @@ impl Runtime {
             "status" => self.status(),
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
+                self.pending_access_point = None;
                 let options: Options = serde_json::from_value(params["options"].clone())?;
                 let mut session =
                     Session::start(&self.catalog, &self.catalog.device(&self.id)?, options)?;
@@ -1224,6 +1283,10 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    if self.pending_access_point.take().is_some() {
+                        session.state["access_point_change"] = json!({"status":"unknown",
+                            "error":"Runtime stopped before access point change was confirmed"});
+                    }
                     if self.pending_camera.take().is_some() {
                         session.state["camera_change"]["status"] = json!("unknown");
                         session.state["camera_change"]["error"] =
@@ -1347,6 +1410,48 @@ impl Runtime {
                     }
                 }
                 Ok(state)
+            }
+            "access_point" => {
+                let present = params["enabled"]
+                    .as_bool()
+                    .context("Access point presence requires a boolean")?;
+                if let Some(session) = self.session.as_mut().filter(|s| !s.finished) {
+                    ensure!(
+                        params["run"].is_string(),
+                        "Running access point changes require a run identifier"
+                    );
+                    session.qmp.ensure_idle()?;
+                    match session
+                        .qmp
+                        .set("wifi-ap-present", json!(present), &mut session.uart)
+                    {
+                        Err(error) if error.is::<transport::ControlPending>() => {
+                            self.pending_access_point =
+                                Some((session.qmp.pending_id().unwrap(), present));
+                            session.state["access_point_change"] =
+                                json!({"status":"pending","enabled":present});
+                        }
+                        result => finish_access_point_change(
+                            &self.catalog,
+                            &self.id,
+                            &mut session.state,
+                            present,
+                            result,
+                        ),
+                    }
+                    Ok(session.state["access_point_change"].clone())
+                } else {
+                    ensure!(
+                        params["run"].is_null(),
+                        "The request belongs to an earlier run"
+                    );
+                    let item = self.catalog.device(&self.id)?;
+                    self.catalog.update(
+                        Path::new(item["path"].as_str().unwrap()),
+                        &json!({"wifi_ap_present":present}),
+                    )?;
+                    Ok(json!({"status":"saved","enabled":present}))
+                }
             }
             "microphone" => {
                 let enabled = params["enabled"]

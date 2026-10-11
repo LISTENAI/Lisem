@@ -299,19 +299,24 @@ impl Manager {
                 }
                 self.catalog.describe(&path)
             }
-            "microphone" => {
+            "microphone" | "access_point" => {
+                let setting = if method == "access_point" {
+                    "wifi_ap_present"
+                } else {
+                    "microphone"
+                };
                 let enabled = params["enabled"]
                     .as_bool()
-                    .context("Microphone requires a boolean")?;
+                    .context("Input selection requires a boolean")?;
                 if let Ok(client) = Client::connect(&path) {
-                    client.call("microphone", params)
+                    client.call(method, params)
                 } else {
                     ensure!(
                         params["run"].is_null(),
                         "The request belongs to an earlier run"
                     );
                     let _storage = storage::locked(&path, &layout)?;
-                    self.catalog.update(&path, &json!({"microphone":enabled}))?;
+                    self.catalog.update(&path, &json!({setting:enabled}))?;
                     Ok(json!({"status":"saved","enabled":enabled}))
                 }
             }
@@ -321,6 +326,21 @@ impl Manager {
                 } else {
                     params.clone()
                 };
+                if let Some(present) = changes.get("wifi_ap_present") {
+                    ensure!(
+                        changes.as_object().unwrap().keys().all(|key| [
+                            "id",
+                            "run",
+                            "wifi_ap_present"
+                        ]
+                        .contains(&key.as_str())),
+                        "Change access point presence separately"
+                    );
+                    return self.call(
+                        "access_point",
+                        json!({"id":id,"run":params["run"],"enabled":present}),
+                    );
+                }
                 if let Some(enabled) = changes.get("microphone")
                     && let Ok(client) = Client::connect(&path)
                     && client.call("status", json!({}))?["session"]["finished"] == false

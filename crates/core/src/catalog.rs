@@ -278,6 +278,11 @@ impl Catalog {
             ensure!(value["host"][key].is_boolean(), "Invalid host setting");
         }
         ensure!(
+            value["host"]["wifi_ap_present"].is_null()
+                || value["host"]["wifi_ap_present"].is_boolean(),
+            "Invalid access point presence setting"
+        );
+        ensure!(
             value["host"]["microphone"].is_null() || value["host"]["microphone"].is_boolean(),
             "Invalid microphone setting"
         );
@@ -309,7 +314,7 @@ impl Catalog {
         if let Some(name) = changes.get("name") {
             value["name"] = json!(valid_name(name.as_str().context("Invalid name")?)?);
         }
-        for key in ["online", "sound", "microphone"] {
+        for key in ["online", "sound", "microphone", "wifi_ap_present"] {
             if let Some(setting) = changes.get(key) {
                 ensure!(setting.is_boolean(), "Host setting must be boolean");
                 value["host"][key] = setting.clone();
