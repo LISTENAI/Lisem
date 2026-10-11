@@ -479,7 +479,7 @@ impl Desktop {
                 if let Some(d) = self.device() {
                     let (title, detail, confirm, method) = match action {
                         Action::RegenerateUid => (
-                            "重新生成 UID？", "保留 Flash 和其余 OTP。依赖旧 UID 的平台登记不会自动转移。",
+                            "重新生成 UID？", "设备 UID 将改变，Flash 和其余 OTP 保留。",
                             "重新生成", "regenerate_uid"
                         ),
                         Action::Detach => (

@@ -20,10 +20,7 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(
-    version,
-    about = "Manage and emulate ListenAI devices without a window system"
-)]
+#[command(version, about = "Manage and emulate ListenAI devices")]
 struct Args {
     #[arg(long, global = true)]
     root: Option<PathBuf>,
@@ -206,13 +203,13 @@ struct RunOptions {
     seconds: u64,
     #[arg(long, default_value_t = 800)]
     timeout: u64,
-    /// Enable host network access through the board's logical AP.
+    /// Enable host network access through the configured Wi-Fi hotspots.
     #[arg(long)]
     network: bool,
-    /// Enable the native host speaker adapter.
+    /// Play device audio through the host speakers.
     #[arg(long)]
     audio: bool,
-    /// Enable the native microphone adapter (implies --audio).
+    /// Capture the host microphone (implies --audio).
     #[arg(long)]
     microphone: bool,
     #[arg(long)]

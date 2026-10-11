@@ -285,7 +285,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Empty>(
             "lisem_catalog",
-            "List supported boards, chips and declared buttons/indicators. A board is hardware configuration, an instance owns Flash and OTP.",
+            "List supported boards, chips and available buttons and indicators.",
             true,
         ),
         definition::<Empty>(
@@ -370,7 +370,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<WriteUart>(
             "lisem_uart_write",
-            "Send raw bytes through the firmware UART FIFO. Include CR explicitly for shell commands.",
+            "Send raw bytes to the device UART. Include CR explicitly for shell commands.",
             false,
         ),
         definition::<Instance>(
