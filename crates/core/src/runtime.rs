@@ -27,6 +27,31 @@ use std::{
 };
 use uuid::Uuid;
 
+fn qemu_failure(errors: &str) -> String {
+    let failure: String = errors
+        .lines()
+        .rev()
+        .find(|line| line.contains("ARCS"))
+        .unwrap_or("QEMU failed")
+        .chars()
+        .take(2048)
+        .collect();
+    // TX emits a fixed model reason before the generic MMIO location.
+    // Preserve it without forwarding arbitrary stderr or guest data.
+    let tx_reason = errors.lines().rev().find_map(|line| {
+        ["ARCS Wi-Fi AC1: ", "ARCS Wi-Fi AC3: "]
+            .iter()
+            .find_map(|prefix| line.find(prefix).map(|at| &line[at..]))
+    });
+    match tx_reason {
+        Some(reason) if !failure.contains(reason) => {
+            let reason: String = reason.chars().take(512).collect();
+            format!("{reason}; {failure}")
+        }
+        _ => failure,
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Options {
     pub seconds: u64,
@@ -647,13 +672,7 @@ impl Session {
                 if ![Some("budget-complete"), Some("probe-pass")]
                     .contains(&report["status"].as_str())
                 {
-                    self.state["error"] = json!(
-                        errors
-                            .lines()
-                            .rev()
-                            .find(|s| s.contains("ARCS"))
-                            .unwrap_or("QEMU failed")
-                    );
+                    self.state["error"] = json!(qemu_failure(&errors));
                 }
             } else if !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!("QEMU exited without a readable report");
@@ -2034,6 +2053,30 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn qemu_error_preserves_fixed_tx_diagnostic_without_raw_stderr() {
+        let mmio = "ARCS unsupported write hart=1 pc=0x30600000 address=0x4b708180 size=4 value=0x20001000";
+        let reason = "ARCS Wi-Fi AC1: invalid frame length";
+        assert_eq!(
+            super::qemu_failure(&format!(
+                "private guest output\nqemu: {reason}\nqemu: {mmio}"
+            )),
+            format!("{reason}; qemu: {mmio}")
+        );
+        assert_eq!(
+            super::qemu_failure(&format!("private guest output\n{mmio}")),
+            mmio
+        );
+        assert_eq!(super::qemu_failure("private guest output"), "QEMU failed");
+        assert_eq!(super::qemu_failure(reason), reason);
+        let long = format!(
+            "ARCS Wi-Fi AC3: {}\nARCS {}",
+            "x".repeat(4000),
+            "界".repeat(4000)
+        );
+        assert_eq!(super::qemu_failure(&long).chars().count(), 512 + 2 + 2048);
+    }
+
     use super::*;
 
     fn wave(rate: u32, samples: &[u8]) -> Vec<u8> {
