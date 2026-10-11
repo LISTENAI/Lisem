@@ -328,12 +328,6 @@ impl Render for WifiEnvironment {
                             })),
                     ),
             )
-            .child(
-                div()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("允许连接与允许联网分别设置。"),
-            )
             .when(!self.rows.is_empty(), |view| {
                 view.child(
                     div()

@@ -51,6 +51,21 @@ def check(hart):
             assert rssi == ap['rssi'] * 4, (rssi, ap)
             found.append(frame[10:16])
         assert len(set(found)) == 3 and empty(m)
+        # Availability gates every configured peer and cancels queued replies.
+        send(m, probe(), False)
+        put(m, 'wifi-ap-present', False)
+        assert get(m, 'wifi-ap-present') is False
+        step(m, 100000)
+        assert empty(m)
+        put(m, 'wifi-environment', json.dumps(ENVIRONMENT))
+        m.qmp_command('system_reset')
+        setup(m)
+        send(m, probe(), False); step(m, 100000)
+        assert empty(m) and get(m, 'wifi-ap-present') is False
+        put(m, 'wifi-ap-present', True)
+        send(m, probe(), False); step(m, 100000)
+        assert {receive(m)[0][10:16] for _ in range(3)} == set(found)
+        assert empty(m)
         # Directed scanning sees both APs sharing an SSID, not the other AP.
         send(m, probe(b'Near'), False); step(m, 100000)
         assert {receive(m)[0][10:16], receive(m)[0][10:16]} == {found[0], found[2]}

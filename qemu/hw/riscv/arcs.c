@@ -78,6 +78,7 @@ struct ArcsMachine {
     uint64_t desktop_samples;
     unsigned desktop_rate;
     ArcsWiFiAP access_points[ARCS_WIFI_AP_MAX];
+    bool access_points_present;
     ArcsNetwork network;
     const char *wifi_rx_status;
     GString *ble_capture;
@@ -164,13 +165,27 @@ static char *wifi_ap_get(Object *obj, Error **errp)
     return g_strndup((const char *)s->ssid, s->ssid_length);
 }
 
+static void wifi_apply_presence(ArcsMachine *s)
+{
+    for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
+        ArcsWiFiAP *ap = &s->access_points[i];
+        bool running = s->access_points_present && ap->ssid_length != 0;
+        if (ap->running != running) {
+            ap->running = running;
+            arcs_wifi_ap_reset(ap);
+        }
+    }
+}
+
 static void wifi_ap_set(Object *obj, const char *value, Error **errp)
 {
     size_t length = strlen(value);
     if (length > 32 || !g_utf8_validate(value, length, NULL)) {
         error_setg(errp, "Logical AP SSID must contain at most 32 UTF-8 bytes"); return;
     }
-    arcs_wifi_ap_configure(&ARCS_MACHINE(obj)->access_points[0], (const uint8_t *)value, length);
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    arcs_wifi_ap_configure(&s->access_points[0], (const uint8_t *)value, length);
+    wifi_apply_presence(s);
 }
 
 static char *wifi_environment_get(Object *obj, Error **errp)
@@ -180,24 +195,23 @@ static char *wifi_environment_get(Object *obj, Error **errp)
 
 static void wifi_environment_set(Object *obj, const char *value, Error **errp)
 {
-    arcs_wifi_environment_configure(ARCS_MACHINE(obj)->access_points, value, errp);
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (arcs_wifi_environment_configure(s->access_points, value, errp)) {
+        wifi_apply_presence(s);
+    }
 }
 
 static bool wifi_ap_present_get(Object *obj, Error **errp)
 {
-    return ARCS_MACHINE(obj)->access_point.running;
+    return ARCS_MACHINE(obj)->access_points_present;
 }
 
 static void wifi_ap_present_set(Object *obj, bool present, Error **errp)
 {
     ArcsMachine *machine = ARCS_MACHINE(obj);
-    ArcsWiFiAP *ap = &machine->access_point;
-    if (present && !ap->ssid_length) {
-        error_setg(errp, "No logical access point is configured"); return;
-    }
-    if (present == ap->running) { return; }
-    ap->running = present;
-    arcs_wifi_ap_reset(ap);
+    if (present == machine->access_points_present) { return; }
+    machine->access_points_present = present;
+    wifi_apply_presence(machine);
     /* Remove the peer without touching the chip's MAC, IRQs or registers. */
     if (machine->network.library) { arcs_network_reset(&machine->network); }
 }
@@ -1056,6 +1070,7 @@ static void machine_init(MachineState *machine)
     connect_camera(s);
     connect_pcm(s);
     s->wifi_capture = g_byte_array_new(); reset_radio(s);
+    s->access_points_present = true;
     for (unsigned i = 0; i < ARCS_WIFI_AP_MAX; i++) {
         arcs_wifi_ap_init(&s->access_points[i], &s->soc.wifi);
         s->access_points[i].bssid[5] = i + 1;
@@ -1144,7 +1159,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        s->access_point.running ? "true" : "false",
+        s->access_points_present ? "true" : "false",
         camera, sequence, s->desktop_pressed ? "true" : "false",
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
