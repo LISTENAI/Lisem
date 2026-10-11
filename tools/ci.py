@@ -35,6 +35,12 @@ def run(name, command, timeout=1800, env=None):
             'cargo_errors': re.findall(r'^error(?:\[[A-Z0-9]+\])?: ([^\n]{1,300})', content, re.M)[-10:],
             'rust_errors': sorted(set(re.findall(r'error\[(E[0-9]{4})\]', content))),
             'exception_types': sorted(set(re.findall(r'^([A-Za-z]+(?:Error|Exception)):', content, re.M))),
+            'python_frames': [
+                {'file': file, 'line': int(line)}
+                for file, line in re.findall(
+                    r'^\s*File "[^"\n]*?((?:tests|tools)/[A-Za-z0-9_]+\.py)", line ([0-9]+)',
+                    content.replace('\\', '/'), re.M)[-10:]
+            ],
         }
         print(json.dumps(summary), flush=True)
         result.check_returncode()

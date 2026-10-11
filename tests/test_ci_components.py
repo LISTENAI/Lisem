@@ -1,7 +1,9 @@
 """Cross-job components must belong to the same build and preserve executable bits."""
 import io
+from contextlib import redirect_stdout
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -10,6 +12,27 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import ci
+
+
+class Diagnostics(unittest.TestCase):
+    def test_failure_locations_exclude_private_paths_and_output(self):
+        trace = ('Traceback (most recent call last):\n'
+                 '  File "/private/workspace/Lisem/tests/run_qemu_desktop.py", line 201, in main\n'
+                 '    assert secret == "private-value"\n'
+                 '  File "C:\\private\\Lisem\\tests\\qemu_test.py", line 37, in command\n'
+                 'AssertionError: private-value\n')
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, 'ROOT', Path(directory)):
+            output = io.StringIO()
+            with redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
+                ci.run('qemu-tests', [sys.executable, '-c', f'print({trace!r}); raise SystemExit(1)'])
+            summary = json.loads(output.getvalue().splitlines()[-1])
+            self.assertEqual(summary['python_frames'], [
+                {'file': 'tests/run_qemu_desktop.py', 'line': 201},
+                {'file': 'tests/qemu_test.py', 'line': 37},
+            ])
+            self.assertEqual(summary['exception_types'], ['AssertionError'])
+            self.assertNotIn('private', output.getvalue())
+            self.assertIn('private-value', (Path(directory) / 'artifacts/ci/qemu-tests.log').read_text())
 
 
 class Components(unittest.TestCase):
