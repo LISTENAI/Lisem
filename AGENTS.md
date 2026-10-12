@@ -131,6 +131,10 @@
   release 和 debug 测试，打包等待两个构建完成；artifact 是候选产物，只有
   整次工作流及 `All checks passed` 成功才能用于发布。新增发布 job 必须依赖
   总检查，不能以某个上传成功或某个矩阵分支成功代替。
+- GitHub Release 使用 `vX.Y.Z` 标签、`Lisem X.Y.Z` 标题和中文说明；正文依次
+  包含版本概述、用户可感知的要点、平台要求、升级说明、Homebrew 命令和
+  完整变更链接。模板及附件、Homebrew 同步要求见
+  [发布说明](docs/development.md#github-release-说明)。
 - README 和维护文档使用中文；代码标识、诊断和提交信息使用英文。
 - 提交前核对 author/committer；公司项目使用维护者的公司身份，不修改
   全局配置。英文 Conventional Commits，正文按 75 字符换行，附实际

@@ -131,6 +131,56 @@ macOS 的 Homebrew 分发使用 [LISTENAI 公共 tap](https://github.com/LISTENA
 `Lisem-darwin-aarch64.tar.gz` 或 `Lisem-darwin-x86_64.tar.gz`，版本与校验值
 对应正式 Release 资产。cask 普通卸载保留实例数据，升级保留运行中的设备实例。
 
+### GitHub Release 说明
+
+版本标签使用 `vX.Y.Z`，标题使用 `Lisem X.Y.Z`，正文使用中文，按以下顺序
+组织：一句版本概述、用户可感知的功能或修复要点、平台及使用条件、升级说明、
+Homebrew 更新命令、完整变更链接。要点使用「**主题**：说明」的项目列表，
+只保留本次实际交付且有助于用户理解的内容，不固定条数或凑齐分类。
+
+说明以使用者为读者，描述当前能力和必要条件；不复制提交日志，不记录调试、
+验收和讨论过程，不列尚未交付的计划。维护细节留在开发文档，CI 与测试证据
+留在工作流或本地发布记录中。平台要求、限制和升级步骤须按本次产物核对，
+不能直接照抄上一版。
+
+正文模板如下；发布前替换全部占位内容，按实际交付增减要点：
+
+````markdown
+Lisem X.Y.Z 提供〈本次主要能力或体验改善〉。
+
+- **〈主题〉**：〈能力、修复效果及必要操作〉。
+- **〈主题〉**：〈能力、修复效果及必要操作〉。
+
+提供 macOS、Windows 和 Linux 的 ARM64/x86_64 应用包。
+〈核实后的最低系统版本及平台特有限制〉。
+
+〈数据兼容性、后台运行时切换方式及必要迁移步骤〉。
+
+通过 Homebrew 更新：
+
+```sh
+brew update
+brew upgrade --cask listenai/tap/lisem
+```
+
+[完整变更](https://github.com/LISTENAI/Lisem/compare/vPREVIOUS...vX.Y.Z)
+````
+
+附件使用 `Lisem-<system>-<arch>.tar.gz`（macOS/Linux）或
+`Lisem-<system>-<arch>.zip`（Windows）；`system` 为 `darwin`、`linux`、
+`windows`，`arch` 为 `aarch64`、`x86_64`。每份归档附同名 `.sha256` 文件，
+六个平台共十二个附件。先创建草稿并上传，核对附件完整性及 GitHub 资产摘要
+与本地 SHA-256 一致后公开；正式稳定版设为 Latest。
+
+公开后触发 tap 的现有更新流程，仅指定 `lisem`：
+
+```sh
+gh workflow run bump.yml --repo LISTENAI/homebrew-tap -f project=lisem
+```
+
+等待工作流成功，再核对 `Casks/lisem.rb` 的版本及两种架构的 SHA-256 与
+Release 一致，才报告 Homebrew 更新完成；托管 cask 不手工改写发布版本。
+
 ## 原固件验证
 
 使用实际发布 LPK；与独立指令探针和测试图分别记录结果。以下测试创建
