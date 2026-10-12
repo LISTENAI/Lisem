@@ -418,8 +418,8 @@ int main(int argc, char **argv)
 {
     @autoreleasepool {
         if (argc != 4 || (strcmp(argv[3], "capture") && strcmp(argv[3], "playback")) || strspn(argv[2], "0123456789") != strlen(argv[2]) ||
-            atoi(argv[2]) < 1 || atoi(argv[2]) > 900) {
-            fprintf(stderr, "Usage: lisa-audio OUTPUT_DIRECTORY WALL_SECONDS (1..900) capture|playback\n"); return 2;
+            atoi(argv[2]) < 1 || atoi(argv[2]) > 172850) {
+            fprintf(stderr, "Usage: lisa-audio OUTPUT_DIRECTORY WALL_SECONDS (1..172850) capture|playback\n"); return 2;
         }
         bool capture_input = !strcmp(argv[3], "capture");
         if (capture_input && !microphone_permission()) { fprintf(stderr, "Microphone permission is required\n"); return 2; }

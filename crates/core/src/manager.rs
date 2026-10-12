@@ -226,7 +226,7 @@ impl Manager {
                 } else {
                     Options {
                         seconds: params["seconds"].as_u64().unwrap_or(300),
-                        timeout: params["timeout"].as_u64().unwrap_or(800).min(850),
+                        timeout: params["timeout"].as_u64().unwrap_or(800),
                         network: params["online"]
                             .as_bool()
                             .unwrap_or(item["host"]["online"].as_bool().unwrap_or(false)),

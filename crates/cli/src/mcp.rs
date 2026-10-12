@@ -66,9 +66,9 @@ struct Confirm {
 #[serde(deny_unknown_fields)]
 struct Start {
     id: String,
-    /// Virtual seconds, 5..600; defaults to 300.
+    /// Virtual seconds, 5..86400; defaults to 300.
     seconds: Option<u64>,
-    /// Host deadline in seconds, 1..850; defaults to 800.
+    /// Host deadline in seconds, 1..172800; defaults to 800.
     timeout: Option<u64>,
     #[serde(default)]
     network: bool,

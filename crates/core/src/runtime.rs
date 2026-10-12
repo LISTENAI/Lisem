@@ -216,7 +216,7 @@ impl Audio {
         let mut command = crate::process::command(assets.audio());
         command
             .arg(shared.map(Path::new).unwrap_or(&directory))
-            .arg((options.timeout + 50).min(900).to_string())
+            .arg((options.timeout + 50).to_string())
             .arg(if options.microphone {
                 "capture"
             } else {
@@ -359,8 +359,8 @@ pub struct Session {
 impl Session {
     fn start(catalog: &Catalog, item: &Value, options: Options) -> Result<Self> {
         ensure!(
-            (5..=600).contains(&options.seconds) && options.timeout > 0 && options.timeout <= 850,
-            "Invalid runtime time budget"
+            (5..=86400).contains(&options.seconds) && (1..=172800).contains(&options.timeout),
+            "Runtime budgets must be 5..86400 virtual seconds and 1..172800 host seconds"
         );
         ensure!(
             !options.microphone || options.host_audio,
@@ -620,6 +620,10 @@ impl Session {
         self.state["continuous_audio"] = json!(self.audio.is_some());
         self.state["microphone"] = json!(self.options.microphone);
         self.state["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
+        self.state["budget"] = json!({"virtual_seconds":self.options.seconds,
+            "host_seconds":self.options.timeout,
+            "virtual_remaining_seconds":(self.options.seconds as f64 - self.state["seconds"].as_f64().unwrap_or(0.0)).max(0.0),
+            "host_remaining_seconds":(self.options.timeout as f64 - self.started.elapsed().as_secs_f64()).max(0.0)});
         self.state["output"] = json!(self.output);
         self.state["framebuffer"] = json!(self.framebuffer);
         if self.options.capture.is_some() {
@@ -1323,6 +1327,8 @@ impl Runtime {
                     };
                 }
             }
+            state["power_hold"] = indicators.get("power-hold").cloned().unwrap_or(Value::Null);
+            state["runtime_active"] = json!(self.session.is_some());
             state["indicators"] = indicators;
         }
         let ports: BTreeMap<_, _> = self
