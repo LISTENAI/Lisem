@@ -20,8 +20,10 @@ Linux 可在解压目录运行 `./install-desktop.sh`，将 Lisem 加入当前�
 移除实例仅从库中移除记录，不删除磁盘文件。已存在的实例可以重新打开。
 实例的板型或芯片配置与当前版本不兼容时，启动会报错。
 
-上电后固件执行 ROM 和 Flash；原固件可能要求长按功能键才能启动应用。
-按住鼠标就是按住按键，松开即释放。复位保留 Flash、OTP 和 UART 连接。
+上电后固件执行 ROM 和 Flash；Arcs-Mini 固件可能要求长按功能键才能启动应用。
+按住鼠标就是按住按键，松开即释放。Arcs-EVB 提供 K1、K2、K3 三个 ADC
+按键，支持在屏幕上按下、拖动和松开进行单点触摸操作。
+复位保留 Flash、OTP 和 UART 连接。
 关闭窗口或退出应用后，实例继续在后台运行；需要停止时使用下电按钮。
 
 ## 音频和网络
@@ -86,10 +88,10 @@ WPA2 密码需为 8–63 个可打印 ASCII 字符。
 
 ## 摄像头
 
-Mini 的 GC0328 可使用本地 PNG、JPEG 或 PNM 图片作为静态场景。在右上角
-摄像头菜单中选择「图片…」，也可运行
+Arcs-Mini 和 Arcs-EVB 的 GC0328 可使用本地 PNG、JPEG 或 PNM 图片作为
+静态场景。在右上角摄像头菜单中选择「图片…」，也可运行
 `lisem camera INSTANCE_ID image.png`；
-`lisem camera INSTANCE_ID --clear` 清除输入。图片按 Mini 摄像头的安装方向
+`lisem camera INSTANCE_ID --clear` 清除输入。图片按板型配置的摄像头安装方向
 顺时针旋转 90°，保持比例、居中裁切至 640×480；固件负责镜像、预览旋转、
 传感器格式、裁切窗口和采集。运行中换图从下一帧生效。
 控制暂时繁忙时会显示「正在确认输入切换结果…」，此时不要重复选图；确认成功
@@ -108,7 +110,7 @@ macOS 可在摄像头菜单或实例设置中选择具体设备，或选择「�
 命令行使用 `lisem camera-devices` 列出设备，再运行
 `lisem camera INSTANCE_ID --device DEVICE_ID` 选择来源；`--clear` 同样可关闭
 实时输入。MCP 对应 `lisem_camera_devices` 和 `lisem_camera_input` 的 `device_id`。
-图片与实时取景均按 Mini 安装方向转换，固件负责镜像。Lisem 不自动录制
+图片与实时取景均按板型配置的安装方向转换，固件负责镜像。Lisem 不自动录制
 摄像头画面；拍照操作取决于所运行的固件。
 
 下电或关闭输入会释放摄像头；仅关闭 GUI 窗口会保留后台实例和采集。

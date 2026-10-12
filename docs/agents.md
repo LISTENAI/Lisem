@@ -34,6 +34,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_uart`、`lisem_uart_read`、`lisem_uart_write` | 连接、观察和输入原始 UART |
 | `lisem_screenshot`、`lisem_audio_input` | 返回 PNG 图像、向 ADC 输入 WAV |
 | `lisem_access_point` | 运行中切换外部热点可用性 |
+| `lisem_set_wifi_environment` | 配置热点名称、信号、安全方式及互联网访问 |
 | `lisem_camera_devices`、`lisem_camera_input` | 枚举宿主摄像头，选择或清除摄像头场景输入 |
 
 `lisem_status` 的 `runtime.session.output` 是运行标识；输入、复位和 UART
