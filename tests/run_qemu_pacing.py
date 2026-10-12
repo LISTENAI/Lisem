@@ -236,7 +236,10 @@ def audio_backpressure():
         assert not stream.host_error and not stream.guest_error
         report.pop('host_audio')
         report.pop('wall_seconds'); reference.pop('wall_seconds')
-        assert report == reference
+        assert report == reference, {
+            key: (reference.get(key), value)
+            for key, value in report.items() if reference.get(key) != value
+        }
         for file in FILES:
             left = base.OUTPUT / (name + '-free/run') / file
             right = base.OUTPUT / (name + '-paced/run') / file

@@ -213,3 +213,18 @@ int64_t icount_get_cpu_cycles(CPUState *cpu)
     __uint128_t phase;
     return icount_clock_cycles(cpu, now, &phase);
 }
+
+void icount_clock_snapshot(CPUState *cpu, int64_t *frontier_ns,
+                           uint64_t *phase)
+{
+    assert(bql_locked() && cpu->icount_hz);
+    /* A halted CPU's cached frontier is updated lazily by the scheduler.
+     * Observe its phase at the current clock without modifying that cache
+     * or advancing virtual time; retain a leading CPU's local frontier. */
+    int64_t now = MAX(icount_get(), cpu->icount_time_ns);
+    __uint128_t current_phase;
+    icount_clock_accumulate(cpu, now - cpu->icount_time_ns,
+                            cpu->icount_phase, &current_phase);
+    *frontier_ns = now;
+    *phase = current_phase / cpu->icount_clock_scale;
+}

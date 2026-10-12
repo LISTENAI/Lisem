@@ -562,12 +562,14 @@ static void report(void *opaque, const char *status)
         fprintf(f, ",\"cpu_clock_experiment\":[");
         for (unsigned i = 0; i < 2; i++) {
             CPUState *cpu = CPU(&s->soc.cpu[i]);
+            int64_t frontier_ns;
+            uint64_t phase;
+            icount_clock_snapshot(cpu, &frontier_ns, &phase);
             fprintf(f, "%s{\"hz\":%" PRIu64 ",\"hz_numerator\":%" PRIu64
                     ",\"hz_denominator\":%u,\"frontier_ns\":%" PRId64
                     ",\"phase\":%" PRIu64 ",\"cycles\":%" PRId64 "}",
                     i ? "," : "", cpu->icount_hz / cpu->icount_hz_den,
-                    cpu->icount_hz, cpu->icount_hz_den, cpu->icount_time_ns,
-                    (uint64_t)(cpu->icount_phase / cpu->icount_clock_scale),
+                    cpu->icount_hz, cpu->icount_hz_den, frontier_ns, phase,
                     icount_get_cpu_cycles(cpu));
         }
         fprintf(f, "]");

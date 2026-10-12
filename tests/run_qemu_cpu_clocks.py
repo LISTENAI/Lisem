@@ -56,6 +56,11 @@ def main():
             r = run(f'idle-{frequency}-{hart}', '.rept 23\nnop\n.endr\nwfi\nj .\n', clocks, hart)
             assert r['aggregate_instructions'] == 24, r
             assert r['cpu_clock_experiment'][hart]['cycles'] == 100007 * frequency // 10**9, r
+            # WFI and reset-held harts report the current oscillator phase,
+            # regardless of when the host scheduler last visited each CPU.
+            for clock in r['cpu_clock_experiment']:
+                assert clock['frontier_ns'] == 100007, clock
+                assert clock['phase'] == 100007 * frequency % 10**9, clock
     for ap, cp in ((300000000, 300000000), (37000000, 83000000)):
         for quantum in (1, 7, 1000, 10000):
             r = run(f'busy-{ap}-{cp}-{quantum}', RELEASE + 'j .\ncp_start:\nj .\n', (ap, cp, quantum))
