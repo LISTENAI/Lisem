@@ -139,6 +139,94 @@ def functional(hart):
         m.close()
 
 
+def tx_feedback(hart):
+    m = Machine(OUTPUT / ('tx-feedback-hart%d' % hart), hart=hart)
+    try:
+        def coefficients(index, ci, cq, di=0, dq=0):
+            shift = 0 if index & 1 else 12
+            for base, value in ((0x88c, ci), (0x8b4, cq), (0x8dc, di), (0x904, dq)):
+                address = DFE + base + index // 2 * 4
+                old = m.read(address)
+                m.write(address, (old & ~(4095 << shift)) | ((value & 4095) << shift))
+
+        def stimulus(amplitude):
+            m.write(DFE + 0x4b4, 0)
+            for n in range(128):
+                x, y = ((amplitude, 0), (0, amplitude), (-amplitude, 0), (0, -amplitude))[n % 4]
+                m.write(DFE + 0x4b8, (x & 32767) | ((y & 32767) << 16))
+
+        def trigger():
+            m.write(DFE + 0x4e0, 15)
+            m.write(DFE + 0x568, 1)
+            m.write(DFE + 0x56c, m.read(DFE + 0x56c) ^ 1)
+
+        def result():
+            values = [m.read(DFE + offset) for offset in (0x5bc, 0x5c0)]
+            return tuple(v - (1 << 28) if v & (1 << 27) else v for v in values)
+
+        def measure():
+            trigger()
+            old = result()
+            m.command('clock_step 9999')
+            assert m.read(DFE + 0x5b8) == 0 and result() == old
+            m.command('clock_step 1')
+            assert m.read(DFE + 0x5b8) == 12
+            return result()
+
+        # Sweep real compensation values: the ideal image minimum must occur
+        # at the identity matrix, with symmetric errors on either side.
+        m.write(DFE + 0x850, (80 << 19) | ((-64 & 255) << 11) | (1 << 9))
+        m.write(DFE + 0x5a0, 80)
+        m.write(DFE + 0x4f8, 3)
+        m.write(DFE + 0x5a8, 12 << 16)
+        stimulus(512)
+        for ci, cq in ((0, 2048), (-256, 2048), (256, 2048), (0, 1792), (0, 2304)):
+            coefficients(18, ci, cq)
+            assert measure() == ((2048 - cq) * 64, ci * 64)
+        # Packed odd entry, signed power/offset, clamp at both ends.
+        coefficients(17, 128, 2112)
+        m.write(DFE + 0x5a0, 72)
+        assert measure() == (-4096, 8192)
+        m.write(DFE + 0x850, (80 << 19) | ((-64 & 255) << 11) | (1 << 9) | 8)
+        m.write(DFE + 0x5a0, 64)
+        assert measure() == (-4096, 8192)
+        coefficients(0, -64, 2048)
+        m.write(DFE + 0x5a0, (-128) & 511)
+        assert measure() == (0, -4096)
+        coefficients(18, 64, 2048)
+        m.write(DFE + 0x5a0, 255)
+        assert measure() == (0, 4096)
+        stimulus(1024)
+        assert measure() == (0, 8192)
+        # DC calibration uses signed twelve-bit DAC corrections and samples
+        # them at completion, including sub-ADC precision in accumulation.
+        stimulus(0)
+        coefficients(18, 0, 2048, -7, 9)
+        assert measure() == (-3584, 4608)
+        trigger()
+        m.command('clock_step 9999')
+        coefficients(18, 0, 2048, 16, -16)
+        m.command('clock_step 1')
+        assert result() == (8192, -8192)
+        m.write(DFE + 0x4f8, 0)
+        assert measure() == (0, 0)
+        m.write(DFE + 0x4f8, 67)
+        assert measure() == (0, 0)
+        m.write(DFE + 0x4f8, 3)
+        trigger()
+        m.command('clock_step 9999')
+        m.write(DFE + 0x568, 0)
+        m.command('clock_step 1')
+        assert result() == (0, 0) and m.read(DFE + 0x5b8) == 0
+        trigger()
+        m.qmp_command('system_reset')
+        m.command('clock_step 10000')
+        assert result() == (0, 0) and m.read(DFE + 0x5b8) == 0
+        print('Hart %d: TX IQ/DC feedback, power tables, completion/cancel/reset: PASS' % hart)
+    finally:
+        m.close()
+
+
 def rejection():
     commands = [['writel 0x4a100008 32'], ['writel 0x4a10000c 32'], ['writel 0x4a100010 0'], ['writel 0x4a100028 4'], ['writel 0x4a100030 1'], ['writel 0x4a100030 2'], ['writel 0x4a100004 0x800000'], ['writel 0x4a100004 0x1000000'], ['readl 0x4a100000'], ['writel 0x4b400300 1'], ['writew 0x47a00001 1'],
                 ['readl 0x4ba00001'], ['writel 0x4a200100 16', 'writel 0x4a200200 1'],
@@ -162,4 +250,6 @@ def rejection():
 if __name__ == '__main__':
     functional(0)
     functional(1)
+    tx_feedback(0)
+    tx_feedback(1)
     rejection()

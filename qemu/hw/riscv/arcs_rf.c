@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 /* Explicit ideal analog calibration mocks; no MAC, DMA or RF packet state. */
 #include "qemu/osdep.h"
+#include <math.h>
 #include "hw/riscv/arcs.h"
 #include "system/address-spaces.h"
 
@@ -13,8 +14,8 @@ static int correction(uint32_t code)
 
 static int64_t round_even(double value)
 {
-    /* Estimates are nonnegative and bounded well below signed-64 limits. */
-    int64_t lo = value;
+    /* Calibration accumulators are bounded well below signed-64 limits. */
+    int64_t lo = floor(value);
     double fraction = value - lo;
     return lo + (fraction > 0.5 || (fraction == 0.5 && (lo & 1)));
 }
@@ -23,6 +24,55 @@ static void wide(ArcsRF *s, unsigned off, int64_t value)
 {
     s->regs[off / 4] = ((uint64_t)value >> 32) & 255;
     s->regs[off / 4 + 1] = (uint32_t)value;
+}
+
+/* The ideal TX feedback path has unity gain and no intrinsic IQ/DC error.
+ * TPC selects a packed compensation entry using signed quarter-dBm power.
+ * IQ calibration measures the image of the programmed complex test tone;
+ * a zero stimulus measures LO leakage from the signed DC compensation.
+ * This is an analog calibration abstraction, not an RF propagation model. */
+static unsigned tx_comp_index(ArcsRF *s)
+{
+    uint32_t cfg = s->regs[0x850 / 4];
+    int maximum = sextract32(cfg, 19, 8);
+    int minimum = sextract32(cfg, 11, 8);
+    int power = sextract32(s->regs[0x5a0 / 4], 0, 9) + sextract32(cfg, 0, 6);
+    unsigned step = extract32(cfg, 9, 2);
+    unsigned db = step == 1 ? 2 : step == 2 ? 4 : 8;
+    power = MIN(MAX(power, minimum), maximum);
+    return MAX(0, 18 - ((maximum - power) / 4) / db);
+}
+
+static unsigned tx_comp(ArcsRF *s, unsigned base, unsigned index)
+{
+    unsigned shift = index & 1 ? 0 : 12;
+    return extract32(s->regs[(base + (index / 2) * 4) / 4], shift, 12);
+}
+
+static void tx_feedback(ArcsRF *s, double *i, double *q)
+{
+    unsigned index = tx_comp_index(s);
+    uint32_t controls = s->regs[0x4f8 / 4];
+    if (controls & 64) { return; }
+    double energy = 0;
+    for (unsigned n = 0; n < 128; n++) {
+        int x = sextract32(s->tone[n], 0, 15);
+        int y = sextract32(s->tone[n], 16, 15);
+        energy += (double)x * x + (double)y * y;
+    }
+    if (energy) {
+        /* Q11 triangular IQ matrix: Q' = c21 * I + c22 * Q.
+         * Its image coefficient is (1 - c22 + j*c21) / 2.
+         * The test-tone DAC has 15 bits, the feedback ADC has 12. */
+        double amplitude = sqrt(energy / 128) / 8;
+        int c21 = controls & 1 ? sextract32(tx_comp(s, 0x88c, index), 0, 12) : 0;
+        unsigned c22 = controls & 1 ? tx_comp(s, 0x8b4, index) : 2048;
+        *i = amplitude * (2048 - (int)c22) / 4096;
+        *q = amplitude * c21 / 4096;
+    } else if (controls & 2) {
+        *i = sextract32(tx_comp(s, 0x8dc, index), 0, 12) / 8.0;
+        *q = sextract32(tx_comp(s, 0x904, index), 0, 12) / 8.0;
+    }
 }
 
 static void complete(void *opaque)
@@ -35,11 +85,14 @@ static void complete(void *opaque)
         s->regs[0x98 / 4] = 16385; s->regs[0x9c / 4] = 8192; s->regs[0xa0 / 4] = 0;
         s->regs[0x200 / 4] = 2;
     } else {
-        int i = 0, q = 0;
+        double i = 0, q = 0;
         double i2 = 0, q2 = 0, iq = 0;
         if (s->pending_mode == 3) {
             i = correction(rf->regs[0xc4 / 4] >> 16);
             q = correction(rf->regs[0x11c / 4] >> 16);
+            i2 = i * i; q2 = q * q; iq = i * q;
+        } else if (s->pending_mode == 7) {
+            tx_feedback(s, &i, &q);
             i2 = i * i; q2 = q * q; iq = i * q;
         } else if (s->pending_mode == 5) {
             i2 = q2 = 8192;
@@ -60,11 +113,11 @@ static void complete(void *opaque)
         }
         unsigned power = (s->regs[0x5a8 / 4] >> 16) & 31;
         int64_t scale = s->regs[0x5ac / 4] & 4 ? 1 : (INT64_C(1) << power);
-        s->regs[0x5bc / 4] = ((int64_t)i * scale) & 0xfffffff;
-        s->regs[0x5c0 / 4] = ((int64_t)q * scale) & 0xfffffff;
+        s->regs[0x5bc / 4] = (round_even(i * scale)) & 0xfffffff;
+        s->regs[0x5c0 / 4] = (round_even(q * scale)) & 0xfffffff;
         wide(s, 0x5c4, round_even(i2) * scale);
         wide(s, 0x5cc, round_even(q2) * scale);
-        wide(s, 0x5d4, (int64_t)iq * scale);
+        wide(s, 0x5d4, round_even(iq) * scale);
         s->regs[0x5b8 / 4] = 12;
     }
     s->completed++;
@@ -135,7 +188,7 @@ static void rf_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (aligned == 0x568 && !(val & 1)) { timer_del(s->event); }
         if (aligned == 0x56c && ((old ^ val) & 1) && (s->regs[0x568 / 4] & 1)) {
             unsigned mode = (s->regs[0x4e0 / 4] >> 1) & 15;
-            if (mode != 3 && mode != 4 && mode != 5) { goto fail; }
+            if (mode != 3 && mode != 4 && mode != 5 && mode != 7) { goto fail; }
             s->pending_mode = mode; s->regs[0x5b8 / 4] = 0;
             timer_mod(s->event, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 10000);
         }
