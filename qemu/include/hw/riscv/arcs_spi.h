@@ -4,6 +4,7 @@
 #include "hw/ssi/ssi.h"
 #include "system/memory.h"
 #include "qemu/timer.h"
+#include "qemu/int128.h"
 typedef struct ArcsSoC ArcsSoC;
 typedef struct ArcsSPI {
     ArcsSoC *soc;
@@ -13,7 +14,10 @@ typedef struct ArcsSPI {
     uint32_t regs[32], fifo[16], pending;
     unsigned index, head, count, bits;
     uint64_t remaining, frames;
-    bool active, io_busy;
+    Int128 work;
+    uint64_t rate;
+    int64_t updated;
+    bool active, io_busy, phase;
     bool (*route_valid)(void *opaque);
     void *route_opaque;
 } ArcsSPI;
@@ -26,6 +30,7 @@ typedef struct ArcsGPT {
     void *opaque;
 } ArcsGPT;
 void arcs_spi_init(ArcsSoC *soc);
+void arcs_spi_clock_changed(ArcsSoC *soc, unsigned index);
 void arcs_spi_reset(ArcsSoC *soc, unsigned index);
 void arcs_gpt_reset(ArcsSoC *soc);
 double arcs_gpt_duty(ArcsGPT *s, unsigned channel);

@@ -31,7 +31,10 @@ def count(m, base):
 
 
 def setup(m, base, frames, fmt=0x703):
+    # 24 MHz XTAL / 3, bypass the local SCLK divider: 1 us per byte.
+    m.write(0x46000014 + 4 * ((base - SPI) // 0x100000), 0x13801008)
     m.write(base + 0x30, 7)
+    m.write(base + 0x40, 255)
     m.write(base + 0x10, fmt)
     m.write(base + 0x18, frames - 1)
     m.write(base + 0x20, 0x01000000)
@@ -83,7 +86,9 @@ def timing():
             m.write(base + 0x2c, 0x44332211)
             m.write(base + 0x2c, 0x88776655)
             m.write(base + 0x24, 0)
-            step(m, 1000)
+            step(m, 3999)
+            assert count(m, base) == 2
+            step(m, 1)
             assert busy(m, base) and count(m, base) == 1
             step(m, 999)
             assert not done(m, base)
@@ -104,6 +109,64 @@ def timing():
         m.close()
 
 
+def clocks():
+    m = Machine(OUTPUT / 'clocks')
+    base = SPI + 0x100000
+    cfg = 0x46000018
+    try:
+        # Stop halfway through a byte, resume at twice the source frequency.
+        setup(m, base, 1)
+        m.write(base + 0x2c, 0)
+        m.write(base + 0x24, 0)
+        step(m, 500)
+        m.write(cfg, 0x13001008)
+        step(m, 100000)
+        assert busy(m, base) and not done(m, base)
+        m.write(cfg, 0x23801008)
+        step(m, 249)
+        assert not done(m, base)
+        step(m, 1)
+        assert done(m, base)
+        # LS2684 measured SPI branch: SYSPLL /12 at every PERI selector.
+        for selector in range(4):
+            setup(m, base, 1, 0x1f03)
+            m.write(0x4610000c, selector << 11)
+            m.write(cfg, 0x11c01008)
+            m.write(base + 0x40, 0)
+            m.write(base + 0x2c, 0)
+            m.write(base + 0x24, 0)
+            step(m, 320)
+            # An inactive PLL also suspends rather than completes the byte.
+            m.write(0x46100008, 0)
+            step(m, 100000)
+            assert busy(m, base) and not done(m, base)
+            m.write(0x46100008, 1)
+            step(m, 319)
+            assert not done(m, base)
+            step(m, 1)
+            assert done(m, base)
+        # Preserve fractional nanoseconds across consecutive bytes (24 MHz).
+        setup(m, base, 3)
+        m.write(cfg, 0x11801008)
+        for _ in range(3): m.write(base + 0x2c, 0)
+        m.write(base + 0x24, 0)
+        step(m, 333)
+        assert count(m, base) == 3
+        step(m, 1)
+        assert count(m, base) == 2
+        step(m, 332)
+        assert count(m, base) == 2
+        step(m, 1)
+        assert count(m, base) == 1
+        step(m, 332)
+        assert not done(m, base)
+        step(m, 1)
+        assert done(m, base)
+        print('SPI source/divider, clock gate progress and fractional deadlines: PASS')
+    finally:
+        m.close()
+
+
 def connect(m):
     for pad in (22, 24, 25):
         m.write(0x47500000 + 4 * pad, 5)
@@ -119,7 +182,7 @@ def send(m, data, fmt=0x703, frames=None):
     for value in data:
         m.write(SPI + 0x2c, value)
     m.write(SPI + 0x24, 0)
-    step(m, len(data) * 1000)
+    step(m, (len(data) if frames is None else frames) * (((fmt >> 8) & 31) + 1) * 125)
     assert done(m, SPI)
 
 
@@ -419,6 +482,7 @@ def evb_panel():
 
 def main():
     timing()
+    clocks()
     panel()
     scanout()
     evb_panel()

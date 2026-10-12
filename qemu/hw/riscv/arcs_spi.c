@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* SPI functional FIFO service at 1 MHz; GPT averaged edge-aligned PWM. */
+/* Clocked SPI FIFO service; GPT averaged edge-aligned PWM. */
 #include "qemu/osdep.h"
+#include "qemu/host-utils.h"
 #include "hw/riscv/arcs.h"
 #include "hw/irq.h"
 #include "system/address-spaces.h"
@@ -18,11 +19,80 @@ static void signals(ArcsSPI *s)
     arcs_soc_irq(s->soc, 46 + s->index, !!(spi_pending(s) & s->regs[0x38 / 4]));
 }
 
+/* LCM(1..15) times the SPI SYSPLL /12 branch divider. Work is
+ * measured in source-clock cycles, scaled by 1e9 for nanosecond accounting. */
+#define SPI_CLOCK_SCALE UINT64_C(4324320)
+
+static Int128 multiply(uint64_t a, uint64_t b)
+{
+    uint64_t lo, hi;
+    mulu64(&lo, &hi, a, b);
+    return int128_make128(lo, hi);
+}
+
+static uint64_t clock_rate(ArcsSPI *s)
+{
+    uint32_t cfg = s->soc->sysctl.common_regs[0x14 / 4 + s->index];
+    uint32_t *pll = s->soc->sysctl.pll_regs;
+    uint64_t num = 24000000, den = 1;
+    if (!(cfg & (1u << 23))) { return 0; }
+    if (cfg & (1u << 22)) {
+        if (!(pll[2] & 1)) { return 0; }
+        if (pll[6] & 0x100) {
+            arcs_soc_fail(s->soc, 0x46100018, 4, false, pll[6]);
+        }
+        num *= pll[6] & 255;
+        /* LS2684 SPI uses SYSPLL /12 for all reserved PERI_DIV_SEL
+         * values. Verified with long TX transfers and PLL relock. */
+        den = 12;
+    }
+    num *= (cfg >> 28) & 7;
+    den *= (cfg >> 24) & 15;
+    if (!num || !den) {
+        arcs_soc_fail(s->soc, 0x46000014 + 4 * s->index, 4, false, cfg);
+    }
+    assert(SPI_CLOCK_SCALE % den == 0);
+    return num * (SPI_CLOCK_SCALE / den);
+}
+
+static void account(ArcsSPI *s, int64_t now)
+{
+    if (s->phase && s->rate) {
+        s->work = int128_sub(s->work, multiply(now - s->updated, s->rate));
+    }
+    s->updated = now;
+}
+
 static void schedule(ArcsSPI *s)
 {
-    if (s->active && s->count && !timer_pending(s->service)) {
-        timer_mod(s->service, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000);
+    if (!s->active || !s->count) { return; }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (!s->phase) {
+        unsigned frames = s->regs[0x10 / 4] & 0x80 ? MIN(s->remaining, 4) : 1;
+        unsigned divider = s->regs[0x40 / 4] & 255;
+        unsigned cycles = s->bits * frames * (divider == 255 ? 1 : 2 * (divider + 1));
+        s->work = int128_add(s->work,
+            multiply(cycles, SPI_CLOCK_SCALE * 1000000000));
+        s->phase = true;
+        s->updated = now;
+        s->rate = clock_rate(s);
     }
+    if (s->rate && !timer_pending(s->service)) {
+        Int128 rounded = int128_add(s->work, int128_make64(s->rate - 1));
+        uint64_t delay = int128_le(s->work, int128_zero()) ? 0 :
+            int128_get64(int128_divu(rounded, int128_make64(s->rate)));
+        timer_mod(s->service, now + delay);
+    }
+}
+
+void arcs_spi_clock_changed(ArcsSoC *soc, unsigned index)
+{
+    ArcsSPI *s = &soc->spi[index];
+    if (!s->phase) { return; }
+    account(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    s->rate = clock_rate(s);
+    timer_del(s->service);
+    schedule(s);
 }
 
 static void fail(ArcsSPI *s, hwaddr off, uint32_t value)
@@ -40,7 +110,9 @@ static uint8_t reverse(uint8_t byte)
 static void drain(void *opaque)
 {
     ArcsSPI *s = opaque;
-    if (!s->active || !s->count) { return; }
+    account(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    s->phase = false;
+    if (!s->active || !s->count) { s->work = int128_zero(); return; }
     bool merge = s->regs[0x10 / 4] & 0x80;
     bool lsb = s->regs[0x10 / 4] & 8;
     if (merge && s->bits != 8) { fail(s, 0x10, s->regs[0x10 / 4]); }
@@ -58,7 +130,10 @@ static void drain(void *opaque)
         s->remaining--; s->frames++;
     }
     if (!s->remaining) { s->active = false; s->pending |= 16; }
+    /* Retain sub-nanosecond credit only across contiguous FIFO words. */
+    if (!s->active) { s->work = int128_zero(); }
     signals(s);  /* May synchronously refill from the DMA request endpoint. */
+    if (!s->count) { s->work = int128_zero(); }
     schedule(s);
 }
 
@@ -95,9 +170,16 @@ static void spi_write_impl(void *opaque, hwaddr off, uint64_t value, unsigned si
         break;
     case 0x30:
         if (value & 8) { fail(s, off, value); }
-        if (value & 1) { s->active = false; timer_del(s->service); s->pending = 0; }
+        if (value & 1) {
+            s->active = s->phase = false; s->work = int128_zero();
+            timer_del(s->service); s->pending = 0;
+        }
         if (value & 5) { s->head = s->count = 0; }
         s->regs[off / 4] = value & ~7u;
+        break;
+    case 0x40:
+        if (s->active && s->regs[off / 4] != value) { fail(s, off, value); }
+        s->regs[off / 4] = value;
         break;
     case 0x3c: s->pending &= ~value; break;
     case 0x24: {
@@ -218,7 +300,8 @@ void arcs_spi_reset(ArcsSoC *soc, unsigned i)
     ArcsSPI *s = &soc->spi[i];
     memset(s->regs, 0, sizeof(s->regs));
     s->head = s->count = s->pending = 0; s->remaining = s->frames = 0;
-    s->active = false; timer_del(s->service); signals(s);
+    s->active = s->phase = false; s->work = int128_zero();
+    timer_del(s->service); signals(s);
 }
 
 void arcs_gpt_reset(ArcsSoC *soc)

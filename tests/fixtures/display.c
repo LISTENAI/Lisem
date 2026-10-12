@@ -28,6 +28,8 @@ static void command(uint8_t cmd, const uint8_t *data, unsigned count)
 }
 __attribute__((used)) static void run(void)
 {
+    R(0x46000014) = 0x11801008; // Enable SPI0 from the 24 MHz XTAL.
+    R(SPI + 0x40) = 255; // Bypass local divider.
     // The same SoC registers and board connections used by the product driver.
     R(0x47500058) = 5; R(0x47500060) = 5; R(0x47500064) = 5;
     R(0x46700024) = 1u << 23;

@@ -279,6 +279,7 @@ static void common_write(void *opaque, hwaddr off, uint64_t value, unsigned size
         arcs_timer_clock(&soc->timer[1], 24000000 / divisor, !!(value & 0x10000));
     }
     s->common_regs[off / 4] = off == 0x6c ? value & 1 : value;
+    if (off >= 0x14 && off <= 0x1c) { arcs_spi_clock_changed(soc, (off - 0x14) / 4); }
     if (off == 0x94) { arcs_uart_update_dma(soc); }
     return;
 fail:
@@ -353,6 +354,7 @@ static void pll_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             icount_clock_set_ratio(CPU(&io->soc->cpu[i]), numerator, denominator);
         }
     }
+    for (unsigned i = 0; i < 3; i++) { arcs_spi_clock_changed(io->soc, i); }
     arcs_hsu_hclk_changed(io->soc);
     if (camera_hz && camera_hz != arcs_hclk_hz(io->soc)) {
         error_report("ARCS DVP cannot change HCLK during active pixel capture");
