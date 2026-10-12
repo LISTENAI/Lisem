@@ -105,7 +105,8 @@ def main():
         try:
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
-            assert len(names) == 25
+            assert len(names) == len(definitions)
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -159,6 +160,25 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            event = client.tool('lisem_events', {'id': identifier, 'run': run, 'action': 'arm',
+                'plan': {'trigger': {'uart_hex': 'ffffff', 'channel': 0, 'timeout_ms': 10000},
+                         'actions': [{'after_ms': 0, 'kind': 'button', 'button': 'function',
+                                      'count': 1, 'hold_ms': 80, 'gap_ms': 0}]}})
+            assert event['status'] == 'armed'
+            client.tool('lisem_events', {'id': identifier, 'run': run, 'action': 'cancel',
+                                        'sequence': event['sequence'] + 1}, error=True)
+            cancelled = client.tool('lisem_events', {'id': identifier, 'run': run, 'action': 'cancel',
+                                                    'sequence': event['sequence']})
+            assert cancelled['status'] == 'cancelled'
+            import wave
+            wav = Path(temporary) / 'input.wav'
+            with wave.open(str(wav), 'wb') as f:
+                f.setparams((1, 2, 16000, 0, 'NONE', 'not compressed'))
+                f.writeframes(bytes(32000))
+            audio = client.tool('lisem_audio_input', {'id': identifier, 'run': run, 'path': str(wav)})
+            cancelled = client.tool('lisem_audio_input_cancel', {'id': identifier, 'run': run,
+                                                               'sequence': audio['sequence']})
+            assert cancelled['status'] == 'cancelled' and cancelled['consumed'] == 0
             client.tool('lisem_set_wifi_environment', {'id': identifier, 'environment': wifi}, error=True)
             client.tool('lisem_set_wifi_environment', {'id': identifier, 'run': 'old', 'environment': wifi}, error=True)
             wifi['access_points'][0]['internet'] = False

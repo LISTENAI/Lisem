@@ -58,3 +58,37 @@ MCP 的 `lisem_audio_input` 返回注入标识；通过状态中的 `audio_input
 `audio_output` 状态包含样本数、非零样本数、峰值、最后样本及最后非零样本
 的虚拟时刻，以及 PA 状态。这些数据用于定位播放活动；语音内容和音质须
 分析录制文件，不能仅凭计数判定。长录音宜按用例分段，保留输入及输出证据。
+
+## 预置动作
+
+`lisem events DEVICE plan.json --run RUN` 在当前运行中布置一组动作，返回
+程序标识。`lisem events-status DEVICE SEQUENCE --run RUN` 查询状态，
+加 `--cancel` 可取消待执行动作及该程序仍持有的按键或音频输入。
+MCP 对应 `lisem_events` 的 `arm`、`status`、`cancel`。
+
+以下程序等待 UART 0 后续出现 `ready` 的原始字节，随后延迟 250 ms 按键：
+
+```json
+{
+  "trigger": {"uart_hex": "7265616479", "channel": 0, "timeout_ms": 10000},
+  "actions": [
+    {"after_ms": 250, "kind": "button", "button": "function",
+     "count": 1, "hold_ms": 80, "gap_ms": 0}
+  ]
+}
+```
+
+也可用 `{"at_ns": 10000000000}` 在本轮运行的第 10 个虚拟秒触发。
+`after_ms` 相对于触发时刻，以虚拟时间执行；UART 匹配不回看历史，不消耗
+终端数据。模式为 1～128 字节，等待期限为 1～86400000 虚拟毫秒。
+
+动作可为 `button`、`audio`（WAV 的绝对 `path`）、`access_point`
+（`enabled`）或 `power_off`。每组 1～32 个动作按 `after_ms` 排序，
+下电动作必须在最后；触发期限及动作必须在剩余运行预算内。
+`access_point` 只改变本轮热点可用状态。
+
+`dispatched` 表示动作已经交付。按键序列和 WAV 可能仍在执行，应继续观察
+返回的 `button_sequence`、`audio_sequence` 标识；业务成功须由固件输出
+确认。复位和手动按键取消待执行动作。WAV 注入可用来触发已经布置的
+UART 条件；若程序还包含音频动作，须保证动作执行时 ADC 输入未被占用。
+超时、运行中断和动作失败各自有明确状态，不能当作完成。

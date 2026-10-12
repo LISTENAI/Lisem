@@ -113,6 +113,56 @@ struct ButtonSequence {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct Events {
+    id: String,
+    run: String,
+    /// arm, status or cancel. Status/cancel require sequence; arm requires plan.
+    action: String,
+    sequence: Option<u64>,
+    /// {trigger:{at_ns} or {uart_hex,channel,timeout_ms},actions:[{after_ms,kind,...}]}.
+    /// Kinds: button (button,count,hold_ms,gap_ms), audio (path), access_point (enabled), power_off (last).
+    plan: Option<EventPlan>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct EventPlan {
+    trigger: EventTrigger,
+    /// 1..32 actions, ordered by virtual milliseconds after the trigger.
+    actions: Vec<EventAction>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+enum EventTrigger {
+    Time { /// Absolute virtual nanoseconds, strictly later than the current run time.
+        at_ns: u64 },
+    Uart { /// 1..128 future UART bytes, hexadecimal. Previously emitted bytes do not match.
+        uart_hex: String, /// UART channel 0..2.
+        channel: u8, /// Virtual expiry 1..86400000 milliseconds.
+        timeout_ms: u64 },
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(tag="kind", rename_all="snake_case", deny_unknown_fields)]
+enum EventAction {
+    Button {
+        /// Virtual milliseconds after the trigger, 0..86400000.
+        after_ms: u64,
+        /// Board button ID from lisem_catalog.
+        button: String,
+        /// Press count, 1..32. Entire sequence must be at most 60000 ms.
+        count: u64,
+        /// Virtual milliseconds held per press, at least 1.
+        hold_ms: u64,
+        /// Virtual milliseconds released between presses; at least 1 for repeated presses.
+        gap_ms: u64,
+    },
+    Audio { after_ms: u64, /// Absolute mono PCM16/16 kHz WAV path, kept unchanged until input completes.
+        path: String },
+    AccessPoint { after_ms: u64, enabled: bool },
+    /// Must be the last action.
+    PowerOff { after_ms: u64 },
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct UartCapture {
     id: String,
     channel: u8,
@@ -355,6 +405,8 @@ fn tools() -> Vec<Tool> {
             "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
             false,
         ),
+        definition::<Events>("lisem_events",
+            "Prearm 1..32 board actions at an absolute virtual time or a future raw UART byte pattern. Actions run at trigger time plus after_ms. UART matching is bounded to 128 bytes with a virtual expiry. Returns program identity; poll status. Dispatched means actions were submitted, not firmware success: follow returned button/audio sequence identities. Reset cancels pending actions. Requires current run.", false),
         definition::<SequenceControl>("lisem_audio_input_cancel",
             "Cancel remaining samples of this WAV injection, confirming the current run and injection sequence. The instance keeps running.", false),
         definition::<UartCapture>("lisem_uart_capture",
@@ -475,6 +527,8 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_audio_input_cancel" => call(manager, "audio_cancel", arguments::<SequenceControl>(value)?)?,
+        "lisem_events" => call(manager, "events", arguments::<Events>(value)?)?,
         "lisem_uart_capture" => call(manager, "uart_capture", arguments::<UartCapture>(value)?)?,
         "lisem_button_sequence" => call(
             manager,
@@ -502,7 +556,6 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
             )?
         }
         "lisem_access_point" => call(manager, "access_point", arguments::<AccessPoint>(value)?)?,
-        "lisem_audio_input_cancel" => call(manager, "audio_cancel", arguments::<SequenceControl>(value)?)?,
         "lisem_audio_input" => call(manager, "audio", arguments::<Audio>(value)?)?,
         "lisem_shutdown" => call(manager, "shutdown", arguments::<Instance>(value)?)?,
         "lisem_screenshot" => {

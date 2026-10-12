@@ -27,6 +27,8 @@
 #include "qobject/qjson.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
+#include "qobject/qlist.h"
+#include "qobject/qbool.h"
 
 #define TYPE_ARCS_MACHINE MACHINE_TYPE_NAME("arcs-mini")
 #define TYPE_ARCS_EVB_MACHINE MACHINE_TYPE_NAME("arcs-evb")
@@ -83,6 +85,15 @@ struct ArcsMachine {
     bool desktop_pressed;
     QEMUTimer *button_timer;
     uint64_t button_sequence;
+    QEMUTimer *event_timer;
+    QList *event_actions;
+    uint64_t event_sequence, event_button_sequence, event_audio_sequence;
+    unsigned event_index, event_channel, event_pattern_length, event_window_length;
+    uint8_t event_pattern[128], event_window[128];
+    int64_t event_origin, event_last_ns;
+    const char *event_status, *event_reason;
+    char *event_error;
+    bool event_dispatching;
     unsigned button_count, button_completed;
     unsigned button_id;
     bool evb_button_pressed;
@@ -116,6 +127,7 @@ static bool evb_button_get(ArcsMachine *s, unsigned id);
 static char *button_sequence_get(Object *obj, Error **errp);
 static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp);
 
+#include "arcs_events.inc"
 
 static void reset_radio(ArcsMachine *s)
 {
@@ -556,6 +568,7 @@ static void report(void *opaque, const char *status)
     if (!f) { perror("ARCS report"); exit(1); }
     s->reported = true;
     button_cancel(s, "run-ended", true);
+    g_autofree char *events = event_get(OBJECT(s), NULL);
     g_autofree char *sequence = button_sequence_get(OBJECT(s), NULL);
     lisa_host_audio_finish(&s->host_audio, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     desktop_capture(s);
@@ -563,7 +576,7 @@ static void report(void *opaque, const char *status)
             "\"cp\":{\"address\":2097152,\"size\":32768,\"sha256\":\"%s\"}},",
             arcs_soc_rom_sha256(0), arcs_soc_rom_sha256(1));
     g_autofree char *input = input_status(s, true);
-    fprintf(f, "\"audio_input\":%s,\"button_sequence\":%s,", input, sequence);
+    fprintf(f, "\"audio_input\":%s,\"events\":%s,\"button_sequence\":%s,", input, events, sequence);
     fprintf(f, "\"status\":\"%s\",\"virtual_ns\":%" PRId64
             ",\"wall_seconds\":%.9f,\"aggregate_instructions\":%" PRId64 ",\"cores\":[",
             status, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
@@ -1101,6 +1114,7 @@ static void boot_pin_set(Object *obj, bool asserted, Error **errp)
 static void machine_reset(MachineState *machine, ResetType type)
 {
     ArcsMachine *s = ARCS_MACHINE(machine);
+    event_cancel(s, "reset");
     button_cancel(s, "reset", true);
     desktop_capture(s);
     s->desktop_pcm_written = 0;
@@ -1264,6 +1278,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         arcs_gpio_outputs_snapshot(&s->soc.gpio[i], &driven[i], &levels[i]);
     }
     desktop_capture(s);
+    g_autofree char *events = event_get(obj, errp);
     g_autofree char *sequence = button_sequence_get(obj, errp);
     g_autofree char *camera = camera_input_status(s);
     g_autofree char *wifi = arcs_wifi_environment_status(s->access_points);
@@ -1279,7 +1294,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
                           evb_button_get(s, 1) ? "true" : "false",
                           evb_button_get(s, 2) ? "true" : "false")
         : g_strdup_printf("{\"function\":%s}", s->desktop_pressed ? "true" : "false");
-    return g_strdup_printf("{\"audio_output\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+    return g_strdup_printf("{\"audio_output\":%s,\"events\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
@@ -1287,7 +1302,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        audio_output, wifi, s->access_points_present ? "true" : "false",
+        audio_output, events, wifi, s->access_points_present ? "true" : "false",
         camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
@@ -1329,6 +1344,7 @@ static bool evb_button_get(ArcsMachine *s, unsigned id)
 static void evb_button_set(ArcsMachine *s, unsigned id, bool pressed)
 {
     if (!pressed && s->evb_button_pressed && s->button_id != id) { return; }
+    event_cancel(s, "manual-input");
     button_cancel(s, "manual-input", false);
     s->button_id = id;
     button_drive(s, pressed);
@@ -1434,6 +1450,7 @@ static void button_sequence_set(Object *obj, const char *value, Error **errp)
     if (now >= s->budget || duration >= s->budget - now) {
         error_setg(errp, "Button sequence exceeds the remaining virtual run budget"); return;
     }
+    event_cancel(s, "manual-input");
     s->button_sequence++;
     s->button_id = id;
     s->button_count = count;
@@ -1456,6 +1473,7 @@ static void desktop_button_set(Object *obj, bool pressed, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
     /* Transfer ownership without a release/press pulse on an already held key. */
+    event_cancel(s, "manual-input");
     button_cancel(s, "manual-input", false);
     button_drive(s, pressed);
 }
@@ -1636,6 +1654,12 @@ static void desktop_init(ArcsMachine *s)
         object_property_add_bool(OBJECT(s), "x-lisa-evb-k3-pressed", evb_k3_get, evb_k3_set);
         object_property_add_str(OBJECT(s), "x-lisa-touch", touch_get, touch_set);
     }
+    s->event_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, event_step, s);
+    object_property_add_str(OBJECT(s), "x-lisa-events", event_get, event_set);
+    for (unsigned i = 0; i < 3; i++) {
+        s->soc.uart[i].observe = event_uart;
+        s->soc.uart[i].observe_opaque = s;
+    }
     s->button_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, button_sequence_step, s);
     object_property_add_str(OBJECT(s), "x-lisa-button-sequence", button_sequence_get, button_sequence_set);
     s->input_prefetch = timer_new_ms(QEMU_CLOCK_REALTIME, input_prefetch, s);
@@ -1662,6 +1686,8 @@ static void machine_class_init(ObjectClass *klass, const void *data)
 static void machine_finalize(Object *obj)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->event_timer) { timer_free(s->event_timer); }
+    qobject_unref(s->event_actions); g_free(s->event_error);
     if (s->input_prefetch) { timer_free(s->input_prefetch); }
     if (s->input_file) { fclose(s->input_file); }
     g_free(s->pcm_input);

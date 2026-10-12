@@ -41,6 +41,8 @@ typedef struct ArcsTimer {
 
 typedef struct ArcsUART {
     CharBackend chr;
+    void (*observe)(void *opaque, unsigned channel, uint8_t value);
+    void *observe_opaque;
     uint32_t control, mask, triggers, commands;
     ArcsSoC *soc;
     QEMUTimer *idle;

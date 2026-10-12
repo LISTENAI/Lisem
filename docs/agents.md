@@ -33,6 +33,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_button_sequence_status`、`lisem_button_sequence_cancel` | 查询或取消指定按键序列 |
 | `lisem_uart`、`lisem_uart_read`、`lisem_uart_write` | 连接、观察和输入原始 UART |
 | `lisem_uart_capture` | 持续接收并保存原始串口字节 |
+| `lisem_events` | 按虚拟时间或 UART 条件触发动作 |
 | `lisem_audio_input_cancel` | 取消指定 WAV 注入 |
 | `lisem_screenshot`、`lisem_audio_input` | 返回 PNG 图像、向 ADC 输入 WAV |
 | `lisem_access_point` | 运行中切换外部热点可用性 |

@@ -123,6 +123,7 @@ void arcs_uart_write(ArcsSoC *s, unsigned index, unsigned off, uint32_t value)
             if (u->control & (1u << 24)) {
                 receive(u, &b, 1);
             } else {
+                if (u->observe) { u->observe(u->observe_opaque, u->index, b); }
                 qemu_chr_fe_write_all(&u->chr, &b, 1);
             }
             u->tx_bytes++;

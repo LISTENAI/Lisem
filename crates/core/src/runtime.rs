@@ -355,6 +355,7 @@ pub struct Session {
     backend: Backend,
     pending_releases: BTreeMap<String, String>,
     pending_cancel: bool,
+    pending_event_cancel: bool,
 }
 impl Session {
     fn start(catalog: &Catalog, item: &Value, options: Options) -> Result<Self> {
@@ -547,6 +548,7 @@ impl Session {
             process,
             pending_releases: BTreeMap::new(),
             pending_cancel: false,
+            pending_event_cancel: false,
             qmp,
             camera,
             camera_capture: None,
@@ -684,6 +686,7 @@ impl Session {
             };
             if let Some(report) = report {
                 if let Some(input) = report.get("audio_input") { self.state["audio_input"] = input.clone(); }
+                if let Some(events) = report.get("events") { self.state["events"] = events.clone(); }
                 if let Some(sequence) = report.get("button_sequence") {
                     self.state["button_sequence"] = sequence.clone();
                 }
@@ -692,7 +695,7 @@ impl Session {
                 self.state["ap_exceptions"] = report["cores"][0]["exceptions"].clone();
                 self.state["exceptions"] = report["cores"][1]["exceptions"].clone();
                 self.state["machine_status"] = report["status"].clone();
-                if ![Some("budget-complete"), Some("probe-pass")]
+                if ![Some("budget-complete"), Some("probe-pass"), Some("power-off")]
                     .contains(&report["status"].as_str())
                 {
                     self.state["error"] = json!(qemu_failure(&errors));
@@ -702,6 +705,9 @@ impl Session {
             }
             if !status.success() && !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!(format!("QEMU exited with {status}"));
+            }
+            if [Some("armed"), Some("running")].contains(&self.state["events"]["status"].as_str()) {
+                self.state["events"]["status"] = json!("interrupted");
             }
             if self.state["audio_input"]["status"] == "running" {
                 self.state["audio_input"]["status"] = json!("interrupted");
@@ -839,6 +845,7 @@ impl Session {
             return Ok(());
         }
         self.stopped = true;
+        let _ = self.qmp.set("x-lisa-events", json!("cancel"), &mut self.uart);
         let _ = self
             .qmp
             .set("x-lisa-button-sequence", json!("cancel"), &mut self.uart);
@@ -1090,6 +1097,10 @@ impl Runtime {
                 }
             }
             if !session.finished && session.qmp.pending_id().is_none() {
+                if session.pending_event_cancel {
+                    session.qmp.set("x-lisa-events", json!("cancel"), &mut session.uart)?;
+                    session.pending_event_cancel = false;
+                }
                 if session.pending_cancel {
                     session.qmp.set(
                         "x-lisa-button-sequence",
@@ -1452,6 +1463,52 @@ impl Runtime {
                 };
                 session.qmp.set(property, json!(value), &mut session.uart)?;
                 Ok(json!({"x":x,"y":y,"pressed":pressed}))
+            }
+            "events" => {
+                ensure!(params["run"].is_string(), "Event programs require a run identifier");
+                let action = params["action"].as_str().context("Event action missing")?;
+                ensure!(["arm", "status", "cancel"].contains(&action), "Invalid event action");
+                if action == "arm" {
+                    let session = self.session.as_mut().context("Instance is not running")?;
+                    let program = event_program(&params["plan"], &session.backend)?;
+                    session.qmp.ensure_idle()?;
+                    if let Err(error) = session.qmp.set("x-lisa-events", json!(program.to_string()), &mut session.uart) {
+                        if error.is::<transport::ControlPending>() { session.pending_event_cancel = true; }
+                        return Err(error);
+                    }
+                    let result = (|| -> Result<Value> {
+                        let value = session.qmp.get("x-lisa-events", &mut session.uart)?;
+                        Ok(serde_json::from_str(value.as_str().context("Invalid event status")?)?)
+                    })();
+                    match result {
+                        Ok(state) => { session.state["events"] = state.clone(); return Ok(state); }
+                        Err(error) => {
+                            // No owner received the sequence ID. Revoke any submitted program.
+                            session.pending_event_cancel = true;
+                            if session.qmp.pending_id().is_none() {
+                                session.qmp.set("x-lisa-events", json!("cancel"), &mut session.uart)?;
+                                session.pending_event_cancel = false;
+                            }
+                            return Err(error.context("Event identity was not confirmed; cancellation requested"));
+                        }
+                    }
+                } else {
+                    let state = if let Some(session) = self.session.as_mut() {
+                        let value = session.qmp.get("x-lisa-events", &mut session.uart)?;
+                        serde_json::from_str::<Value>(value.as_str().context("Invalid event status")?)?
+                    } else { self.last_state["events"].clone() };
+                    ensure!(params["sequence"].as_u64().is_some_and(|v| v > 0) && params["sequence"] == state["sequence"],
+                        "The request belongs to an earlier event program");
+                    if action == "status" || self.session.is_none() { return Ok(state); }
+                    let session = self.session.as_mut().unwrap();
+                    session.qmp.set("x-lisa-events", json!("cancel"), &mut session.uart)?;
+                    session.capture()?;
+                }
+                let session = self.session.as_mut().unwrap();
+                let value = session.qmp.get("x-lisa-events", &mut session.uart)?;
+                let status: Value = serde_json::from_str(value.as_str().context("Invalid event status")?)?;
+                session.state["events"] = status.clone();
+                Ok(status)
             }
             "button_sequence" => {
                 ensure!(
@@ -1988,6 +2045,61 @@ impl Runtime {
             _ => bail!("Unknown runtime method"),
         }
     }
+}
+
+fn event_program(plan: &Value, backend: &Backend) -> Result<Value> {
+    let trigger = &plan["trigger"];
+    let mut program = json!({});
+    if let Some(at) = trigger["at_ns"].as_u64() {
+        ensure!(at <= 86_400_000_000_000, "Event time exceeds 24 hours");
+        ensure!(trigger["uart_hex"].is_null(), "Choose one event trigger");
+        program["at_ns"] = json!(at);
+    } else {
+        let hex = trigger["uart_hex"].as_str().context("Event trigger requires at_ns or uart_hex")?;
+        let pattern = storage::unhex(hex)?;
+        ensure!((1..=128).contains(&pattern.len()), "UART trigger must contain 1..128 bytes");
+        let channel = trigger["channel"].as_u64().filter(|n| *n < 3).context("UART channel must be 0..2")?;
+        let timeout = trigger["timeout_ms"].as_u64().filter(|n| (1..=86400000).contains(n))
+            .context("UART trigger requires timeout_ms in 1..86400000")?;
+        program["uart_hex"] = json!(hex);
+        program["channel"] = json!(channel);
+        program["timeout_ms"] = json!(timeout);
+    }
+    let actions = plan["actions"].as_array().filter(|a| (1..=32).contains(&a.len()))
+        .context("Event program requires 1..32 actions")?;
+    let mut result = Vec::new();
+    let mut previous = 0;
+    let mut button_end = 0;
+    for (index, action) in actions.iter().enumerate() {
+        let delay = action["after_ms"].as_u64().context("Action after_ms is required")?;
+        ensure!(delay >= previous && delay <= 86400000, "Actions must be ordered within 24 hours");
+        previous = delay;
+        let (property, value) = match action["kind"].as_str() {
+            Some("button") => {
+                let request: ButtonSequence = serde_json::from_value(action.clone())?;
+                backend.button(&request.button)?;
+                let command = request.command()?;
+                ensure!(delay >= button_end, "Scheduled button sequences overlap");
+                button_end = delay + request.count * request.hold_ms + (request.count - 1) * request.gap_ms;
+                ("x-lisa-button-sequence", json!(command))
+            }
+            Some("access_point") => ("wifi-ap-present", json!(action["enabled"].as_bool().context("Missing hotspot state")?)),
+            Some("audio") => {
+                let path = fs::canonicalize(action["path"].as_str().context("WAV path missing")?)?;
+                let (offset, length) = crate::wave_input::samples(&path)?;
+                ("x-lisa-audio-file", json!(json!({"path":path,"offset":offset,"length":length}).to_string()))
+            }
+            Some("power_off") => {
+                ensure!(index + 1 == actions.len(), "Power off must be the last action");
+                ("power-off", Value::Null)
+            }
+            _ => bail!("Unknown event action"),
+        };
+        result.push(json!({"after_ms":delay,"property":property,"value":value}));
+    }
+    program["actions"] = json!(result);
+    ensure!(program.to_string().len() <= 32768, "Event program is too large");
+    Ok(program)
 }
 
 /// Private local endpoint; random authentication is independent of firmware UID.

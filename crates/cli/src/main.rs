@@ -117,6 +117,22 @@ enum Action {
         #[arg(long, default_value_t = 80)]
         gap_ms: u64,
     },
+    /// Arm a bounded event program from a JSON file.
+    #[command(after_long_help = r#"Plan example (future UART 0 bytes 'ready', then an 80 ms press):
+  {"trigger":{"uart_hex":"7265616479","channel":0,"timeout_ms":10000},
+   "actions":[{"after_ms":250,"kind":"button","button":"function",
+               "count":1,"hold_ms":80,"gap_ms":0}]}
+
+Trigger: {"at_ns":N} uses absolute virtual nanoseconds; UART matching observes
+future bytes with a virtual timeout. Actions are ordered by after_ms (0..86400000)
+relative to the trigger. 1..32 actions; the plan must fit the run budget.
+Kinds: button (button,count,hold_ms,gap_ms), audio (absolute WAV path),
+access_point (enabled), power_off (last action). Button counts: 1..32;
+hold_ms >= 1, gap_ms >= 1 for repeated presses, total sequence <= 60000 ms.
+Dispatched means input delivery; confirm child sequence and firmware results."#)]
+    Events { id: String, file: PathBuf, #[arg(long)] run: String },
+    /// Inspect or cancel an event program.
+    EventsStatus { id: String, sequence: u64, #[arg(long)] run: String, #[arg(long)] cancel: bool },
     /// Receive raw UART bytes across power cycles until Ctrl+C or the host deadline.
     UartReceive { id: String, channel: u8, #[arg(long)] capture: PathBuf,
         #[arg(long, default_value_t = 36000)] timeout: u64 },
@@ -337,6 +353,11 @@ fn run() -> Result<i32> {
         Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
             "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
         )?,
+        Action::Events { id, file, run } => manager.call("events", json!({"id":id,"run":run,
+            "action":"arm","plan":storage::read_json(&file)?}))?,
+        Action::EventsStatus { id, sequence, run, cancel } => manager.call("events", json!({"id":id,"run":run,
+            "sequence":sequence,"action":if cancel {"cancel"} else {"status"}}))?,
+        Action::UartReceive { id, channel, capture, timeout } => uart::receive(&mut manager, &id, channel, &absolute(&capture)?, timeout, &stop)?,
         Action::ButtonSequenceStatus { id, sequence, run, cancel } => manager.call(
             if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
             json!({"id":id,"run":run,"sequence":sequence}),
@@ -363,7 +384,6 @@ fn run() -> Result<i32> {
             }
             manager.call("camera", params)?
         }
-        Action::UartReceive { id, channel, capture, timeout } => uart::receive(&mut manager, &id, channel, &absolute(&capture)?, timeout, &stop)?,
         Action::Screenshot { id, output } => manager.call(
             "screenshot", json!({"id": id, "path": absolute(&output)?}),
         )?,

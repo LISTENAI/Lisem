@@ -30,7 +30,8 @@ impl Output {
                 Self::Message(format!("Button {button}: {state}."))
             }
             Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } => Self::Json,
-            Action::UartReceive { .. } | Action::Camera { .. }
+            Action::Events { .. } | Action::EventsStatus { .. } | Action::UartReceive { .. }
+            | Action::Camera { .. }
             | Action::CameraDevices
             | Action::WifiEnvironment { .. }
             | Action::AccessPoint { .. }
