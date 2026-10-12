@@ -12,6 +12,11 @@ static void advance(void *opaque)
     LisaHostAudio *s = opaque;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     lisa_audio_advance(s->stream, now);
+    /* Attach only once actual playback has begun. The pacing layer reads
+     * the live consumer cursor on every host wait, including idle warps. */
+    if (lisa_audio_load(&s->stream->output_read)) {
+        icount_clock_audio_cursor(&s->stream->output_cursor_ns);
+    }
     timer_mod(s->timer, now + 10000000);
 }
 

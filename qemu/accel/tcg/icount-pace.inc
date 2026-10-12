@@ -7,6 +7,7 @@
 
 static QEMUTimer *icount_pace_timer;
 static int64_t icount_pace_origin;
+static const uint64_t *icount_audio_cursor;
 
 static void icount_pace_wake(void *opaque)
 {
@@ -36,6 +37,21 @@ int64_t icount_clock_audio_epoch(void)
     return icount_pace_origin;
 }
 
+/* The consumer owns this cursor for the lifetime of the machine. Only host
+ * waits use it; guest clocks, instruction budgets and DAC data are unchanged. */
+void icount_clock_audio_cursor(const uint64_t *cursor)
+{
+    assert(bql_locked());
+    icount_audio_cursor = cursor;
+}
+
+static int64_t icount_audio_ahead(int64_t virtual_ns)
+{
+    return icount_audio_cursor ? virtual_ns -
+        (int64_t)__atomic_load_n(icount_audio_cursor, __ATOMIC_ACQUIRE) -
+        250000000 : 0;
+}
+
 void icount_clock_pace(void)
 {
     if (!icount_pace_timer) {
@@ -52,7 +68,9 @@ void icount_clock_pace(void)
                 return;
             }
         }
-        int64_t ahead = icount_get() + icount_pace_origin - cpu_get_clock() - 1000000;
+        int64_t now = icount_get();
+        int64_t ahead = MAX(now + icount_pace_origin - cpu_get_clock() - 1000000,
+                            icount_audio_ahead(now));
         if (ahead <= 0) {
             return;
         }
@@ -67,7 +85,12 @@ static bool icount_pace_defer_warp(int64_t deadline)
         return false;
     }
     assert(bql_locked());
-    int64_t target = icount_get() + deadline + icount_pace_origin;
+    int64_t virtual_ns = icount_get() + deadline;
+    int64_t target = virtual_ns + icount_pace_origin;
+    int64_t audio_ahead = icount_audio_ahead(virtual_ns);
+    if (audio_ahead > 0) {
+        target = MAX(target, cpu_get_clock() + MIN(audio_ahead, 10000000));
+    }
     if (target > cpu_get_clock()) {
         /* Do not use host lateness as a virtual-time delta. Once due,
          * the ordinary no-sleep warp advances to precisely this event. */

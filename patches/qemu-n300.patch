@@ -411,7 +411,7 @@
  system_ss.add(when: 'CONFIG_DDC', if_true: files('i2c-ddc.c'))
 --- a/include/exec/icount.h
 +++ b/include/exec/icount.h
-@@ -42,6 +42,17 @@
+@@ -42,6 +42,18 @@
   * cpus-tcg vCPU thread so the main-loop can see time has moved forward.
   */
  void icount_update(CPUState *cpu);
@@ -420,6 +420,7 @@
 +void icount_clock_enable_pacing(void);
 +void icount_clock_pace(void);
 +int64_t icount_clock_audio_epoch(void);
++void icount_clock_audio_cursor(const uint64_t *cursor);
 +int64_t icount_clock_budget(CPUState *cpu, int64_t deadline);
 +void icount_clock_finish(CPUState *cpu);
 +int64_t icount_get_cpu_raw(CPUState *cpu);

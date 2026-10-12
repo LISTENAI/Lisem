@@ -8,6 +8,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 import run_qemu_cpu_clocks as base
@@ -159,6 +160,94 @@ def controlled(name, probe='idle', stall=False, reset=False, quit_early=False):
                 process.wait(timeout=15)
 
 
+def audio_backpressure():
+    from run_qemu_host_audio import endpoint
+    # A real Codec stream and CPU clock, with a deliberately stalled host
+    # consumer. Its sample timestamps and instruction counts must match the
+    # unpaced reference even while the bounded output lead throttles QEMU.
+    writes = [(0x45800008, 0x70000), (0x45b00000, 1),
+              (0x45b0000c, 0x80000005), (0x45b000f4, 0x12340000),
+              (0x45c00008, 3), (0x45c0003c, 0x63), (0x45c00048, 16),
+              (0x45c00054, 1), (0x45c00058, 1), (0x480000c0, 0x4000)]
+    code = ''.join('li t0, %d\nli t1, %d\nsw t1, 0(t0)\n' % item for item in writes)
+    clocks = (300000000, 300000000, 10000)
+    for busy in (False, True):
+        name = 'audio-' + ('busy' if busy else 'idle')
+        program = code + ('j .\n' if busy else 'wfi\nj .\n')
+        reference = base.run(name + '-free', program, clocks, duration=1200000000)
+        directory = base.OUTPUT / (name + '-endpoint')
+        directory.mkdir()
+        path = directory / 'stream.bin'
+        memory, stream = endpoint(path)
+        stream.capture = stream.epoch_ready = 0
+        wrapper = directory / 'qemu.py'
+        binary = str(ROOT / '.tools/qemu-build/qemu-system-riscv32')
+        wrapper.write_text('#!' + sys.executable + '\nimport os,sys\n' +
+                           'os.environ["ARCS_QEMU_HOST_AUDIO"] = %r\n' % str(path) +
+                           'os.execv(%r, [%r] + sys.argv[1:])\n' % (binary, binary))
+        wrapper.chmod(0o755)
+        done = threading.Event()
+        observed, failures = [], []
+
+        def consume():
+            try:
+                deadline = time.monotonic() + 10
+                while stream.output_write < 1280:
+                    assert time.monotonic() < deadline
+                    time.sleep(.002)
+                # Reclaim the first period, then interrupt host playback.
+                for i in range(160):
+                    f = stream.output[i]
+                    observed.append((f.ns, f.value, f.enabled))
+                stream.output_cursor_ns = observed[-1][0] + 62500
+                stream.output_read = 160
+                stream.output_logged = stream.output_write
+                time.sleep(.65)
+                assert stream.output_write - stream.output_read < 4400, stream.output_write
+                while not done.is_set() or stream.output_read < stream.output_write:
+                    start = stream.output_read
+                    end = min(start + 160, stream.output_write)
+                    for i in range(start, end):
+                        f = stream.output[i & (262144 - 1)]
+                        observed.append((f.ns, f.value, f.enabled))
+                    if end > start:
+                        stream.output_cursor_ns = observed[-1][0] + 62500
+                        stream.output_read = end
+                    stream.output_logged = stream.output_write
+                    assert time.monotonic() < deadline
+                    time.sleep(.01)
+            except BaseException as error:
+                failures.append(error)
+
+        consumer = threading.Thread(target=consume)
+        consumer.start()
+        try:
+            report = base.run(name + '-paced', program, clocks, duration=1200000000,
+                              extra=['--pace', '--qemu', str(wrapper)])
+        finally:
+            done.set()
+            consumer.join(timeout=12)
+        assert not consumer.is_alive() and not failures, failures
+        assert report['wall_seconds'] > 1.5, report['wall_seconds']
+        assert stream.max_output_backlog < 4400, stream.max_output_backlog
+        assert len(observed) == stream.output_write and len(observed) > 19000
+        assert observed[0][1] == 0x1234
+        assert all(b[0] - a[0] == 62500 for a, b in zip(observed, observed[1:]))
+        assert not stream.host_error and not stream.guest_error
+        report.pop('host_audio')
+        report.pop('wall_seconds'); reference.pop('wall_seconds')
+        assert report == reference
+        for file in FILES:
+            left = base.OUTPUT / (name + '-free/run') / file
+            right = base.OUTPUT / (name + '-paced/run') / file
+            assert left.exists() == right.exists()
+            if left.exists():
+                assert left.read_bytes() == right.read_bytes(), file
+        del stream
+        memory.close()
+    print('Host audio backpressure: stalled playback, busy/WFI CPUs, exact samples and clocks: PASS')
+
+
 def main():
     idle = '.rept 23\nnop\n.endr\nwfi\nj .\n'
     pair('idle', idle)
@@ -204,6 +293,7 @@ after_poll:
     r.pop('wall_seconds')
     debugger(base.OUTPUT / 'watchpoint/probe.elf', r, base.OUTPUT / 'gdb', COMPILER,
              ['--cpu-clock-experiment', *map(str, debug_clocks), '--pace'])
+    audio_backpressure()
     print('Wall pacing: exact CPU/events/outputs, WFI, HCLK, pause/reset/quit and host stall: PASS')
     print(base.OUTPUT)
 
