@@ -1,4 +1,5 @@
 mod audio;
+mod uart;
 mod mcp;
 mod output;
 use anyhow::{Result, ensure};
@@ -116,6 +117,9 @@ enum Action {
         #[arg(long, default_value_t = 80)]
         gap_ms: u64,
     },
+    /// Receive raw UART bytes across power cycles until Ctrl+C or the host deadline.
+    UartReceive { id: String, channel: u8, #[arg(long)] capture: PathBuf,
+        #[arg(long, default_value_t = 36000)] timeout: u64 },
     /// Read or cancel the latest button sequence, rejecting stale identifiers.
     ButtonSequenceStatus {
         id: String,
@@ -359,6 +363,7 @@ fn run() -> Result<i32> {
             }
             manager.call("camera", params)?
         }
+        Action::UartReceive { id, channel, capture, timeout } => uart::receive(&mut manager, &id, channel, &absolute(&capture)?, timeout, &stop)?,
         Action::Screenshot { id, output } => manager.call(
             "screenshot", json!({"id": id, "path": absolute(&output)?}),
         )?,

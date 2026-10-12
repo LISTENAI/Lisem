@@ -254,6 +254,7 @@ impl Manager {
             | "audio_cancel"
             | "audio_record"
             | "uart_read"
+            | "uart_capture"
             | "button_sequence"
             | "button_sequence_status"
             | "button_sequence_cancel"

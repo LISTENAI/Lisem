@@ -113,6 +113,18 @@ struct ButtonSequence {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct UartCapture {
+    id: String,
+    channel: u8,
+    /// start, status or stop. Start requires a new capture path; status/stop require capture identity.
+    action: String,
+    path: Option<String>,
+    capture: Option<String>,
+    /// Host deadline, 1..172800 seconds; defaults to 36000.
+    timeout: Option<u64>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SequenceControl {
     id: String,
     run: String,
@@ -343,6 +355,8 @@ fn tools() -> Vec<Tool> {
             "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
             false,
         ),
+        definition::<UartCapture>("lisem_uart_capture",
+            "Explicitly receive enabled UART endpoint bytes into a new raw capture file across power cycles. Drains queued output in order, including earlier runs. Exclusive terminal consumer: do not attach another terminal reader. Separate from non-consuming lisem_uart_read. Stop with capture identity; instance keeps running.", false),
         definition::<ButtonSequence>(
             "lisem_button_sequence",
             "Schedule 1..32 presses on QEMU virtual time, at most 60000 ms total and within the run budget. Returns a sequence identifier and state; poll lisem_button_sequence_status. Rejects overlapping sequences and a manually held button. Final release is automatic; reset/power-off cancel. Manual input cancels then takes control.",
@@ -459,6 +473,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_uart_capture" => call(manager, "uart_capture", arguments::<UartCapture>(value)?)?,
         "lisem_button_sequence" => call(
             manager,
             "button_sequence",

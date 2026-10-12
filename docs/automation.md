@@ -21,3 +21,20 @@ MCP 使用 `lisem_power_on` 的 `seconds`、`timeout` 参数，
 `runtime_active` 表示运行进程是否存在，`power_hold` 表示板级电源保持
 信号是否有效；未驱动或板型未定义该信号时为 `null`。固件的开关机行为
 应结合该信号、画面及串口判断。
+
+## 连续接收串口
+
+`uart-receive` 将原始字节写入新文件，接收可跨复位、上下电持续运行：
+
+```sh
+lisem uart-receive DEVICE 0 --capture uart0.bin --timeout 36000
+```
+
+Ctrl+C 结束接收，设备继续运行。该命令启用对应 UART 端点，接收已有积压
+及后续字节；接收期间不要再用其他终端读取同一端点。文件已存在则拒绝覆盖。
+
+MCP 先用 `lisem_uart` 启用端点，再调用 `lisem_uart_capture`：
+`action=start` 指定 `path` 和宿主 `timeout`，返回独立的 `capture` 标识；
+`action=status` 或 `stop` 携带该标识。状态包含接收字节数及错误。
+`lisem_uart_read` 是不消费端点的旁路观察，历史溢出时报告 `lost`，
+不能代替持续接收。此前运行的积压按原顺序保留，可通过接收归档排空。

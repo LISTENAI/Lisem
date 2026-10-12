@@ -1010,6 +1010,7 @@ pub struct Runtime {
     pending_access_point: Option<(u64, bool)>,
     pending_wifi_environment: Option<(u64, String, Value)>,
     ports: BTreeMap<u8, SerialPort>,
+    uart_captures: BTreeMap<u8, crate::uart_capture::Capture>,
     pub shutdown: bool,
 }
 impl Runtime {
@@ -1037,6 +1038,7 @@ impl Runtime {
             pending_access_point: None,
             pending_wifi_environment: None,
             ports,
+            uart_captures: BTreeMap::new(),
             shutdown: false,
         })
     }
@@ -1336,7 +1338,9 @@ impl Runtime {
             .iter()
             .map(|(n, p)| (n.to_string(), p.path.clone()))
             .collect();
-        Ok(json!({"session":state,"serial":ports,"worker":self.identity}))
+        let captures: BTreeMap<_, _> = self.uart_captures.iter()
+            .map(|(channel, capture)| (channel.to_string(), capture.status())).collect();
+        Ok(json!({"session":state,"serial":ports,"uart_captures":captures,"worker":self.identity}))
     }
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
         if let Some(run) = params.get("run").filter(|v| !v.is_null()) {
@@ -1872,6 +1876,26 @@ impl Runtime {
                 session.capture()?;
                 Ok(session.state["audio_input"].clone())
             }
+            "uart_capture" => {
+                let channel = params["channel"].as_u64().filter(|n| *n < 3).context("UART channel must be 0..2")? as u8;
+                let action = params["action"].as_str().context("Capture action missing")?;
+                if action == "start" {
+                    ensure!(self.uart_captures.get(&channel).is_none_or(|c| c.status()["status"] != "running"),
+                        "UART receiver is already active");
+                    let port = self.ports.get(&channel).context("Enable this UART endpoint before receiving")?;
+                    let path = Path::new(params["path"].as_str().context("Capture path missing")?);
+                    let capture = crate::uart_capture::Capture::start(&port.path, path,
+                        params["timeout"].as_u64().unwrap_or(36000))?;
+                    let status = capture.status();
+                    self.uart_captures.insert(channel, capture);
+                    return Ok(status);
+                }
+                ensure!(["status", "stop"].contains(&action), "Invalid capture action");
+                let capture = self.uart_captures.get_mut(&channel).context("No UART receiver")?;
+                ensure!(params["capture"].is_string() && params["capture"] == capture.status()["capture"],
+                    "The request belongs to an earlier UART capture");
+                Ok(if action == "stop" { capture.stop() } else { capture.status() })
+            }
             "uart_read" => {
                 let channel = params["channel"].as_u64().context("Missing UART channel")?;
                 ensure!(channel < 3, "UART channel must be 0..2");
@@ -1904,6 +1928,10 @@ impl Runtime {
                 Ok(json!(true))
             }
             "serial" => {
+                if params["enabled"] == false {
+                    let channel = params["channel"].as_u64().unwrap_or(255) as u8;
+                    ensure!(self.uart_captures.get(&channel).is_none_or(|c| c.status()["status"] != "running"), "Stop the UART receiver before disabling its endpoint");
+                }
                 let channel = params["channel"].as_u64().unwrap_or(0);
                 ensure!(channel < 3, "UART channel must be 0..2");
                 let enabled = params["enabled"].as_bool().unwrap_or(true);
