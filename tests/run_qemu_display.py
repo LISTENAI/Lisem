@@ -282,9 +282,67 @@ def rejection():
     print('SPI recursive configuration, overflow, invalid routing, restart and RX DMA rejected: PASS')
 
 
+def evb_panel():
+    m = Machine(OUTPUT / 'evb-panel', board='arcs-evb')
+    base = SPI + 0x100000
+    def transfer(values):
+        setup(m, base, len(values))
+        for value in values:
+            m.write(base + 0x2c, value)
+        m.write(base + 0x24, 0)
+        step(m, len(values) * 1000)
+        assert done(m, base)
+    def cmd(op, values=()):
+        m.write(0x4680002c, 1)  # B0 D/C
+        transfer([op])
+        if values:
+            m.write(0x46800030, 1)
+            transfer(values)
+    try:
+        for pad in (33, 35):
+            m.write(0x47500000 + 4 * pad, 6)
+        m.write(0x46800028, 0x21)  # B0 D/C, B5 software CS
+        m.write(0x46700028, 3)  # A0 backlight, A1 reset
+        m.write(0x46700030, 2)  # Reset high; active-low backlight on.
+        for op in (0x11, 0x21, 0x29):
+            cmd(op)
+        cmd(0x3a, [5])
+        # The physical 240x320 panel is mounted clockwise 270 degrees.
+        for x, y, color in [(0, 0, 0xf800), (239, 0, 0x07e0),
+                            (0, 319, 0x001f), (239, 319, 0xffff)]:
+            cmd(0x2a, [x >> 8, x & 255, x >> 8, x & 255])
+            cmd(0x2b, [y >> 8, y & 255, y >> 8, y & 255])
+            cmd(0x2c)
+            m.write(0x46800030, 1)
+            transfer([color >> 8, color & 255])
+        path = m.directory / 'corners.ppm'
+        m.qmp_command('screendump', {'filename': str(path), 'format': 'ppm'})
+        data = path.read_bytes()
+        header = b'P6\n320 240\n255\n'
+        assert data.startswith(header)
+        pixels = data[len(header):]
+        def pixel(x, y):
+            offset = (y * 320 + x) * 3
+            return pixels[offset:offset + 3]
+        assert pixel(0, 0) == b'\0\0\xff'
+        assert pixel(319, 0) == b'\xff\0\0'
+        assert pixel(0, 239) == b'\xff\xff\xff'
+        assert pixel(319, 239) == b'\0\xff\0'
+        m.write(0x46700030, 1)
+        m.qmp_command('screendump', {'filename': str(path), 'format': 'ppm'})
+        assert path.read_bytes()[len(header):] == bytes(320 * 240 * 3)
+        m.write(0x46700028, 2)  # Undriven backlight stays off.
+        m.qmp_command('screendump', {'filename': str(path), 'format': 'ppm'})
+        assert path.read_bytes()[len(header):] == bytes(320 * 240 * 3)
+        print('EVB SPI1, software CS, reset, backlight and mounted screen corners: PASS')
+    finally:
+        m.close()
+
+
 def main():
     timing()
     panel()
+    evb_panel()
     cpu_probe()
     rejection()
 

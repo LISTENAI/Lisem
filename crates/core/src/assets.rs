@@ -1,7 +1,7 @@
 //! Runtime assets and backend selection. Platform and chip details stop here;
 //! instance storage and front ends consume descriptors and capabilities.
 use crate::{catalog::Catalog, storage};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
 use std::{
     collections::BTreeSet,
@@ -223,11 +223,12 @@ impl Backend {
     pub fn for_device(catalog: &Catalog, item: &Value) -> Result<Self> {
         catalog.check_hardware(&item["hardware"])?;
         ensure!(
-            item["hardware"]["chip"]["id"] == "ls2684" && item["board"] == "arcs-mini",
+            item["hardware"]["chip"]["id"] == "ls2684"
+                && matches!(item["board"].as_str(), Some("arcs-mini" | "arcs-evb")),
             "No runtime backend registered for this chip and board"
         );
         Ok(Self {
-            machine: "arcs-mini".into(),
+            machine: item["board"].as_str().unwrap().into(),
         })
     }
     pub fn configure(
@@ -284,7 +285,18 @@ impl Backend {
         }
     }
     pub fn button(&self, id: &str) -> Result<&'static str> {
-        ensure!(id == "function", "Unknown board button");
-        Ok("x-lisa-function-pressed")
+        match (self.machine.as_str(), id) {
+            ("arcs-mini", "function") => Ok("x-lisa-function-pressed"),
+            ("arcs-evb", "k1") => Ok("x-lisa-evb-k1-pressed"),
+            ("arcs-evb", "k2") => Ok("x-lisa-evb-k2-pressed"),
+            ("arcs-evb", "k3") => Ok("x-lisa-evb-k3-pressed"),
+            _ => bail!("Unknown board button"),
+        }
+    }
+    pub fn touch(&self) -> Result<&'static str> {
+        match self.machine.as_str() {
+            "arcs-evb" => Ok("x-lisa-touch"),
+            _ => bail!("Touch input is unavailable on this board"),
+        }
     }
 }

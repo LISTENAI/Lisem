@@ -11,7 +11,7 @@ Lisem 是聆思芯片平台的设备模拟器。导入真机固件，就能在�
 `lisem` 命令管理和运行设备，把固件测试放进脚本或 CI。
 
 可在 macOS、Windows 和 Linux 上使用，
-支持 **LS2684（ARCS）芯片和 Arcs-Mini 板型**。
+支持 **LS2684（ARCS）芯片、Arcs-Mini 和 Arcs-EVB 板型**。
 
 ## 开始使用
 
@@ -28,7 +28,8 @@ brew install --cask listenai/tap/lisem
 
 ### 创建第一台设备
 
-1. 打开 Lisem，点击右上角「+」并选择「新建实例…」，选择 **Arcs-Mini**。
+1. 打开 Lisem，点击右上角的添加按钮，选择「新建实例…」，选择 **Arcs-Mini** 或
+   **Arcs-EVB**。
 2. 导入对应板型的 LPK 固件包，创建实例。
 3. 双击实例，在右上角上电。若固件需要长按开机，按住下方的功能键。
 
@@ -40,6 +41,7 @@ brew install --cask listenai/tap/lisem
 ### 与设备交互
 
 - **按键**：鼠标按下与松开分别对应真实按键的按下与松开。
+- **触摸**：Arcs-EVB 支持在屏幕上点击和拖动。
 - **声音**：默认播放设备音频；在麦克风菜单或实例设置中选择「系统麦克风」
   即可输入，运行中也可切换。
 - **摄像头**：在摄像头菜单选择图片；macOS 也可选择电脑上的摄像头实时取景。
@@ -63,6 +65,8 @@ Windows/Linux 位于解压目录中的 `lisem.exe` / `lisem`。以下用 `lisem`
 ```sh
 # 创建实例；INSTANCE_ID 使用创建结果中的 ID
 lisem create --board arcs-mini --name Mini --lpk firmware.lpk
+# Arcs-EVB 使用对应板型的 LPK
+lisem create --board arcs-evb --name EVB --lpk arcs-evb.lpk
 lisem list
 
 # 在前台运行，适合脚本与 CI
@@ -70,7 +74,7 @@ lisem run INSTANCE_ID --seconds 30 --timeout 120
 
 # 后台运行并交互
 lisem start INSTANCE_ID --seconds 120 --timeout 180
-lisem button INSTANCE_ID function press
+lisem button INSTANCE_ID function press  # Arcs-Mini
 # 按需等待，再松开
 lisem button INSTANCE_ID function release
 lisem screenshot INSTANCE_ID screen.png
@@ -97,8 +101,10 @@ CLI 默认不启用宿主网络和音频。使用 `--json` 获取结构化结果
 
 ## 支持范围
 
-可运行 Arcs-Mini 原始固件的显示、按键、存储、LUNA 推理和语音交互流程。
-内置芯片 ROM，也支持通过虚拟 UART 执行 ROM 烧录流程。
+可运行 Arcs-Mini 和 Arcs-EVB 原始固件的显示、按键、存储、LUNA 推理和
+语音交互流程。Arcs-EVB 的 ADC 按键通过 `k1`、`k2`、`k3` 控制，三个按键
+共用板上的 ADC 电阻梯。内置芯片 ROM，也支持通过虚拟 UART 执行 ROM
+烧录流程。
 
 GC0328 摄像头可选图片作为输入，macOS 支持宿主摄像头实时取景。
 

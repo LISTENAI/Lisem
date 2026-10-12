@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
-                 network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None):
+                 network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
+                 board='arcs-mini'):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -99,7 +100,7 @@ class Machine:
                 serial.extend(['-serial', 'null'])
         self.process = subprocess.Popen([
             str(ROOT / '.tools/qemu-build/qemu-system-riscv32'),
-            '-M', 'arcs-mini', '-accel', 'qtest',
+            '-M', board, '-accel', 'qtest',
             '-display', 'none', '-monitor', 'none', '-qtest', 'stdio',
             '-qtest-log', '/dev/null', '-chardev',
             'socket,id=qmp,fd=%d' % peer.fileno(), '-mon', 'chardev=qmp,mode=control',

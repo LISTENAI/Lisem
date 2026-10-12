@@ -1,0 +1,81 @@
+{
+  "id": "arcs-evb",
+  "name": "Arcs-EVB",
+  "chip": "ls2684",
+  "screen": {
+    "width": 320,
+    "height": 240,
+    "label": "ST7789P3 · 320 × 240"
+  },
+  "buttons": [
+    {
+      "id": "k1",
+      "label": "K1",
+      "pin": 6,
+      "active_low": true,
+      "bank": "B",
+      "kind": "adc",
+      "channel": 4
+    },
+    {
+      "id": "k2",
+      "label": "K2",
+      "pin": 6,
+      "active_low": true,
+      "bank": "B",
+      "kind": "adc",
+      "channel": 4
+    },
+    {
+      "id": "k3",
+      "label": "K3",
+      "pin": 6,
+      "active_low": true,
+      "bank": "B",
+      "kind": "adc",
+      "channel": 4
+    }
+  ],
+  "flash_bytes": 16777216,
+  "uart_channels": [
+    0,
+    1,
+    2
+  ],
+  "audio": true,
+  "indicators": [
+    {
+      "id": "pa",
+      "kind": "audio-amplifier",
+      "label": "功放",
+      "bank": "A",
+      "pin": 27,
+      "active_low": false
+    },
+    {
+      "id": "user-led",
+      "kind": "led",
+      "label": "用户 LED",
+      "bank": "B",
+      "pin": 9,
+      "active_low": true,
+      "color": "#4cc3a2"
+    }
+  ],
+  "version": 1,
+  "camera": {
+    "model": "gc0328",
+    "rotation_clockwise": 90,
+    "width": 640,
+    "height": 480,
+    "label": "GC0328 · 640 × 480"
+  },
+  "touch": {
+    "model": "cst328",
+    "rotation_clockwise": 270,
+    "address": "0x1d",
+    "width": 240,
+    "height": 320,
+    "label": "CST328 · 240 × 320"
+  }
+}

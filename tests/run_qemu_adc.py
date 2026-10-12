@@ -111,7 +111,35 @@ def rejection():
     print('GPADC unsupported triggers, DMA, capacitive mode, overflow and accesses rejected: PASS')
 
 
+def evb_buttons():
+    m = Machine(OUTPUT / 'evb-buttons', board='arcs-evb', desktop=True)
+    try:
+        def sample():
+            m.write(BASE + 16, 1 << 4)
+            m.write(BASE, 1)
+            return m.read(BASE + 0xb0 + 4 * 4)
+        assert sample() == 1023
+        for button, value in (('k1', 14), ('k2', 319), ('k3', 473)):
+            prop = 'x-lisa-evb-' + button + '-pressed'
+            m.qmp_command('qom-set', {'path': '/machine', 'property': prop, 'value': True})
+            assert sample() == value
+            m.qmp_command('system_reset')
+            assert sample() == value
+            m.qmp_command('qom-set', {'path': '/machine', 'property': prop, 'value': False})
+            assert sample() == 1023
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-evb-k2-pressed', 'value': True})
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-evb-k1-pressed', 'value': False})
+        assert sample() == 319  # Releasing another key must not release K2.
+        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-evb-k2-pressed', 'value': False})
+        m.qmp_command('system_reset')
+        assert sample() == 1023
+        print('EVB ADC ladder: idle, each key, release and warm reset: PASS')
+    finally:
+        m.close()
+
+
 if __name__ == '__main__':
+    evb_buttons()
     functional(0)
     functional(1)
     rejection()

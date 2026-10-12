@@ -155,3 +155,15 @@ fn camera_descriptor_enriches_existing_mini_without_changing_storage() {
     changed["board"]["camera"]["model"] = json!("different-sensor");
     assert!(catalog.check_hardware(&changed).is_err());
 }
+
+#[test]
+fn evb_touch_mount_enriches_saved_descriptor() {
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    let expected = json!({"board": catalog.boards["arcs-evb"], "chip": catalog.chips["ls2684"]});
+    let mut saved = expected.clone();
+    saved["board"]["touch"].as_object_mut().unwrap().remove("rotation_clockwise");
+    assert_eq!(catalog.check_hardware(&saved).unwrap(), expected);
+    saved["board"]["touch"]["rotation_clockwise"] = json!(90);
+    assert!(catalog.check_hardware(&saved).is_err());
+}

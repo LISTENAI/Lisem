@@ -257,6 +257,7 @@ impl Manager {
             | "button_sequence"
             | "button_sequence_status"
             | "button_sequence_cancel"
+            | "touch"
             | "camera" => {
                 let value = self.worker(&id)?.call(method, params)?;
                 if ["reset", "reset_download"].contains(&method) {

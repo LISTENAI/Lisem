@@ -102,7 +102,17 @@ impl ButtonSequence {
             self.count * self.hold_ms + (self.count - 1) * self.gap_ms <= 60000,
             "Button sequence must fit within 60000 ms"
         );
-        Ok(format!("{},{},{}", self.count, self.hold_ms, self.gap_ms))
+        let prefix = match self.button.as_str() {
+            "function" => None,
+            "k1" => Some(0),
+            "k2" => Some(1),
+            "k3" => Some(2),
+            _ => bail!("Unknown board button"),
+        };
+        Ok(match prefix {
+            Some(id) => format!("{},{},{},{}", id, self.count, self.hold_ms, self.gap_ms),
+            None => format!("{},{},{}", self.count, self.hold_ms, self.gap_ms),
+        })
     }
 }
 
@@ -623,7 +633,15 @@ impl Session {
         let state: Value =
             serde_json::from_str(value.as_str().context("Invalid button sequence state")?)?;
         self.state["button_sequence"] = state.clone();
-        self.state["controls"]["buttons"]["function"] = state["pressed"].clone();
+        let button = match state["button_id"].as_u64() {
+            Some(0) => Some("k1"),
+            Some(1) => Some("k2"),
+            Some(2) => Some("k3"),
+            _ => Some("function"),
+        };
+        if let Some(button) = button {
+            self.state["controls"]["buttons"][button] = state["pressed"].clone();
+        }
         Ok(state)
     }
     fn tick(&mut self) -> Result<()> {
@@ -688,7 +706,13 @@ impl Session {
             if self.state["button_sequence"].is_object() {
                 self.state["button_sequence"]["pressed"] = json!(false);
             }
-            self.state["controls"]["buttons"]["function"] = json!(false);
+            if self.backend.machine == "arcs-evb" {
+                for button in ["k1", "k2", "k3"] {
+                    self.state["controls"]["buttons"][button] = json!(false);
+                }
+            } else {
+                self.state["controls"]["buttons"]["function"] = json!(false);
+            }
             if let Some(audio) = &mut self.audio
                 && let Err(error) = audio.finish(!self.stopped)
                 && self.state["error"].is_null()
@@ -1397,6 +1421,22 @@ impl Runtime {
                 session.state["controls"]["buttons"][params["button"].as_str().unwrap()] =
                     json!(pressed);
                 Ok(json!(true))
+            }
+            "touch" => {
+                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(params["run"].is_string(), "Touch input requires a run identifier");
+                let x = params["x"].as_u64().context("Touch X is required")?;
+                let y = params["y"].as_u64().context("Touch Y is required")?;
+                ensure!(x < 240 && y < 320, "Touch coordinates are outside CST328 bounds");
+                let pressed = params["pressed"].as_bool().context("Touch state is required")?;
+                let property = session.backend.touch()?;
+                let value = if pressed {
+                    format!("{x},{y},press")
+                } else {
+                    "release".to_owned()
+                };
+                session.qmp.set(property, json!(value), &mut session.uart)?;
+                Ok(json!({"x":x,"y":y,"pressed":pressed}))
             }
             "button_sequence" => {
                 ensure!(

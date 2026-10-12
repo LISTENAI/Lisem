@@ -8,6 +8,7 @@ mod icons;
 mod library;
 mod peripheral_controls;
 mod theme;
+mod touch;
 mod wifi_environment;
 
 use backend::{Backend, Device, Snapshot};
@@ -108,6 +109,7 @@ struct Desktop {
     wifi: Option<Entity<wifi_environment::WifiEnvironment>>,
     settings_tab: &'static str,
     held: HashSet<String>,
+    touch: Option<Value>,
     new_board: Option<String>,
     package: Option<PathBuf>,
     name: Entity<InputState>,
@@ -235,6 +237,7 @@ impl Desktop {
             wifi: None,
             settings_tab: "general",
             held: HashSet::new(),
+            touch: None,
             new_board: None,
             package: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("实例名称")),
@@ -516,7 +519,24 @@ impl Desktop {
             self.backend.send("button", p);
         }
     }
+    fn release_touch(&mut self) {
+        if let Some(mut params) = self.touch.take() {
+            params["pressed"] = json!(false);
+            self.backend.send("touch", params);
+        }
+    }
+    fn touch_at(&mut self, x: u32, y: u32) {
+        let mut params = self.touch.clone().unwrap_or_else(|| self.params());
+        params["x"] = json!(x);
+        params["y"] = json!(y);
+        params["pressed"] = json!(true);
+        if self.touch.as_ref() != Some(&params) {
+            self.backend.send("touch", params.clone());
+            self.touch = Some(params);
+        }
+    }
     fn release_buttons(&mut self) {
+        self.release_touch();
         for id in self.held.clone() {
             self.button_state(&id, false);
         }
@@ -907,6 +927,57 @@ impl Desktop {
             if let Some(frame) = &self.state.frame {
                 screen = screen.child(img(frame.clone()).size_full());
             }
+        }
+        if let Some(mapping) = touch::Mapping::from_descriptor(&d.hardware["board"]["touch"]) {
+            let bounds = Rc::new(RefCell::new(None));
+            let painted_bounds = bounds.clone();
+            let move_bounds = bounds.clone();
+            screen = screen
+                .relative()
+                .child(
+                    gpui::canvas(
+                        move |bounds, _, _| {
+                            *painted_bounds.borrow_mut() = Some(bounds);
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+                )
+                .when(on, |e| e.cursor_pointer())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |v, event: &gpui::MouseDownEvent, _, _| {
+                        if on {
+                            if let Some(bounds) = *bounds.borrow() {
+                                let (x, y) = mapping.position(bounds, event.position);
+                                v.touch_at(x, y);
+                            }
+                        }
+                    }),
+                )
+                .on_mouse_move(cx.listener(move |v, event: &gpui::MouseMoveEvent, _, _| {
+                    if on && v.touch.is_some() {
+                        if event.pressed_button == Some(MouseButton::Left) {
+                            if let Some(bounds) = *move_bounds.borrow() {
+                                let (x, y) = mapping.position(bounds, event.position);
+                                v.touch_at(x, y);
+                            }
+                        } else {
+                            v.release_touch();
+                        }
+                    }
+                }))
+                .on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(|v, _, _, _| v.release_touch()),
+                )
+                .on_mouse_up_out(
+                    MouseButton::Left,
+                    cx.listener(|v, _, _, _| v.release_touch()),
+                );
         }
         let mut keys = div().flex().items_center().gap_3();
         for key in d.hardware["board"]["buttons"]

@@ -35,6 +35,7 @@ def main():
     parser.add_argument('--boot-release-ns', type=int,
                         help='Hold Mini BOOT low from reset, then release at this virtual time')
     parser.add_argument('--qemu', type=Path, default=ROOT / '.tools/qemu-build/qemu-system-riscv32')
+    parser.add_argument('--machine', choices=('arcs-mini', 'arcs-evb'), default='arcs-mini')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--virtual-ns', type=int, default=1000000)
     parser.add_argument('--timeout', type=float, default=60)
@@ -115,7 +116,8 @@ def run(args, parser, instance_directory=None, lock_fd=None):
     if existing:
         parser.error('Output directory must be empty to preserve previous evidence')
     output.mkdir(parents=True, exist_ok=True)
-    manifest = {'qemu_sha256': digest(args.qemu), 'boot_hart': args.boot_hart,
+    manifest = {'qemu_sha256': digest(args.qemu), 'machine_requested': args.machine,
+                'boot_hart': args.boot_hart,
                 'requested_virtual_ns': args.virtual_ns,
                 'timing_scope': 'Bring-up only: aggregate QEMU icount at 1 ns/instruction; not the calibrated dual-core realtime model.'}
     probe_entry = None
@@ -249,7 +251,7 @@ def run(args, parser, instance_directory=None, lock_fd=None):
         manifest['storage_mode'] = 'temporary'
     if probe_entry is not None:
         env['ARCS_QEMU_PROBE_ENTRY'] = str(probe_entry)
-    command = [str(args.qemu.resolve()), '-M', 'arcs-mini', '-accel', 'tcg,thread=single',
+    command = [str(args.qemu.resolve()), '-M', args.machine, '-accel', 'tcg,thread=single',
                '-icount', 'shift=0,align=off,sleep=off', '-display', 'none', '-monitor', 'none']
     if args.qmp_socket:
         command.extend(['-qmp', 'unix:%s,server=on,wait=off' % str(args.qmp_socket.resolve()).replace(',', ',,')])

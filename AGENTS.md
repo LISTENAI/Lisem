@@ -3,7 +3,7 @@
 ## 产品边界
 
 - Lisem 是聆思多芯片 emulator，命令为 `lisem`，应用标识为
-  `com.listenai.emulator`；当前支持 LS2684（ARCS）及 Arcs-Mini。
+  `com.listenai.emulator`；当前支持 LS2684（ARCS）、Arcs-Mini 和 Arcs-EVB。
   用户管理设备实例；板型描述芯片、外设和连线。QEMU 是唯一运行后端。
 - 本仓库包含产品维护所需的源码、构建入口与文档，不依赖额外的源码仓库。
   LUNA 使用仓库随附的二进制组件，维护边界见 `docs/luna.md`。

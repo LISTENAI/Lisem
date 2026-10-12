@@ -9,6 +9,7 @@
 #include "hw/riscv/arcs_network.h"
 #include "hw/display/arcs_st7789.h"
 #include "hw/i2c/gc0328.h"
+#include "hw/i2c/cst328.h"
 #include "ui/lisa_display.h"
 #include "hw/audio/lisa_stream.h"
 #include "hw/audio/pcm_feedback.h"
@@ -25,6 +26,7 @@
 #include "qemu/lisa-camera-input.h"
 
 #define TYPE_ARCS_MACHINE MACHINE_TYPE_NAME("arcs-mini")
+#define TYPE_ARCS_EVB_MACHINE MACHINE_TYPE_NAME("arcs-evb")
 OBJECT_DECLARE_SIMPLE_TYPE(ArcsMachine, ARCS_MACHINE)
 struct ArcsMachine {
     MachineState parent;
@@ -33,6 +35,8 @@ struct ArcsMachine {
     ArcsNOR flash;
     DeviceState *screen;
     DeviceState *camera;
+    DeviceState *touch;
+    bool evb;
     LisaMapping camera_mapping;
     QEMUTimer *camera_poll;
     uint64_t camera_generation, camera_sequence, camera_repeated;
@@ -71,6 +75,8 @@ struct ArcsMachine {
     QEMUTimer *button_timer;
     uint64_t button_sequence;
     unsigned button_count, button_completed;
+    unsigned button_id;
+    bool evb_button_pressed;
     int64_t button_hold_ns, button_gap_ns, button_next_ns;
     int64_t button_started_ns, button_finished_ns;
     const char *button_status, *button_reason;
@@ -96,6 +102,8 @@ static void report(void *opaque, const char *status);
 static void desktop_init(ArcsMachine *s);
 static void desktop_capture(ArcsMachine *s);
 static void button_cancel(ArcsMachine *s, const char *reason, bool release);
+static void button_drive(ArcsMachine *s, bool pressed);
+static bool evb_button_get(ArcsMachine *s, unsigned id);
 static char *button_sequence_get(Object *obj, Error **errp);
 static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp);
 
@@ -361,7 +369,8 @@ static bool pa_enabled(ArcsMachine *s)
 {
     uint32_t driven, levels;
     arcs_gpio_outputs_snapshot(&s->soc.gpio[0], &driven, &levels);
-    return driven & levels & 2; /* Mini: PA enable on GPIO A1. */
+    unsigned pin = s->evb ? 27 : 1;
+    return driven & levels & (1u << pin);
 }
 
 static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
@@ -654,6 +663,10 @@ static void report(void *opaque, const char *status)
 static bool lcd_route_valid(void *opaque)
 {
     ArcsMachine *s = opaque;
+    if (s->evb) {
+        return arcs_pinmux_function(&s->soc.pinmux[0], 35, 6) &&
+               arcs_pinmux_function(&s->soc.pinmux[0], 33, 6);
+    }
     return arcs_pinmux_function(&s->soc.pinmux[0], 24, 5) &&
            arcs_pinmux_function(&s->soc.pinmux[0], 25, 5);
 }
@@ -661,7 +674,7 @@ static bool lcd_route_valid(void *opaque)
 static void lcd_cs(void *opaque, int pin, int level)
 {
     ArcsMachine *s = opaque;
-    arcs_pinmux_output(&s->soc.pinmux[0], 22, 5, level);
+    arcs_pinmux_output(&s->soc.pinmux[0], s->evb ? 37 : 22, s->evb ? 0 : 5, level);
 }
 
 static void backlight(void *opaque)
@@ -670,9 +683,13 @@ static void backlight(void *opaque)
     if (s->screen) {
         uint32_t driven, levels;
         arcs_gpio_outputs_snapshot(&s->soc.gpio[0], &driven, &levels);
-        arcs_st7789_backlight(s->screen, arcs_pinmux_function(&s->soc.pinmux[0], 21, 12) ?
-                              arcs_gpt_duty(&s->soc.gpt, 1) :
-                              !!(driven & levels & (1u << 21)));
+        unsigned pin = s->evb ? 0 : 21;
+        unsigned channel = s->evb ? 0 : 1;
+        bool pwm = arcs_pinmux_function(&s->soc.pinmux[0], pin, 12);
+        double duty = pwm ? arcs_gpt_duty(&s->soc.gpt, channel) :
+                           !!(levels & (1u << pin));
+        if (s->evb) { duty = 1.0 - duty; } /* EVB backlight is active low. */
+        arcs_st7789_backlight(s->screen, pwm || (driven & (1u << pin)) ? duty : 0);
     }
 }
 
@@ -683,18 +700,29 @@ static void connect_panel(ArcsMachine *s)
     DeviceState *soc = DEVICE(&s->soc);
     s->screen = qdev_new(TYPE_ARCS_ST7789);
     object_property_add_child(OBJECT(s), "screen", OBJECT(s->screen));
-    qdev_prop_set_uint32(s->screen, "height", 240);
-    qdev_prop_set_uint32(s->screen, "rotation", 90);
+    if (!s->evb) { qdev_prop_set_uint32(s->screen, "height", 240); }
+    qdev_prop_set_uint32(s->screen, "rotation", s->evb ? 270 : 90);
     qdev_prop_set_bit(s->screen, "panel-inverted", true);
     arcs_st7789_failure_callback(s->screen, report, s);
-    ssi_realize_and_unref(s->screen, s->soc.spi[0].bus, &error_fatal);
-    s->soc.spi[0].route_valid = lcd_route_valid; s->soc.spi[0].route_opaque = s;
-    qdev_connect_gpio_out_named(soc, "spi-cs", 0, qemu_allocate_irq(lcd_cs, s, 0));
-    qdev_connect_gpio_out_named(soc, "pad-out", 22, qdev_get_gpio_in_named(s->screen, SSI_GPIO_CS, 0));
-    qdev_connect_gpio_out_named(soc, "pad-out", 23, qdev_get_gpio_in(s->screen, 0));
-    qdev_connect_gpio_out_named(soc, "pad-out", 41, qdev_get_gpio_in(s->screen, 1));
-    qdev_connect_gpio_out_named(s->screen, "te", 0, qdev_get_gpio_in_named(soc, "pad-in", 27));
-    qdev_connect_gpio_out_named(soc, "pad-out", 21, qemu_allocate_irq(backlight_pad, s, 0));
+    unsigned spi = s->evb ? 1 : 0;
+    ssi_realize_and_unref(s->screen, s->soc.spi[spi].bus, &error_fatal);
+    s->soc.spi[spi].route_valid = lcd_route_valid; s->soc.spi[spi].route_opaque = s;
+    /* Mini routes CS through the SPI peripheral function. EVB uses a GPIO
+     * software CS on B5, so leaving the SPI CS output disconnected preserves
+     * the firmware's GPIO writes. */
+    if (!s->evb) {
+        qdev_connect_gpio_out_named(soc, "spi-cs", spi, qemu_allocate_irq(lcd_cs, s, 0));
+    }
+    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 37 : 22,
+                                qdev_get_gpio_in_named(s->screen, SSI_GPIO_CS, 0));
+    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 32 : 23,
+                                qdev_get_gpio_in(s->screen, 0));
+    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 1 : 41,
+                                qdev_get_gpio_in(s->screen, 1));
+    qdev_connect_gpio_out_named(s->screen, "te", 0,
+                                qdev_get_gpio_in_named(soc, "pad-in", s->evb ? 40 : 27));
+    qdev_connect_gpio_out_named(soc, "pad-out", s->evb ? 0 : 21,
+                                qemu_allocate_irq(backlight_pad, s, 0));
     s->soc.gpt.changed = backlight; s->soc.gpt.opaque = s;
 }
 
@@ -742,6 +770,10 @@ static void camera_pad(void *opaque, int pin, int level)
 static bool camera_sccb_route(void *opaque)
 {
     ArcsMachine *s = opaque;
+    if (s->evb) {
+        return arcs_pinmux_function(&s->soc.pinmux[0], 22, 8) &&
+               arcs_pinmux_function(&s->soc.pinmux[0], 23, 8);
+    }
     /* Loss of the sensor clock during an owned SCCB transaction is not
      * approximated as successful data. An idle, unclocked sensor NACKs. */
     return (!i2c_bus_busy(s->soc.i2c[0].bus) || camera_clock(s)) &&
@@ -941,6 +973,41 @@ static void connect_camera(ArcsMachine *s)
     camera_clock_changed(s);
 }
 
+static void connect_touch(ArcsMachine *s)
+{
+    I2CSlave *touch = i2c_slave_new(TYPE_CST328, 0x1d);
+    s->touch = DEVICE(touch);
+    object_property_add_child(OBJECT(s), "touch", OBJECT(touch));
+    i2c_slave_realize_and_unref(touch, s->soc.i2c[0].bus, &error_fatal);
+    qdev_connect_gpio_out_named(DEVICE(touch), "int", 0,
+                                qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 24));
+}
+
+static char *touch_get(Object *obj, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    uint16_t x, y;
+    return cst328_get_contact(s->touch, &x, &y) ?
+           g_strdup_printf("%u,%u,press", x, y) : g_strdup("release");
+}
+
+static void touch_set(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    unsigned x, y;
+    char state[8] = { 0 };
+    if (!strcmp(value, "release")) {
+        cst328_set_contact(s->touch, false, 0, 0);
+        return;
+    }
+    if (sscanf(value, "%u,%u,%7s", &x, &y, state) != 3 || x >= 240 || y >= 320 ||
+        strcmp(state, "press")) {
+        error_setg(errp, "Touch input must be x,y,press or release");
+        return;
+    }
+    cst328_set_contact(s->touch, true, x, y);
+}
+
 static void finish(void *opaque)
 {
     /* A timer may run on the shared TCG thread. vm_stop() then queues the
@@ -1017,7 +1084,9 @@ static void machine_reset(MachineState *machine, ResetType type)
     /* Board inputs are applied after every chip has finished resetting. */
     timer_mod(s->deadline, s->budget);
     if (s->power_button) { power_button_update(s); }
-    if (s->desktop_directory) {
+    if (s->evb) {
+        button_drive(s, s->desktop_pressed);
+    } else if (s->desktop_directory) {
         qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !s->desktop_pressed);
     }
     if (s->boot_pin) {
@@ -1062,6 +1131,7 @@ static void machine_init(MachineState *machine)
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
+    s->evb = !strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_EVB_MACHINE);
     object_property_add_bool(OBJECT(s), "x-arcs-boot-asserted", boot_pin_get, boot_pin_set);
     const char *boot_release = getenv("ARCS_QEMU_BOOT_RELEASE_NS");
     if (boot_release) {
@@ -1073,6 +1143,7 @@ static void machine_init(MachineState *machine)
     }
     connect_panel(s);
     connect_camera(s);
+    if (s->evb) { connect_touch(s); }
     connect_pcm(s);
     s->wifi_capture = g_byte_array_new(); reset_radio(s);
     s->access_points_present = true;
@@ -1158,8 +1229,14 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     g_autofree char *sequence = button_sequence_get(obj, errp);
     g_autofree char *camera = camera_input_status(s);
     g_autofree char *wifi = arcs_wifi_environment_status(s->access_points);
+    g_autofree char *controls = s->evb
+        ? g_strdup_printf("{\"k1\":%s,\"k2\":%s,\"k3\":%s}",
+                          evb_button_get(s, 0) ? "true" : "false",
+                          evb_button_get(s, 1) ? "true" : "false",
+                          evb_button_get(s, 2) ? "true" : "false")
+        : g_strdup_printf("{\"function\":%s}", s->desktop_pressed ? "true" : "false");
     return g_strdup_printf("{\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
-        "\"controls\":{\"buttons\":{\"function\":%s}},\"seconds\":%.9f,"
+        "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
         "\"audio_input\":{\"sequence\":%" PRIu64 ",\"samples\":%zu,\"consumed\":%zu,\"status\":\"%s\"},"
@@ -1167,7 +1244,7 @@ static char *desktop_snapshot(Object *obj, Error **errp)
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
         wifi, s->access_points_present ? "true" : "false",
-        camera, sequence, s->desktop_pressed ? "true" : "false",
+        camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
         ((ArcsN300State *)s->soc.cpu[1].env.arcs_state)->exceptions,
@@ -1192,7 +1269,57 @@ static bool desktop_button_get(Object *obj, Error **errp)
 static void button_drive(ArcsMachine *s, bool pressed)
 {
     s->desktop_pressed = pressed;
-    qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !pressed);
+    if (s->evb) {
+        static const int adc_codes[] = { 14, 319, 473 };
+        s->evb_button_pressed = pressed;
+        qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "adc-input", 4),
+                     pressed ? adc_codes[MIN(s->button_id, 2u)] : 1023);
+    } else {
+        qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 36), !pressed);
+    }
+}
+
+static bool evb_button_get(ArcsMachine *s, unsigned id)
+{
+    return s->evb && s->evb_button_pressed && s->button_id == id;
+}
+
+static void evb_button_set(ArcsMachine *s, unsigned id, bool pressed)
+{
+    if (!pressed && s->evb_button_pressed && s->button_id != id) { return; }
+    button_cancel(s, "manual-input", false);
+    s->button_id = id;
+    button_drive(s, pressed);
+}
+
+static bool evb_k1_get(Object *obj, Error **errp)
+{
+    return evb_button_get(ARCS_MACHINE(obj), 0);
+}
+
+static bool evb_k2_get(Object *obj, Error **errp)
+{
+    return evb_button_get(ARCS_MACHINE(obj), 1);
+}
+
+static bool evb_k3_get(Object *obj, Error **errp)
+{
+    return evb_button_get(ARCS_MACHINE(obj), 2);
+}
+
+static void evb_k1_set(Object *obj, bool pressed, Error **errp)
+{
+    evb_button_set(ARCS_MACHINE(obj), 0, pressed);
+}
+
+static void evb_k2_set(Object *obj, bool pressed, Error **errp)
+{
+    evb_button_set(ARCS_MACHINE(obj), 1, pressed);
+}
+
+static void evb_k3_set(Object *obj, bool pressed, Error **errp)
+{
+    evb_button_set(ARCS_MACHINE(obj), 2, pressed);
 }
 
 static void button_cancel(ArcsMachine *s, const char *reason, bool release)
@@ -1223,10 +1350,10 @@ static void button_sequence_step(void *opaque)
 static char *button_sequence_get(Object *obj, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
-    return g_strdup_printf("{\"sequence\":%" PRIu64 ",\"status\":\"%s\","
+    return g_strdup_printf("{\"sequence\":%" PRIu64 ",\"button_id\":%u,\"status\":\"%s\","
         "\"reason\":\"%s\",\"count\":%u,\"completed\":%u,\"pressed\":%s,"
         "\"started_ns\":%" PRId64 ",\"finished_ns\":%" PRId64 "}",
-        s->button_sequence, s->button_status ? s->button_status : "idle",
+        s->button_sequence, s->evb ? s->button_id : UINT_MAX, s->button_status ? s->button_status : "idle",
         s->button_reason ? s->button_reason : "", s->button_count,
         s->button_completed, s->desktop_pressed ? "true" : "false",
         s->button_started_ns, s->button_finished_ns);
@@ -1236,17 +1363,20 @@ static void button_sequence_set(Object *obj, const char *value, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
     g_auto(GStrv) fields = NULL;
-    uint64_t count, hold, gap;
+    uint64_t count, hold, gap, id = 0;
     if (!strcmp(value, "cancel")) {
         button_cancel(s, "requested", true);
         return;
     }
     if (strlen(value) > 64) { goto invalid; }
     fields = g_strsplit(value, ",", -1);
-    if (g_strv_length(fields) != 3 ||
-        qemu_strtou64(fields[0], NULL, 10, &count) ||
-        qemu_strtou64(fields[1], NULL, 10, &hold) ||
-        qemu_strtou64(fields[2], NULL, 10, &gap) ||
+    unsigned offset = g_strv_length(fields) == 4 ? 1 : 0;
+    if ((g_strv_length(fields) != 3 && g_strv_length(fields) != 4) ||
+        (offset && (!s->evb || qemu_strtou64(fields[0], NULL, 10, &id))) ||
+        qemu_strtou64(fields[offset], NULL, 10, &count) ||
+        qemu_strtou64(fields[offset + 1], NULL, 10, &hold) ||
+        qemu_strtou64(fields[offset + 2], NULL, 10, &gap) ||
+        id >= (s->evb ? 3 : 1) ||
         !count || count > 32 || !hold || hold > 60000 || gap > 60000 ||
         (count > 1 && !gap) || count * hold + (count - 1) * gap > 60000) {
         goto invalid;
@@ -1263,6 +1393,7 @@ static void button_sequence_set(Object *obj, const char *value, Error **errp)
         error_setg(errp, "Button sequence exceeds the remaining virtual run budget"); return;
     }
     s->button_sequence++;
+    s->button_id = id;
     s->button_count = count;
     s->button_completed = 0;
     s->button_hold_ns = hold * 1000000;
@@ -1391,6 +1522,12 @@ static void desktop_init(ArcsMachine *s)
     lisa_display_init(qemu_console_lookup_by_device(s->screen, 0), s->desktop_directory);
     object_property_add_str(OBJECT(s), "x-lisa-snapshot", desktop_snapshot, NULL);
     object_property_add_bool(OBJECT(s), "x-lisa-function-pressed", desktop_button_get, desktop_button_set);
+    if (s->evb) {
+        object_property_add_bool(OBJECT(s), "x-lisa-evb-k1-pressed", evb_k1_get, evb_k1_set);
+        object_property_add_bool(OBJECT(s), "x-lisa-evb-k2-pressed", evb_k2_get, evb_k2_set);
+        object_property_add_bool(OBJECT(s), "x-lisa-evb-k3-pressed", evb_k3_get, evb_k3_set);
+        object_property_add_str(OBJECT(s), "x-lisa-touch", touch_get, touch_set);
+    }
     s->button_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, button_sequence_step, s);
     object_property_add_str(OBJECT(s), "x-lisa-button-sequence", button_sequence_get, button_sequence_set);
     object_property_add_str(OBJECT(s), "x-lisa-audio-input", NULL, desktop_input);
@@ -1426,5 +1563,13 @@ static const TypeInfo machine_type = {
     .instance_size = sizeof(ArcsMachine), .class_init = machine_class_init,
     .instance_finalize = machine_finalize,
 };
-static void register_types(void) { type_register_static(&machine_type); }
+static const TypeInfo evb_machine_type = {
+    .name = TYPE_ARCS_EVB_MACHINE,
+    .parent = TYPE_ARCS_MACHINE,
+};
+static void register_types(void)
+{
+    type_register_static(&machine_type);
+    type_register_static(&evb_machine_type);
+}
 type_init(register_types)

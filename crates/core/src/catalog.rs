@@ -411,6 +411,13 @@ impl Catalog {
                     .or_insert_with(|| board["camera"]["rotation_clockwise"].clone());
             }
         }
+        if saved["board"]["id"] == "arcs-evb" {
+            if let Some(touch) = saved["board"]["touch"].as_object_mut() {
+                touch
+                    .entry("rotation_clockwise")
+                    .or_insert_with(|| board["touch"]["rotation_clockwise"].clone());
+            }
+        }
         let expected = json!({"board":board,"chip":chip});
         let saved = hardware_identity(saved);
         let expected_identity = hardware_identity(expected.clone());

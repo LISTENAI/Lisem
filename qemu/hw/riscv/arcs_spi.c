@@ -200,8 +200,12 @@ void arcs_spi_init(ArcsSoC *soc)
         memory_region_init_io(&s->io, OBJECT(soc), &spi_ops, s, name, 0x1000);
         s->io.disable_reentrancy_guard = true; /* Checked FIFO refill above. */
         memory_region_add_subregion(get_system_memory(), 0x47000000 + i * 0x100000, &s->io);
+        /* ARCS' default CMNDMA handshake table assigns TX IDs in the
+         * peripheral order SPI2=5, SPI1=7 and SPI0=11.  Keep this explicit
+         * instead of assuming the IDs form an arithmetic sequence. */
+        static const unsigned dma_tx_request[] = { 11, 7, 5 };
         qdev_connect_gpio_out_named(DEVICE(soc), "spi-dma", i,
-                                    qdev_get_gpio_in_named(DEVICE(soc), "cpdma-request", 11 + 2 * i));
+                                    qdev_get_gpio_in_named(DEVICE(soc), "cpdma-request", dma_tx_request[i]));
     }
     ArcsGPT *g = &soc->gpt;
     g->soc = soc;

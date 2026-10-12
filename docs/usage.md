@@ -158,12 +158,16 @@ Windows 的 TCP 端点不是 COM 串口，要求串口设备路径的 cskburn �
 
 ```sh
 lisem create --board arcs-mini --name "Mini" --lpk firmware.lpk
+lisem create --board arcs-evb --name "EVB" --lpk arcs-evb.lpk
 lisem list
 lisem uid INSTANCE_ID
 lisem uart INSTANCE_ID 0
 lisem start INSTANCE_ID --seconds 120 --timeout 180
 lisem button INSTANCE_ID function press
 lisem button INSTANCE_ID function release
+# Arcs-EVB 的三个 ADC 按键
+lisem button INSTANCE_ID k1 press
+lisem button INSTANCE_ID k1 release
 lisem screenshot INSTANCE_ID screen.png
 lisem logs INSTANCE_ID 0
 lisem reset INSTANCE_ID
