@@ -106,7 +106,7 @@ def rejection():
         ['writel 0x4a0004a4 0x4000'], ['writel 0x4a000400 0x100'], ['readb 0x4a000100'], ['readl 0x4a000001'], ['readl 0x4a000200'],
         ['writel 0x4a000000 1'], ['writel 0x4a00002c 1'], ['writel 0x4a000030 1'],
         ['writel 0x4a000100 0x10000000'], ['writel 0x4a0000e8 0x10000000'],
-        ['writel 0x4a0000ec 625'], ['writel 0x4a000800 0x01000000'],
+        ['writel 0x4a0000ec 625'], ['writel 0x4a000800 0x04000000'],
         ['writel 0x4a000800 0x300', 'writel 0x4a000110 0x80000000'],
         ['writel 0x4a000860 1'], ['readl 0x4a000818'],
     ]

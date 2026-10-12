@@ -147,7 +147,7 @@ def fifo_and_reset():
 
 
 def rejection():
-    cases=('not-ready','owned-wait','owned-active','owned-end','halfslot','fine','cs-range','txd-range','buffer-range',
+    cases=('not-ready','owned-wait','owned-active','owned-end','owned-abort','halfslot','fine','cs-range','txd-range','buffer-range',
            'format','disabled','zero-budget','channels','length-small','length-large','type','command')
     for name in cases:
         m=Machine(OUTPUT/('reject-'+name),budget_ns=1000000)
@@ -164,7 +164,8 @@ def rejection():
                 else:
                     submit(m)
                     if name.startswith('owned-'):
-                        step(m,0 if name=='owned-wait' else 10000 if name=='owned-active' else 60000)
+                        step(m,0 if name=='owned-wait' else 10000 if name in ('owned-active','owned-abort') else 60000)
+                        if name=='owned-abort':m.write(BLE,0x2000100)
                         word(m,EM,0xa002);submit(m)
                     else:step(m,10000)
             except EOFError:pass
@@ -174,6 +175,77 @@ def rejection():
             assert r['status'] in ('unsupported-mmio','unsupported-bluetooth')
         finally:m.close()
     print('Activity ownership, descriptor ranges/modes, target validation and packet lengths rejected: PASS')
+
+
+def abort():
+    from run_qemu_bluetooth import target
+    from run_qemu_bluetooth_rx import setup as rx_setup, receive, frames, RXD
+    from run_qemu_bluetooth_link import setup as link_setup, exchange
+
+    for hart in (0, 1):
+        m = Machine(OUTPUT / ('abort%d' % hart), hart=hart, budget_ns=1000000)
+        try:
+            descriptor(m, channels=1)
+            descriptor(m, index=1, target=200, channels=1)
+            m.write(BLE, 0x10070f)
+            m.write(DM + 0x18, 0x8020)
+            target(m, 0, 150)
+            # Idle commands self-clear and never fabricate an END record.
+            m.write(BLE, 0x310070f)
+            assert m.read(BLE) == 0x10070f and m.read(DM + 0x24) == 0
+            submit(m); submit(m, 1)
+            step(m, 10000)
+            m.write(BLE, 0x110070f)  # Scan abort does not stop advertising.
+            assert rword(m, EM) == 0xa012 and m.read(DM + 0x24) == 0
+            m.write(BLE, 0x210070f)
+            assert m.read(BLE) == 0x10070f
+            assert rword(m, EM) == 0xa01a and rword(m, EM + 16) == 0xa00a
+            assert m.read(DM + 0x24) == 2 and irq(m)
+            # Repeated aborts cannot enqueue a second END or release ownership.
+            m.write(BLE, 0x310070f)
+            m.write(DM + 0x20, 0x8000)
+            assert m.read(DM + 0x24) == 0 and not irq(m)
+            step(m, 65000)
+            assert m.read(DM + 0x1c) == 0x20 and irq(m)
+            m.write(DM + 0x20, 0x20)
+            step(m, 75000)
+            assert m.read(DM + 0x24) == (1 << 24) | 2
+            m.write(DM + 0x20, 0x8000)
+            descriptor(m, target=400, channels=1); submit(m)
+            step(m, 100000)
+            assert m.read(DM + 0x24) == 2  # Aborted slot is reusable after ACK.
+            m.write(DM + 0x20, 0x8000)
+            report, packets = finish(m)
+            assert report == dict(captured=3, submitted=3, completed=3, fifo_count=0)
+            assert [p['half_microseconds'] for p in packets] == [20, 200, 400]
+        finally:
+            m.close()
+
+        for phase in ('rx', 'response'):
+            m = Machine(OUTPUT / ('abort-%s%d' % (phase, hart)), hart=hart, budget_ns=10000000)
+            try:
+                rx_setup(m)
+                assert receive(m, at=1000)
+                step(m, 352 * 500 - 1 if phase == 'rx' else 652 * 500 - 1)
+                ring = read_bytes(m, RXD, 168)
+                m.write(BLE, m.read(BLE) | 0x2000000)
+                assert m.read(DM + 0x24) == 2
+                m.write(DM + 0x20, 0x8000)
+                step(m, 1000000)
+                assert read_bytes(m, RXD, 168) == ring and len(frames(m)) == 3
+                assert m.read(DM + 0x24) == 0
+            finally:
+                m.close()
+
+        m = Machine(OUTPUT / ('abort-link%d' % hart), hart=hart, budget_ns=10000000)
+        try:
+            link_setup(m); submit(m); step(m, 10000)
+            m.write(BLE, m.read(BLE) | 0x3000000)
+            assert rword(m, EM) == 0xa012 and m.read(DM + 0x24) == 0
+            assert exchange(m, b'\x01\0', 200, 16, 0) == b'\x07\x03\x16\x01\x01'
+        finally:
+            m.close()
+    print('Abort: self-clear, END/ACK reuse, queued/connection/target isolation, RX and scan-response cancellation: PASS')
 
 
 def cpu_probe():
@@ -212,6 +284,7 @@ def cpu_probe():
 if __name__=='__main__':
     count=functional()
     fifo_and_reset()
+    abort()
     rejection()
     cpu_probe()
     (OUTPUT/'result.json').write_text(json.dumps({'pass':True,'phase_channel_cases':count})+'\n')

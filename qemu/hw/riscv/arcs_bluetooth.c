@@ -8,6 +8,8 @@
 
 #define BASE 0x4a000000
 #define PERIOD (UINT64_C(0x10000000) * 625)
+#define ADVERT_ABORT (1u << 25)
+#define SCAN_ABORT (1u << 24)
 
 static bool dm_register(hwaddr off)
 {
@@ -510,8 +512,20 @@ static void write_reg(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (ble == 0x14) { return; } /* W1C with no modeled BLE error source. */
         if (!ble_register(ble)) { goto invalid; }
         if (ble == 0) {
-            if (value & 0x7f000000) { goto invalid; }
+            if (value & (0x7f000000u & ~(ADVERT_ABORT | SCAN_ABORT))) { goto invalid; }
             if (value & 0x80000000) { memset(s->ble, 0, sizeof(s->ble)); return; }
+            if (value & ADVERT_ABORT) {
+                for (unsigned i = 0; i < G_N_ELEMENTS(s->activities); i++) {
+                    ArcsBTActivity *a = &s->activities[i];
+                    if (a->owned && a->started && !a->connection && timer_pending(a->event)) {
+                        activity_end(a);
+                    }
+                }
+            }
+            /* Abort commands apply to the current event and self-clear. Future
+             * descriptors and connection events retain their timers/ownership.
+             * Scanning CS formats are rejected at start, so SCAN_ABORT is idle. */
+            value &= ~(ADVERT_ABORT | SCAN_ABORT);
         }
         s->ble[ble / 4] = value; return;
     }
