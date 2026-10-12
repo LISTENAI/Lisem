@@ -355,6 +355,8 @@ fn tools() -> Vec<Tool> {
             "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
             false,
         ),
+        definition::<SequenceControl>("lisem_audio_input_cancel",
+            "Cancel remaining samples of this WAV injection, confirming the current run and injection sequence. The instance keeps running.", false),
         definition::<UartCapture>("lisem_uart_capture",
             "Explicitly receive enabled UART endpoint bytes into a new raw capture file across power cycles. Drains queued output in order, including earlier runs. Exclusive terminal consumer: do not attach another terminal reader. Separate from non-consuming lisem_uart_read. Stop with capture identity; instance keeps running.", false),
         definition::<ButtonSequence>(
@@ -405,7 +407,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Audio>(
             "lisem_audio_input",
-            "Feed a 16 kHz mono PCM16 WAV of at most 60 seconds through ADC. Requires microphone capture off and no queued input. Returns injection sequence and progress; poll lisem_status runtime.session.audio_input for completed. Submission does not imply completion.",
+            "Feed a 16 kHz mono PCM16 WAV of at most 24 hours through ADC. Requires microphone capture off and no queued input. Returns injection sequence and progress; poll lisem_status runtime.session.audio_input for completed. Submission does not imply completion.",
             false,
         ),
         definition::<Instance>(
@@ -500,6 +502,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
             )?
         }
         "lisem_access_point" => call(manager, "access_point", arguments::<AccessPoint>(value)?)?,
+        "lisem_audio_input_cancel" => call(manager, "audio_cancel", arguments::<SequenceControl>(value)?)?,
         "lisem_audio_input" => call(manager, "audio", arguments::<Audio>(value)?)?,
         "lisem_shutdown" => call(manager, "shutdown", arguments::<Instance>(value)?)?,
         "lisem_screenshot" => {

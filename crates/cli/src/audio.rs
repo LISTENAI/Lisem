@@ -24,7 +24,7 @@ pub fn input(
     manager: &mut Manager,
     id: &str,
     path: &Path,
-    timeout: u64,
+    timeout: Option<u64>,
     stop: &AtomicBool,
 ) -> Result<Value> {
     let run = current_run(manager, id)?;
@@ -32,6 +32,7 @@ pub fn input(
     let sequence = progress["sequence"]
         .as_u64()
         .context("Runtime does not expose injection progress; update the runtime")?;
+    let timeout = timeout.unwrap_or_else(|| progress["samples"].as_u64().unwrap_or(0).div_ceil(16000) + 90);
     let deadline = Instant::now() + Duration::from_secs(timeout);
     loop {
         ensure!(
@@ -41,6 +42,8 @@ pub fn input(
         match progress["status"].as_str() {
             Some("completed" | "cancelled") => return Ok(progress),
             Some("running") => {}
+            Some("failed") => bail!("Audio injection failed: {}", progress["error"]),
+            Some("interrupted") => bail!("Run ended before audio injection completed"),
             _ => bail!("Audio injection outcome is unknown"),
         }
         if stop.load(Ordering::Acquire) || Instant::now() >= deadline {

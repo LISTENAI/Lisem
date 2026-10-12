@@ -157,8 +157,8 @@ enum Action {
         id: String,
         path: PathBuf,
         /// Host deadline, including time waiting for the firmware ADC.
-        #[arg(long, default_value_t = 90, value_parser = clap::value_parser!(u64).range(1..=850))]
-        timeout: u64,
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..=172800))]
+        timeout: Option<u64>,
     },
     /// Record raw DAC output to WAV until Ctrl+C; keeps the device running.
     AudioOutput {

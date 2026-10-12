@@ -15,6 +15,7 @@ mod shared;
 pub mod storage;
 mod transport;
 mod uart_capture;
+mod wave_input;
 
 pub mod install;
 

@@ -91,7 +91,7 @@ lisem audio-input INSTANCE_ID input.wav
 lisem audio-output INSTANCE_ID --capture output.wav
 ```
 
-WAV 输入要求系统麦克风关闭，文件为 16 kHz、单声道 PCM16，最长 60 秒。
+WAV 输入要求系统麦克风关闭，文件为 16 kHz、单声道 PCM16，最长 24 小时。
 注入按 1:1 实时节拍执行，命令等待输入完成；Ctrl+C 取消剩余输入。侧录持续
 到 Ctrl+C，保存设备的原始音频输出。结束注入或侧录后，设备继续运行。
 

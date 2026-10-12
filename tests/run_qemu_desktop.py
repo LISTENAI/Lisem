@@ -158,7 +158,7 @@ def main():
         assert json.loads(get('x-lisa-snapshot'))['audio_samples'] == 2
         assert (OUTPUT / 'live/audio.pcm').read_bytes() == struct.pack('<2h', VALUES[0], VALUES[0])
         progress = json.loads(get('x-lisa-snapshot'))['audio_input']
-        assert progress == {'sequence': 1, 'samples': 3, 'consumed': 2, 'status': 'running'}
+        assert progress == {'sequence': 1, 'samples': 3, 'consumed': 2, 'status': 'running', 'error': ''}
         set_value('x-lisa-audio-input-cancel', '1')
         m.command('clock_step 62500')
         assert m.read(APC + 0x104) == 0
@@ -168,7 +168,7 @@ def main():
         rejected = m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-input-cancel', 'value': '1'}, error=True)
         assert 'earlier' in rejected['desc']
         m.command('clock_step 187500')
-        assert json.loads(get('x-lisa-snapshot'))['audio_input'] == {'sequence': 2, 'samples': 3, 'consumed': 3, 'status': 'completed'}
+        assert json.loads(get('x-lisa-snapshot'))['audio_input'] == {'sequence': 2, 'samples': 3, 'consumed': 3, 'status': 'completed', 'error': ''}
         set_value('x-lisa-audio-record', 'start')
         m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-audio-record', 'value': 'start'}, error=True)
         m.write(APC + 0xf4, 0x12340000)
@@ -205,6 +205,18 @@ def main():
         assert json.loads(get('x-lisa-audio-record'))['error'] == 'Audio recording client timed out'
         set_value('x-lisa-audio-record', 'start')
         set_value('x-lisa-audio-record', '5')
+        m.qmp_command('system_reset')
+        configure(m, 16000)
+        # Streamed WAV payload follows the same ADC path and sequence guards.
+        source = OUTPUT / 'stream.wav'
+        source.write_bytes(bytes(44) + struct.pack('<3h', 321, -456, 789))
+        set_value('x-lisa-audio-file', json.dumps({'path': str(source), 'offset': 44, 'length': 6}))
+        m.command('clock_step 62500')
+        assert m.read(APC + 0x104) == (321 << 16)
+        set_value('x-lisa-audio-input-cancel', '3')
+        m.command('clock_step 62500')
+        progress = json.loads(get('x-lisa-snapshot'))['audio_input']
+        assert progress['status'] == 'cancelled' and progress['consumed'] == 1
         print('QEMU desktop snapshots, PB4, PCM boundaries and reset continuity: PASS')
     finally:
         m.close()

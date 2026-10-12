@@ -38,3 +38,23 @@ MCP 先用 `lisem_uart` 启用端点，再调用 `lisem_uart_capture`：
 `action=status` 或 `stop` 携带该标识。状态包含接收字节数及错误。
 `lisem_uart_read` 是不消费端点的旁路观察，历史溢出时报告 `lost`，
 不能代替持续接收。此前运行的积压按原顺序保留，可通过接收归档排空。
+
+## WAV 注入与音频证据
+
+输入为 16000 Hz、单声道 PCM16 WAV，最长 24 小时。文件在注入期间应保持
+可读且内容不变。CLI 按 1:1 宿主节拍等待固件 ADC 消费完成；Ctrl+C 取消
+剩余输入。固件未读取 ADC 时不会报告注入完成，实际运行须有足够的期限。
+
+```sh
+lisem audio-input DEVICE speech.wav
+lisem audio-output DEVICE --capture speaker.wav
+```
+
+音频输出命令持续侧录原始 DAC 样本，Ctrl+C 结束侧录。侧录独立于宿主播放，
+不会因扬声器静音而丢失 DAC 数据；缓冲溢出、采样率变化和运行中断明确报错。
+MCP 的 `lisem_audio_input` 返回注入标识；通过状态中的 `audio_input` 观察，
+用 `lisem_audio_input_cancel` 携带运行及注入标识取消。
+
+`audio_output` 状态包含样本数、非零样本数、峰值、最后样本及最后非零样本
+的虚拟时刻，以及 PA 状态。这些数据用于定位播放活动；语音内容和音质须
+分析录制文件，不能仅凭计数判定。长录音宜按用例分段，保留输入及输出证据。

@@ -209,7 +209,7 @@ lisem audio-output INSTANCE_ID --capture output.wav
 可加 `--run RUN_ID` 拒绝过期运行，否则自动读取当前运行标识。下电也可配置。
 返回 `pending` 时需查询状态确认，不能当作已经切换成功。
 
-`audio-input` 接受最长 60 秒的 16 kHz 单声道 PCM16 WAV，要求系统麦克风关闭。
+`audio-input` 接受最长 24 小时的 16 kHz 单声道 PCM16 WAV，要求系统麦克风关闭。
 按 1:1 实时速度注入；模拟器运行速度不足或固件暂停采样可能延长等待。
 命令阻塞至实际消耗完毕，Ctrl+C 取消剩余输入，设备继续运行。默认宿主等待
 上限 90 秒，可用 `--timeout` 调整；超时取消剩余输入并返回错误。返回的

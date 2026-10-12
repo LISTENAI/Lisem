@@ -683,6 +683,7 @@ impl Session {
                 storage::read_json(&self.output.join("report.json")).ok()
             };
             if let Some(report) = report {
+                if let Some(input) = report.get("audio_input") { self.state["audio_input"] = input.clone(); }
                 if let Some(sequence) = report.get("button_sequence") {
                     self.state["button_sequence"] = sequence.clone();
                 }
@@ -702,6 +703,10 @@ impl Session {
             if !status.success() && !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!(format!("QEMU exited with {status}"));
             }
+            if self.state["audio_input"]["status"] == "running" {
+                self.state["audio_input"]["status"] = json!("interrupted");
+            }
+            self.state["input_busy"] = json!(false);
             if self.state["button_sequence"]["status"] == "running" {
                 // Without a final report, completion cannot be inferred.
                 self.state["button_sequence"]["status"] = json!("interrupted");
@@ -1847,31 +1852,14 @@ impl Runtime {
                     "Microphone owns the ADC input for this run"
                 );
                 let source = Path::new(params["path"].as_str().context("WAV path missing")?);
-                ensure!(
-                    fs::metadata(source)?.len() <= 16000 * 2 * 60 + 4096,
-                    "Audio input exceeds 60 seconds"
-                );
-                let bytes = fs::read(source)?;
-                let pcm = wave_pcm(&bytes)?;
-                let target = session.output.join("live/input.pcm");
-                ensure!(
-                    session.state["input_busy"] != true,
-                    "Previous audio input is still being consumed"
-                );
-                storage::atomic_write(&target, &pcm)?;
-                session
-                    .qmp
-                    .set("x-lisa-audio-input", json!(target), &mut session.uart)?;
+                let (offset, length) = crate::wave_input::samples(source)?;
+                ensure!(session.state["input_busy"] != true, "Previous audio input is still being consumed");
+                let source = fs::canonicalize(source)?;
+                session.qmp.set("x-lisa-audio-file", json!(json!({"path":source,
+                    "offset":offset,"length":length}).to_string()), &mut session.uart)?;
                 if session.options.capture.is_some() {
-                    storage::atomic_write(
-                        &session
-                            .output
-                            .join("live")
-                            .join(format!("input-{}.wav", Uuid::new_v4().simple())),
-                        &bytes,
-                    )?;
-                } else {
-                    fs::remove_file(&target)?;
+                    fs::copy(&source, session.output.join("live")
+                        .join(format!("input-{}.wav", Uuid::new_v4().simple())))?;
                 }
                 session.capture()?;
                 Ok(session.state["audio_input"].clone())
@@ -2000,50 +1988,6 @@ impl Runtime {
             _ => bail!("Unknown runtime method"),
         }
     }
-}
-
-fn wave_pcm(bytes: &[u8]) -> Result<Vec<u8>> {
-    ensure!(
-        bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WAVE",
-        "Invalid WAV input"
-    );
-    let size = u32::from_le_bytes(bytes[4..8].try_into()?) as usize;
-    ensure!(
-        size.checked_add(8).is_some_and(|n| n <= bytes.len()),
-        "Truncated WAV input"
-    );
-    let mut at = 12;
-    let mut format = false;
-    let mut pcm = None;
-    while at + 8 <= size + 8 {
-        let length = u32::from_le_bytes(bytes[at + 4..at + 8].try_into()?) as usize;
-        let end = (at + 8)
-            .checked_add(length)
-            .context("Invalid WAV chunk size")?;
-        ensure!(end <= size + 8, "Truncated WAV chunk");
-        if &bytes[at..at + 4] == b"fmt " {
-            ensure!(length >= 16, "Invalid WAV format");
-            let value = &bytes[at + 8..end];
-            ensure!(
-                u16::from_le_bytes(value[0..2].try_into()?) == 1
-                    && u16::from_le_bytes(value[2..4].try_into()?) == 1
-                    && u32::from_le_bytes(value[4..8].try_into()?) == 16000
-                    && u16::from_le_bytes(value[12..14].try_into()?) == 2
-                    && u16::from_le_bytes(value[14..16].try_into()?) == 16,
-                "Input must be mono PCM16 WAV at 16000 Hz"
-            );
-            format = true;
-        } else if &bytes[at..at + 4] == b"data" {
-            ensure!(
-                pcm.is_none() && length > 0 && length <= 16000 * 2 * 60 && length.is_multiple_of(2),
-                "Invalid WAV sample count"
-            );
-            pcm = Some(bytes[at + 8..end].to_vec());
-        }
-        at = end + (length & 1);
-    }
-    ensure!(format, "Missing WAV format");
-    pcm.context("Missing WAV samples")
 }
 
 /// Private local endpoint; random authentication is independent of firmware UID.
@@ -2217,23 +2161,6 @@ mod tests {
 
     use super::*;
 
-    fn wave(rate: u32, samples: &[u8]) -> Vec<u8> {
-        let mut bytes = b"RIFF".to_vec();
-        bytes.extend((36 + samples.len() as u32).to_le_bytes());
-        bytes.extend(b"WAVEfmt ");
-        bytes.extend(16_u32.to_le_bytes());
-        bytes.extend(1_u16.to_le_bytes());
-        bytes.extend(1_u16.to_le_bytes());
-        bytes.extend(rate.to_le_bytes());
-        bytes.extend((rate * 2).to_le_bytes());
-        bytes.extend(2_u16.to_le_bytes());
-        bytes.extend(16_u16.to_le_bytes());
-        bytes.extend(b"data");
-        bytes.extend((samples.len() as u32).to_le_bytes());
-        bytes.extend(samples);
-        bytes
-    }
-
     #[test]
     fn camera_confirmation_persists_only_acknowledged_input() {
         let temp = tempfile::tempdir().unwrap();
@@ -2360,15 +2287,5 @@ mod tests {
         assert!(CameraSource::from_params(&json!({"path":42})).is_err());
     }
 
-    #[test]
-    fn wav_input_preserves_samples_and_rejects_invalid_geometry() {
-        let samples = [0, 128, 255, 127, 1, 0, 255, 255];
-        let valid = wave(16000, &samples);
-        assert_eq!(wave_pcm(&valid).unwrap(), samples);
-        assert!(wave_pcm(&valid[..valid.len() - 1]).is_err());
-        assert!(wave_pcm(&wave(48000, &samples)).is_err());
-        assert!(wave_pcm(&wave(16000, &[])).is_err());
-        assert!(wave_pcm(&wave(16000, &[1, 2, 3])).is_err());
-        assert!(wave_pcm(&wave(16000, &vec![0; 16000 * 2 * 61])).is_err());
-    }
+
 }

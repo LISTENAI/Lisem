@@ -24,6 +24,9 @@
 #include "qemu/bswap.h"
 #include "qemu/cutils.h"
 #include "qemu/lisa-camera-input.h"
+#include "qobject/qjson.h"
+#include "qobject/qdict.h"
+#include "qobject/qnum.h"
 
 #define TYPE_ARCS_MACHINE MACHINE_TYPE_NAME("arcs-mini")
 #define TYPE_ARCS_EVB_MACHINE MACHINE_TYPE_NAME("arcs-evb")
@@ -57,6 +60,11 @@ struct ArcsMachine {
     size_t pcm_length, pcm_position;
     uint64_t input_sequence;
     bool input_cancelled;
+    bool input_file_mode;
+    FILE *input_file;
+    QEMUTimer *input_prefetch;
+    size_t input_loaded;
+    const char *input_error;
     GByteArray *audio_tap;
     uint64_t tap_sequence, tap_offset, tap_started_ns, tap_ended_ns;
     bool tap_active;
@@ -65,7 +73,8 @@ struct ArcsMachine {
     unsigned pcm_rate, pcm_channels, output_rate;
     uint64_t input_frames, nonzero_samples;
     GByteArray *pcm_output;
-    uint64_t output_samples;
+    uint64_t output_samples, output_last_ns, output_nonzero_ns, output_pa_samples;
+    unsigned output_peak;
     LisaHostAudio host_audio;
     PCMFeedback speaker_feedback;
     GByteArray *wifi_capture;
@@ -106,6 +115,7 @@ static void button_drive(ArcsMachine *s, bool pressed);
 static bool evb_button_get(ArcsMachine *s, unsigned id);
 static char *button_sequence_get(Object *obj, Error **errp);
 static int camera_input_receive(ArcsMachine *s, uint64_t generation, Error **errp);
+
 
 static void reset_radio(ArcsMachine *s)
 {
@@ -396,8 +406,18 @@ static void pcm_input(void *opaque, unsigned rate, int16_t values[2])
         s->input_frames++;
         return;
     }
-    if (s->pcm_input && rate != s->pcm_rate) { audio_error(s, "input rate differs from ADC; resampling unsupported"); }
-    if (!s->input_cancelled && s->pcm_position < s->pcm_length) {
+    if (s->pcm_input && s->pcm_position < s->pcm_length && !s->input_cancelled && !s->input_error && rate != s->pcm_rate) { audio_error(s, "input rate differs from ADC; resampling unsupported"); }
+    if (s->input_file_mode && !s->input_cancelled && !s->input_error && s->pcm_position < s->pcm_length) {
+        if (s->input_loaded < s->pcm_position + 2) {
+            s->input_error = "Audio input buffer underrun";
+        } else {
+            values[0] = lduw_le_p(s->pcm_input + s->pcm_position % 65536);
+            s->pcm_position += 2;
+        }
+        s->input_frames++;
+        return;
+    }
+    if (!s->input_file_mode && !s->input_cancelled && s->pcm_position < s->pcm_length) {
         values[0] = lduw_le_p(s->pcm_input + s->pcm_position); s->pcm_position += 2;
         if (s->pcm_channels == 2) {
             values[1] = lduw_le_p(s->pcm_input + s->pcm_position); s->pcm_position += 2;
@@ -414,6 +434,10 @@ static void pcm_output(void *opaque, unsigned rate, int sample)
     if (s->pcm_output && s->pcm_output->len == 32000000) { audio_error(s, "capture capacity reached"); }
     s->output_rate = rate;
     int16_t value = MAX(INT16_MIN, MIN(INT16_MAX, sample));
+    s->output_last_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (value) { s->output_nonzero_ns = s->output_last_ns; }
+    s->output_peak = MAX(s->output_peak, abs((int)value));
+    if (pa_enabled(s)) { s->output_pa_samples++; }
     pcm_feedback_write(&s->speaker_feedback, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), rate,
                        pa_enabled(s) ? value : 0);
     if (s->host_audio.stream) {
@@ -514,6 +538,16 @@ static void dump_memory(ArcsMachine *s)
     }
 }
 
+static char *input_status(ArcsMachine *s, bool ended)
+{
+    const char *status = !s->input_sequence ? "idle" : s->input_error ? "failed" :
+        s->input_cancelled ? "cancelled" : s->pcm_position == s->pcm_length ? "completed" :
+        ended ? "interrupted" : "running";
+    return g_strdup_printf("{\"sequence\":%" PRIu64 ",\"samples\":%zu,\"consumed\":%zu,"
+        "\"status\":\"%s\",\"error\":\"%s\"}", s->input_sequence, s->pcm_length / 2,
+        s->pcm_position / 2, status, s->input_error ? s->input_error : "");
+}
+
 static void report(void *opaque, const char *status)
 {
     ArcsMachine *s = opaque;
@@ -528,7 +562,8 @@ static void report(void *opaque, const char *status)
     fprintf(f, "{\"chip_roms\":{\"ap\":{\"address\":0,\"size\":65536,\"sha256\":\"%s\"},"
             "\"cp\":{\"address\":2097152,\"size\":32768,\"sha256\":\"%s\"}},",
             arcs_soc_rom_sha256(0), arcs_soc_rom_sha256(1));
-    fprintf(f, "\"button_sequence\":%s,", sequence);
+    g_autofree char *input = input_status(s, true);
+    fprintf(f, "\"audio_input\":%s,\"button_sequence\":%s,", input, sequence);
     fprintf(f, "\"status\":\"%s\",\"virtual_ns\":%" PRId64
             ",\"wall_seconds\":%.9f,\"aggregate_instructions\":%" PRId64 ",\"cores\":[",
             status, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
@@ -1073,6 +1108,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     /* Live host input keeps its consumed position across guest warm resets. */
     if (!s->desktop_directory) { s->pcm_position = 0; }
     s->input_frames = s->nonzero_samples = s->output_samples = 0; s->output_rate = 0;
+    s->output_last_ns = s->output_nonzero_ns = s->output_pa_samples = s->output_peak = 0;
     s->speaker_feedback = (PCMFeedback){0};
     if (s->pcm_output) { g_byte_array_set_size(s->pcm_output, 0); }
     if (s->wifi_capture) { reset_radio(s); }
@@ -1231,30 +1267,34 @@ static char *desktop_snapshot(Object *obj, Error **errp)
     g_autofree char *sequence = button_sequence_get(obj, errp);
     g_autofree char *camera = camera_input_status(s);
     g_autofree char *wifi = arcs_wifi_environment_status(s->access_points);
+    g_autofree char *input = input_status(s, false);
+    g_autofree char *audio_output = g_strdup_printf("{\"samples\":%" PRIu64 ",\"nonzero_samples\":%" PRIu64
+        ",\"last_sample_ns\":%" PRIu64 ",\"last_nonzero_ns\":%" PRIu64 ",\"peak\":%u,"
+        "\"pa_samples\":%" PRIu64 ",\"pa_enabled\":%s}",
+        s->output_samples, s->nonzero_samples, s->output_last_ns, s->output_nonzero_ns,
+        s->output_peak, s->output_pa_samples, pa_enabled(s) ? "true" : "false");
     g_autofree char *controls = s->evb
         ? g_strdup_printf("{\"k1\":%s,\"k2\":%s,\"k3\":%s}",
                           evb_button_get(s, 0) ? "true" : "false",
                           evb_button_get(s, 1) ? "true" : "false",
                           evb_button_get(s, 2) ? "true" : "false")
         : g_strdup_printf("{\"function\":%s}", s->desktop_pressed ? "true" : "false");
-    return g_strdup_printf("{\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
+    return g_strdup_printf("{\"audio_output\":%s,\"backend\":\"qemu\",\"wifi\":%s,\"wifi_ap_present\":%s,\"camera_input\":%s,\"button_sequence\":%s,"
         "\"controls\":{\"buttons\":%s},\"seconds\":%.9f,"
         "\"ap_exceptions\":%" PRIu64 ",\"exceptions\":%" PRIu64 ","
         "\"audio_samples\":%" PRIu64 ",\"audio_rate\":%u,\"input_busy\":%s,"
-        "\"audio_input\":{\"sequence\":%" PRIu64 ",\"samples\":%zu,\"consumed\":%zu,\"status\":\"%s\"},"
+        "\"audio_input\":%s,"
         "\"input_skipped_frames\":%" PRIu64 ",\"input_dropped_frames\":%" PRIu64 ","
         "\"input_resyncs\":%" PRIu64 ",\"audio_input_enabled\":%s,"
         "\"pads\":{\"A\":{\"driven\":%u,\"levels\":%u},\"B\":{\"driven\":%u,\"levels\":%u}}}",
-        wifi, s->access_points_present ? "true" : "false",
+        audio_output, wifi, s->access_points_present ? "true" : "false",
         camera, sequence, controls,
         qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) / 1e9,
         ((ArcsN300State *)s->soc.cpu[0].env.arcs_state)->exceptions,
         ((ArcsN300State *)s->soc.cpu[1].env.arcs_state)->exceptions,
         s->desktop_samples, s->desktop_rate,
-        !s->input_cancelled && s->pcm_position < s->pcm_length ? "true" : "false",
-        s->input_sequence, s->pcm_length / 2, s->pcm_position / 2,
-        !s->input_sequence ? "idle" : s->input_cancelled ? "cancelled" :
-            s->pcm_position < s->pcm_length ? "running" : "completed",
+        !s->input_cancelled && !s->input_error && s->pcm_position < s->pcm_length ? "true" : "false",
+        input,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_skipped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_dropped) : 0,
         s->host_audio.stream ? lisa_audio_load(&s->host_audio.stream->input_resyncs) : 0,
@@ -1420,6 +1460,66 @@ static void desktop_button_set(Object *obj, bool pressed, Error **errp)
     button_drive(s, pressed);
 }
 
+/* File I/O runs in the main-loop prefetch timer, never in the Codec callback.
+ * Two seconds of bounded lookahead cover the 250 ms guest pacing lead. */
+static void input_prefetch(void *opaque)
+{
+    ArcsMachine *s = opaque;
+    if (!s->input_file) { return; }
+    if (s->input_cancelled || s->input_error || s->pcm_position == s->pcm_length) {
+        fclose(s->input_file); s->input_file = NULL;
+        return;
+    }
+    while (s->input_loaded < s->pcm_length && s->input_loaded - s->pcm_position < 65536) {
+        size_t at = s->input_loaded % 65536;
+        size_t length = MIN(MIN(65536 - at, 65536 - (s->input_loaded - s->pcm_position)),
+                            s->pcm_length - s->input_loaded);
+        size_t n = fread(s->pcm_input + at, 1, length, s->input_file);
+        s->input_loaded += n;
+        if (n != length) { s->input_error = "Audio input file was truncated or unreadable"; break; }
+    }
+    timer_mod(s->input_prefetch, qemu_clock_get_ms(QEMU_CLOCK_REALTIME) + 10);
+}
+
+static void desktop_input_file(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->host_audio.stream && lisa_audio_load(&s->host_audio.stream->capture)) {
+        error_setg(errp, "Microphone owns the ADC input for this run"); return;
+    }
+    if (!s->input_cancelled && !s->input_error && s->pcm_position < s->pcm_length) {
+        error_setg(errp, "Previous ADC input is still being consumed"); return;
+    }
+    QObject *root = qobject_from_json(value, errp);
+    if (!root) { return; }
+    QDict *d = qobject_to(QDict, root);
+    const char *path = d ? qdict_get_try_str(d, "path") : NULL;
+    if (!path || !qdict_haskey(d, "offset") || !qdict_haskey(d, "length") ||
+        !qobject_to(QNum, qdict_get(d, "offset")) || !qobject_to(QNum, qdict_get(d, "length"))) {
+        error_setg(errp, "Expected audio file path, offset and length"); goto out;
+    }
+    int64_t offset = qdict_get_int(d, "offset"), length = qdict_get_int(d, "length");
+    if (offset < 12 || offset > UINT32_MAX || length <= 0 || length > INT64_C(32000) * 86400 || length % 2) {
+        error_setg(errp, "Invalid audio file range"); goto out;
+    }
+    FILE *file = fopen(path, "rb");
+    if (!file) { error_setg_errno(errp, errno, "Cannot open audio file"); goto out; }
+    if (fseeko(file, 0, SEEK_END) || ftello(file) < offset + length || fseeko(file, offset, SEEK_SET)) {
+        fclose(file); error_setg(errp, "Truncated audio input file"); goto out;
+    }
+    if (s->input_file) { fclose(s->input_file); }
+    s->input_file = file;
+    g_free(s->pcm_input); s->pcm_input = g_malloc(65536);
+    s->input_file_mode = true; s->input_loaded = 0; s->input_error = NULL;
+    s->pcm_rate = 16000; s->pcm_channels = 1;
+    s->pcm_length = length; s->pcm_position = 0;
+    s->input_sequence++; s->input_cancelled = false;
+    input_prefetch(s);
+    icount_clock_audio_epoch();
+out:
+    qobject_unref(root);
+}
+
 static void desktop_input(Object *obj, const char *path, Error **errp)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
@@ -1439,6 +1539,9 @@ static void desktop_input(Object *obj, const char *path, Error **errp)
     if (load_image_size(path, pcm, size) != size) {
         g_free(pcm); error_setg(errp, "Cannot load desktop PCM"); return;
     }
+    if (s->input_file) { fclose(s->input_file); s->input_file = NULL; }
+    timer_del(s->input_prefetch);
+    s->input_file_mode = false; s->input_error = NULL;
     g_free(s->pcm_input); s->pcm_input = pcm;
     s->pcm_rate = 16000; s->pcm_channels = 1;
     s->pcm_length = size; s->pcm_position = 0;
@@ -1456,7 +1559,10 @@ static void desktop_input_cancel(Object *obj, const char *value, Error **errp)
         error_setg(errp, "Audio input belongs to an earlier injection"); return;
     }
     if (s->pcm_position < s->pcm_length) {
-        s->input_cancelled = true; g_clear_pointer(&s->pcm_input, g_free);
+        s->input_cancelled = true;
+        if (s->input_file) { fclose(s->input_file); s->input_file = NULL; }
+        timer_del(s->input_prefetch);
+        g_clear_pointer(&s->pcm_input, g_free);
     }
 }
 
@@ -1532,6 +1638,8 @@ static void desktop_init(ArcsMachine *s)
     }
     s->button_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, button_sequence_step, s);
     object_property_add_str(OBJECT(s), "x-lisa-button-sequence", button_sequence_get, button_sequence_set);
+    s->input_prefetch = timer_new_ms(QEMU_CLOCK_REALTIME, input_prefetch, s);
+    object_property_add_str(OBJECT(s), "x-lisa-audio-file", NULL, desktop_input_file);
     object_property_add_str(OBJECT(s), "x-lisa-audio-input", NULL, desktop_input);
     object_property_add_str(OBJECT(s), "x-lisa-audio-input-cancel", NULL, desktop_input_cancel);
     s->tap_lease = timer_new_ms(QEMU_CLOCK_REALTIME, audio_tap_expire, s);
@@ -1554,6 +1662,9 @@ static void machine_class_init(ObjectClass *klass, const void *data)
 static void machine_finalize(Object *obj)
 {
     ArcsMachine *s = ARCS_MACHINE(obj);
+    if (s->input_prefetch) { timer_free(s->input_prefetch); }
+    if (s->input_file) { fclose(s->input_file); }
+    g_free(s->pcm_input);
     if (s->tap_lease) { timer_free(s->tap_lease); }
     if (s->audio_tap) { g_byte_array_unref(s->audio_tap); }
     if (s->camera_poll) { timer_free(s->camera_poll); }
