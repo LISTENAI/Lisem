@@ -106,7 +106,7 @@ def main():
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
             assert len(names) == len(definitions)
-            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events"} <= names
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -119,6 +119,11 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            sd_image = Path(temporary) / 'sd.img'
+            with sd_image.open('wb') as image:
+                image.truncate(64 * 1024 * 1024)
+            mounted = client.tool('lisem_sd_card', {'id': identifier, 'path': str(sd_image)})
+            assert mounted['status'] == 'saved' and mounted['medium']['bytes'] == sd_image.stat().st_size
             for present in (False, True):
                 assert client.tool('lisem_access_point', {'id': identifier, 'enabled': present})['status'] == 'saved'
             client.tool('lisem_access_point', {'id': identifier, 'enabled': 'true'}, error=True)
@@ -160,6 +165,13 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            sd_state = client.tool('lisem_sd_card', {'id': identifier})
+            assert sd_state.get('path') == str(sd_image.resolve()), sd_state
+            client.tool('lisem_sd_card', {'id': identifier, 'run': 'stale', 'eject': True}, error=True)
+            client.tool('lisem_sd_card', {'id': identifier, 'eject': True}, error=True)
+            ejected = client.tool('lisem_sd_card', {'id': identifier, 'run': run, 'eject': True})
+            assert ejected['status'] == 'applied' and ejected['medium'] is None
+            assert client.tool('lisem_status', {'id': identifier})['device']['media']['sd'] is None
             event = client.tool('lisem_events', {'id': identifier, 'run': run, 'action': 'arm',
                 'plan': {'trigger': {'uart_hex': 'ffffff', 'channel': 0, 'timeout_ms': 10000},
                          'actions': [{'after_ms': 0, 'kind': 'button', 'button': 'function',

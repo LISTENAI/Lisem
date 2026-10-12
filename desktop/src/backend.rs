@@ -27,6 +27,8 @@ pub struct Device {
     pub host: Value,
     #[serde(default)]
     pub environment: Value,
+    #[serde(default)]
+    pub media: Value,
     pub unavailable: Option<String>,
 }
 

@@ -86,6 +86,8 @@ enum Action {
     Camera,
     ClearCamera,
     RefreshCameras,
+    MountSd,
+    EjectSd,
     Sound,
     Network,
     Microphone,
@@ -320,7 +322,11 @@ impl Desktop {
     }
     fn choose_file(&mut self, action: Action, cx: &mut Context<Self>) {
         let selected = self.selected.clone();
-        let run = self.state.data["session"]["output"].clone();
+        let run = if self.powered() {
+            self.state.data["session"]["output"].clone()
+        } else {
+            Value::Null
+        };
         let directory = matches!(action, Action::Attach);
         let picker = cx.prompt_for_paths(PathPromptOptions {
             files: !directory,
@@ -330,6 +336,7 @@ impl Desktop {
                 match action {
                     Action::Attach => "打开实例目录",
                     Action::Camera => "选择摄像头图片（PNG / JPEG / PNM）",
+                    Action::MountSd => "选择 SD 卡镜像",
                     _ => "选择要写入 Flash 的 LPK",
                 }
                 .into(),
@@ -345,6 +352,9 @@ impl Desktop {
                             Action::Camera => {
                                 v.send("camera", json!({"id":selected,"run":run,"path":path}))
                             }
+                            Action::MountSd => v.send("sd_card", json!({
+                                "id":selected,"run":run,"medium":{"path":path}
+                            })),
                             _ => v.send("import", json!({"id":selected,"package":path})),
                         }
                         cx.notify();
@@ -410,7 +420,7 @@ impl Desktop {
                     show_device(&d, self.backend.clone(), self.windows.clone(), cx);
                 }
             }
-            Action::ChoosePackage | Action::Attach | Action::Import | Action::Camera => {
+            Action::ChoosePackage | Action::Attach | Action::Import | Action::Camera | Action::MountSd => {
                 self.choose_file(action, cx);
             }
             Action::RefreshCameras => self.send("camera_devices", json!({})),
@@ -418,6 +428,11 @@ impl Desktop {
                 let mut params = self.params();
                 params["path"] = Value::Null;
                 self.send("camera", params);
+            }
+            Action::EjectSd => {
+                let mut params = if self.powered() { self.params() } else { json!({"id":self.selected}) };
+                params["medium"] = Value::Null;
+                self.send("sd_card", params);
             }
             Action::ClearPackage => self.package = None,
             Action::Create => self.send("create", json!({
@@ -1131,6 +1146,7 @@ impl Desktop {
                                         self.access_point_present(&d),
                                         cx,
                                     ))
+                                    .child(self.peripheral_menu("sd", self.sd_medium(&d)["path"].is_string(), cx))
                                     .child(self.peripheral_menu("serial", false, cx))
                                     .child(self.icon(
                                         "power",

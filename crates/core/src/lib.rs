@@ -16,6 +16,7 @@ pub mod storage;
 mod transport;
 mod uart_capture;
 mod wave_input;
+mod sd_card;
 
 pub mod install;
 

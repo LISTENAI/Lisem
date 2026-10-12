@@ -93,7 +93,7 @@ struct ArcsSoC {
     uint64_t entry;
     uint64_t legacy_random_probe_reads;
     uint32_t boot_hart;
-    bool probe, safe_mmio_reads;
+    bool probe, safe_mmio_reads, sd_no_card_detect;
     void (*report)(void *opaque, const char *status);
     void *report_opaque;
 };

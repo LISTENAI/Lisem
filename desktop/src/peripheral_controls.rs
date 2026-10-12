@@ -148,6 +148,7 @@ impl Desktop {
             "microphone" => "麦克风",
             "speaker" => "扬声器",
             "network" => "Wi-Fi",
+            "sd" => "SD 卡",
             _ => "串口",
         };
         let disabled = self.device().is_some_and(|d| match kind {
@@ -164,6 +165,7 @@ impl Desktop {
             ("microphone", false) => Icon::new(IconName::Mic),
             ("speaker", true) => Icon::new(IconName::VolumeOff),
             ("speaker", false) => Icon::new(IconName::Volume2),
+            ("sd", _) => Icon::new(IconName::CardSim),
             ("network", true) => Icon::new(IconName::WifiOff),
             ("network", false) => Icon::new(IconName::Wifi),
             _ => Icon::empty().path(kind),
@@ -241,6 +243,29 @@ impl Desktop {
             return menu;
         };
         match kind {
+            "sd" => {
+                menu = menu
+                    .label(self.sd_label(&d))
+                    .separator()
+                    .item(self.menu_action(
+                        "插入镜像…",
+                        Action::MountSd,
+                        self.sd_change_enabled(),
+                        false,
+                        cx,
+                    ))
+                    .item(self.menu_action(
+                        "弹出",
+                        Action::EjectSd,
+                        self.sd_change_enabled() && self.sd_medium(&d)["path"].is_string(),
+                        false,
+                        cx,
+                    ));
+                if let Some(notice) = self.sd_notice() {
+                    menu = menu.separator().label(notice);
+                }
+                menu
+            }
             "serial" => {
                 for channel in 0..3u8 {
                     menu = menu.item(self.menu_action(
@@ -335,6 +360,40 @@ impl Desktop {
                 menu
             }
             _ => menu,
+        }
+    }
+
+    pub(super) fn sd_medium(&self, d: &Device) -> Value {
+        if self.powered() {
+            self.state.data["session"]["sd_card"].clone()
+        } else {
+            d.media["sd"].clone()
+        }
+    }
+
+    fn sd_label(&self, d: &Device) -> String {
+        let medium = self.sd_medium(d);
+        medium["path"]
+            .as_str()
+            .map(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| path.to_owned())
+            })
+            .unwrap_or_else(|| "未插卡".into())
+    }
+
+    fn sd_change_enabled(&self) -> bool {
+        !self.state.busy && self.state.data["session"]["sd_change"]["status"] != "pending"
+    }
+
+    fn sd_notice(&self) -> Option<String> {
+        let change = &self.state.data["session"]["sd_change"];
+        if change["status"] == "pending" {
+            Some("正在切换 SD 卡…".into())
+        } else {
+            change["error"].as_str().map(str::to_owned)
         }
     }
 
@@ -474,6 +533,35 @@ impl Desktop {
                     )
                     .child(caption(self.camera_notice(d))),
             ));
+        body = body.child(settings_row(
+            "SD 卡",
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(div().truncate().child(self.sd_label(d)))
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            Button::new("settings-sd-mount")
+                                .label("插入镜像…")
+                                .disabled(!self.sd_change_enabled())
+                                .on_click(cx.listener(|v, _, w, cx| v.act(Action::MountSd, w, cx))),
+                        )
+                        .child(
+                            Button::new("settings-sd-eject")
+                                .label("弹出")
+                                .disabled(
+                                    !self.sd_change_enabled()
+                                        || !self.sd_medium(d)["path"].is_string(),
+                                )
+                                .on_click(cx.listener(|v, _, w, cx| v.act(Action::EjectSd, w, cx))),
+                        ),
+                )
+                .when_some(self.sd_notice(), |view, notice| view.child(caption(notice))),
+        ));
         for channel in 0..3u8 {
             let ready = self.serial_path(channel).is_some();
             body = body.child(settings_row(

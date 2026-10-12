@@ -530,6 +530,10 @@ impl Session {
             }
         }
         let mut qmp = Qmp::new(control, &mut uart)?;
+        let sd_card = crate::sd_card::medium(&item["media"]["sd"])?;
+        if !sd_card.is_null() {
+            qmp.call("blockdev-change-medium", sd_change_arguments(&sd_card), &mut uart)?;
+        }
         let qemu_version = qmp.call("query-version", json!({}), &mut uart)?;
         let qemu_identity = json!({"version":qemu_version,"sha256":qemu_sha256,
             "pid":process.child.id()});
@@ -565,7 +569,7 @@ impl Session {
             _workspace: workspace,
             _lease: lease,
             output,
-            state: json!({"qemu":qemu_identity}),
+            state: json!({"qemu":qemu_identity,"sd_card":sd_card}),
             options,
             started: Instant::now(),
             capture_at: Instant::now(),
@@ -1019,6 +1023,7 @@ pub struct Runtime {
     last_frame: Option<Frame>,
     last_uart: Vec<transport::Output>,
     pending_camera: Option<(u64, u64, CameraSource)>,
+    pending_sd: Option<(u64, Value)>,
     pending_access_point: Option<(u64, bool)>,
     pending_wifi_environment: Option<(u64, String, Value)>,
     ports: BTreeMap<u8, SerialPort>,
@@ -1047,6 +1052,7 @@ impl Runtime {
             last_frame: None,
             last_uart: Vec::new(),
             pending_camera: None,
+            pending_sd: None,
             pending_access_point: None,
             pending_wifi_environment: None,
             ports,
@@ -1059,7 +1065,10 @@ impl Runtime {
             if !session.finished
                 && let Some((id, result)) = session.qmp.recover(&mut session.uart)?
             {
-                if self.pending_wifi_environment.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                if self.pending_sd.as_ref().is_some_and(|(pending, _)| *pending == id) {
+                    let (_, medium) = self.pending_sd.take().unwrap();
+                    finish_sd_change(&self.catalog, &self.id, &mut session.state, medium, result);
+                } else if self.pending_wifi_environment.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
                     let (_, request, environment) = self.pending_wifi_environment.take().unwrap();
                     finish_wifi_environment_change(&self.catalog, &self.id, &mut session.state,
                         &request, environment, result.map(|_| ()));
@@ -1373,6 +1382,7 @@ impl Runtime {
             "status" => self.status(),
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
+                self.pending_sd = None;
                 self.pending_access_point = None;
                 self.pending_wifi_environment = None;
                 let options: Options = serde_json::from_value(params["options"].clone())?;
@@ -1391,6 +1401,9 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    if self.pending_sd.take().is_some() {
+                        session.state["sd_change"] = json!({"status":"unknown","error":"Runtime stopped before SD change was confirmed"});
+                    }
                     if let Some((_, request, _)) = self.pending_wifi_environment.take() {
                         session.state["wifi_environment_change"] = json!({"request":request,"status":"unknown",
                             "error":"Runtime stopped before Wi-Fi environment change was confirmed"});
@@ -1463,6 +1476,34 @@ impl Runtime {
                 };
                 session.qmp.set(property, json!(value), &mut session.uart)?;
                 Ok(json!({"x":x,"y":y,"pressed":pressed}))
+            }
+            "sd_card" => {
+                if params.get("medium").is_none() {
+                    return Ok(self.session.as_ref().map(|s| s.state["sd_card"].clone())
+                        .unwrap_or(self.catalog.device(&self.id)?["media"]["sd"].clone()));
+                }
+                let medium = crate::sd_card::medium(&params["medium"])?;
+                if let Some(session) = &mut self.session {
+                    ensure!(params["run"].is_string(), "Running SD changes require a run identifier");
+                    ensure!(self.pending_sd.is_none(), "An SD change is already pending");
+                    session.qmp.ensure_idle()?;
+                    let (command, args) = if medium.is_null() {
+                        ("eject", json!({"device":"sdcard","force":false}))
+                    } else { ("blockdev-change-medium", sd_change_arguments(&medium)) };
+                    match session.qmp.call(command, args, &mut session.uart) {
+                        Err(error) if error.is::<transport::ControlPending>() => {
+                            self.pending_sd = Some((session.qmp.pending_id().unwrap(), medium));
+                            session.state["sd_change"] = json!({"status":"pending"});
+                        }
+                        result => finish_sd_change(&self.catalog, &self.id, &mut session.state, medium, result),
+                    }
+                    Ok(session.state["sd_change"].clone())
+                } else {
+                    ensure!(params["run"].is_null(), "The request belongs to an earlier run");
+                    let item = self.catalog.device(&self.id)?;
+                    self.catalog.update(Path::new(item["path"].as_str().unwrap()), &json!({"sd_card":medium}))?;
+                    Ok(json!({"status":"saved","medium":medium}))
+                }
             }
             "events" => {
                 ensure!(params["run"].is_string(), "Event programs require a run identifier");
@@ -2045,6 +2086,25 @@ impl Runtime {
             _ => bail!("Unknown runtime method"),
         }
     }
+}
+
+fn sd_change_arguments(medium: &Value) -> Value {
+    json!({"device":"sdcard","filename":medium["path"],"format":"raw",
+        "read-only-mode":if medium["read_only"] == true { "read-only" } else { "read-write" }})
+}
+fn finish_sd_change(catalog: &Catalog, id: &str, state: &mut Value, medium: Value, result: Result<Value>) {
+    state["sd_change"] = match result {
+        Ok(_) => {
+            state["sd_card"] = medium.clone();
+            let saved = catalog.device(id).and_then(|item| catalog.update(
+                Path::new(item["path"].as_str().unwrap()), &json!({"sd_card":medium})));
+            match saved {
+                Ok(_) => json!({"status":"applied","medium":medium}),
+                Err(error) => json!({"status":"applied","medium":medium,"error":format!("SD changed but configuration was not saved: {error}")}),
+            }
+        }
+        Err(error) => json!({"status":"rejected","error":error.to_string()}),
+    };
 }
 
 fn event_program(plan: &Value, backend: &Backend) -> Result<Value> {

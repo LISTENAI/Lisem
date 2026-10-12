@@ -266,12 +266,13 @@
  riscv_ss.add(when: 'CONFIG_OPENTITAN', if_true: files('opentitan.c'))
 --- a/hw/riscv/Kconfig
 +++ b/hw/riscv/Kconfig
-@@ -1,3 +1,9 @@
+@@ -1,3 +1,10 @@
 +config ARCS
 +    bool
 +    depends on RISCV32
 +    select SSI
 +    select I2C
++    select SDHCI
 +
  config RISCV_IOMMU
      bool
@@ -710,3 +711,112 @@
              if (icount_clock_idle_advance()) {
                  continue;
              }
+--- a/hw/sd/sdhci.c
++++ b/hw/sd/sdhci.c
+@@ -248,6 +248,23 @@
+     SDHCIState *s = (SDHCIState *)dev;
+ 
+     trace_sdhci_set_inserted(level ? "insert" : "eject");
++    if (s->no_card_detect) {
++        /* Media removal does not drive an unwired mechanical detect input. */
++        if (!level && (s->prnsts & SDHC_DATA_INHIBIT)) {
++            timer_del(s->transfer_timer);
++            s->prnsts &= ~(SDHC_DOING_READ | SDHC_DOING_WRITE |
++                          SDHC_DATA_INHIBIT | SDHC_DAT_LINE_ACTIVE |
++                          SDHC_DATA_AVAILABLE | SDHC_SPACE_AVAILABLE);
++            s->data_count = 0;
++            s->stopped_state = sdhc_not_stopped;
++            if (s->errintstsen & SDHC_EISEN_DATATIMEOUT) {
++                s->errintsts |= SDHC_EIS_DATATIMEOUT;
++                s->norintsts |= SDHC_NIS_ERR;
++            }
++            sdhci_update_irq(s);
++        }
++        return;
++    }
+     if ((s->norintsts & SDHC_NIS_REMOVE) && level) {
+         /* Give target some time to notice card ejection */
+         timer_mod(s->insert_timer,
+@@ -299,6 +316,11 @@
+      * initialization
+      */
+     memset(&s->sdmasysad, 0, (uintptr_t)&s->capareg - (uintptr_t)&s->sdmasysad);
++
++    /* An unwired detect input stays stable and deasserted across media swaps. */
++    if (s->no_card_detect) {
++        s->prnsts = 0x1fa0000;
++    }
+ 
+     /* Reset other state based on current card insertion/readonly status */
+     sdhci_set_inserted(dev, sdbus_get_inserted(&s->sdbus));
+@@ -698,6 +720,7 @@
+                         MEMTXATTRS_UNSPECIFIED);
+         sdbus_write_data(&s->sdbus, s->fifo_buffer, datacnt);
+     }
++    s->sdmasysad += datacnt;
+     s->blkcnt--;
+ 
+     if (s->norintstsen & SDHC_NISEN_DMA) {
+@@ -1184,11 +1207,15 @@
+ 
+     switch (offset & ~0x3) {
+     case SDHC_SYSAD:
+-        if (!TRANSFERRING_DATA(s->prnsts)) {
++        if (!TRANSFERRING_DATA(s->prnsts) ||
++            ((s->trnmod & SDHC_TRNS_DMA) &&
++             SDHC_DMA_TYPE(s->hostctl1) == SDHC_CTRL_SDMA)) {
+             s->sdmasysad = (s->sdmasysad & mask) | value;
+             MASKED_WRITE(s->sdmasysad, mask, value);
+             /* Writing to last byte of sdmasysad might trigger transfer */
+             if (!(mask & 0xFF000000) && s->blkcnt &&
++                (s->prnsts & SDHC_DATA_INHIBIT) &&
++                (s->trnmod & SDHC_TRNS_DMA) &&
+                 (s->blksize & BLOCK_SIZE_MASK) &&
+                 SDHC_DMA_TYPE(s->hostctl1) == SDHC_CTRL_SDMA) {
+                 sdhci_sdma_transfer(s);
+@@ -1266,7 +1293,8 @@
+         MASKED_WRITE(s->hostctl1, mask, value);
+         MASKED_WRITE(s->pwrcon, mask >> 8, value >> 8);
+         MASKED_WRITE(s->wakcon, mask >> 24, value >> 24);
+-        if (!(s->prnsts & SDHC_CARD_PRESENT) || ((s->pwrcon >> 1) & 0x7) < 5 ||
++        if ((!s->no_card_detect && !(s->prnsts & SDHC_CARD_PRESENT)) ||
++                ((s->pwrcon >> 1) & 0x7) < 5 ||
+                 !(s->capareg & (1 << (31 - ((s->pwrcon >> 1) & 0x7))))) {
+             s->pwrcon &= ~SDHC_POWER_ON;
+         }
+@@ -1559,6 +1587,7 @@
+ 
+ static const Property sdhci_sysbus_properties[] = {
+     DEFINE_SDHCI_COMMON_PROPERTIES(SDHCIState),
++    DEFINE_PROP_BOOL("no-card-detect", SDHCIState, no_card_detect, false),
+     DEFINE_PROP_BOOL("pending-insert-quirk", SDHCIState, pending_insert_quirk,
+                      false),
+     DEFINE_PROP_LINK("dma", SDHCIState,
+--- a/include/hw/sd/sdhci.h
++++ b/include/hw/sd/sdhci.h
+@@ -94,6 +94,7 @@
+     /* RO Host Controller Version Register always reads as 0x2401 */
+ 
+     /* Configurable properties */
++    bool no_card_detect;  /* Media changes do not drive the detect input. */
+     bool pending_insert_quirk; /* Quirk for Raspberry Pi card insert int */
+     uint32_t quirks;
+     uint8_t endianness;
+--- a/hw/sd/sdhci-internal.h
++++ b/hw/sd/sdhci-internal.h
+@@ -154,6 +154,7 @@
+ /* ROC/RW1C Error Interrupt Status Register 0x0 */
+ #define SDHC_ERRINTSTS                 0x32
+ #define SDHC_EIS_CMDTIMEOUT            0x0001
++#define SDHC_EIS_DATATIMEOUT           0x0010
+ #define SDHC_EIS_BLKGAP                0x0004
+ #define SDHC_EIS_CMDIDX                0x0008
+ #define SDHC_EIS_CMD12ERR              0x0100
+@@ -173,6 +174,7 @@
+ /* R/W Error Interrupt Status Enable Register 0x0 */
+ #define SDHC_ERRINTSTSEN               0x36
+ #define SDHC_EISEN_CMDTIMEOUT          0x0001
++#define SDHC_EISEN_DATATIMEOUT         0x0010
+ #define SDHC_EISEN_BLKGAP              0x0004
+ #define SDHC_EISEN_CMDIDX              0x0008
+ #define SDHC_EISEN_ADMAERR             0x0200

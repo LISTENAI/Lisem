@@ -136,7 +136,7 @@ impl Catalog {
         )?;
         Ok(
             json!({"id":value["id"],"name":value["name"],"path":path,"board":layout.board,
-                  "hardware":hardware,"host":value["host"],
+                  "hardware":hardware,"host":value["host"],"media":value["media"],
                   "environment":environment,
                   "uid":storage::uid(&path,&layout)?}),
         )
@@ -309,6 +309,9 @@ impl Catalog {
             value["host"]["camera_image"].is_null() || value["host"]["camera_device"].is_null(),
             "Camera image and device are mutually exclusive"
         );
+        ensure!(value["media"].is_null() || value["media"].is_object(), "Invalid media settings");
+        ensure!(value["media"]["sd"].is_null() || (value["media"]["sd"]["path"].is_string()
+            && value["media"]["sd"]["read_only"].is_boolean()), "Invalid SD image settings");
         if !value["host"]["uart"].is_null() {
             valid_uart(&value["host"]["uart"])?;
         }
@@ -332,6 +335,10 @@ impl Catalog {
                 ensure!(setting.is_boolean(), "Host setting must be boolean");
                 value["host"][key] = setting.clone();
             }
+        }
+        if let Some(medium) = changes.get("sd_card") {
+            if value["media"].is_null() { value["media"] = json!({}); }
+            value["media"]["sd"] = crate::sd_card::medium(medium)?;
         }
         if let Some(image) = changes.get("camera_image") {
             ensure!(

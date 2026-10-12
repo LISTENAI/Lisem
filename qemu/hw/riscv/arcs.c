@@ -1178,12 +1178,14 @@ static void machine_init(MachineState *machine)
     qdev_prop_set_uint64(DEVICE(&s->soc), "entry", entry);
     qdev_prop_set_uint32(DEVICE(&s->soc), "boot-hart", boot_hart);
     qdev_prop_set_bit(DEVICE(&s->soc), "probe", probe);
+    s->evb = !strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_EVB_MACHINE);
+    /* Mini's six-wire SD expansion has no mechanical card-detect connection. */
+    qdev_prop_set_bit(DEVICE(&s->soc), "sd-no-card-detect", !s->evb);
     s->soc.report = report;
     s->soc.report_opaque = s;
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
-    s->evb = !strcmp(object_get_typename(OBJECT(machine)), TYPE_ARCS_EVB_MACHINE);
     object_property_add_bool(OBJECT(s), "x-arcs-boot-asserted", boot_pin_get, boot_pin_set);
     const char *boot_release = getenv("ARCS_QEMU_BOOT_RELEASE_NS");
     if (boot_release) {

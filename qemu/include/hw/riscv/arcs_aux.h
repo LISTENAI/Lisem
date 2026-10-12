@@ -26,6 +26,7 @@ typedef struct ArcsI2C {
 } ArcsI2C;
 typedef struct ArcsSD {
     ArcsSoC *soc;
+    DeviceState *host;
     MemoryRegion io;
     uint8_t regs[0x180];
 } ArcsSD;

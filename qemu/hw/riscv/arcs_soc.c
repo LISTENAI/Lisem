@@ -355,6 +355,7 @@ static const Property properties[] = {
     DEFINE_PROP_UINT64("entry", ArcsSoC, entry, 0),
     DEFINE_PROP_UINT32("boot-hart", ArcsSoC, boot_hart, 0),
     DEFINE_PROP_BOOL("probe", ArcsSoC, probe, false),
+    DEFINE_PROP_BOOL("sd-no-card-detect", ArcsSoC, sd_no_card_detect, false),
 };
 
 static void class_init(ObjectClass *klass, const void *data)

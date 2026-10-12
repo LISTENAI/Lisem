@@ -262,6 +262,7 @@ impl Backend {
             ])
             .arg(instance.join("flash.bin"))
             .env("ARCS_QEMU_BUDGET_NS", (seconds * 1_000_000_000).to_string())
+            .args(["-drive", "if=none,id=sdcard"])
             .env("ARCS_QEMU_BOOT_HART", "0")
             .env("ARCS_QEMU_LUNA_SAFE_READS", "1")
             .env("ARCS_QEMU_SOC_CLOCK", "10000")

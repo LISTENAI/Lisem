@@ -117,6 +117,9 @@ enum Action {
         #[arg(long, default_value_t = 80)]
         gap_ms: u64,
     },
+    /// Inspect, mount or eject a raw SD card image.
+    SdCard { id: String, #[arg(long, conflicts_with="eject")] image: Option<PathBuf>,
+        #[arg(long)] eject: bool, #[arg(long)] run: Option<String> },
     /// Arm a bounded event program from a JSON file.
     #[command(after_long_help = r#"Plan example (future UART 0 bytes 'ready', then an 80 ms press):
   {"trigger":{"uart_hex":"7265616479","channel":0,"timeout_ms":10000},
@@ -353,6 +356,17 @@ fn run() -> Result<i32> {
         Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
             "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
         )?,
+        Action::SdCard { id, image, eject, run } => {
+            let mut params = json!({"id":id});
+            if image.is_some() || eject {
+                let state = manager.call("inspect", json!({"id":id}))?;
+                params["run"] = run.map(serde_json::Value::String).unwrap_or_else(||
+                    if state["runtime"]["session"]["finished"] == false { state["runtime"]["session"]["output"].clone() }
+                    else { serde_json::Value::Null });
+                params["medium"] = match image { Some(path) => json!({"path":absolute(&path)?}), None => serde_json::Value::Null };
+            }
+            manager.call("sd_card", params)?
+        }
         Action::Events { id, file, run } => manager.call("events", json!({"id":id,"run":run,
             "action":"arm","plan":storage::read_json(&file)?}))?,
         Action::EventsStatus { id, sequence, run, cancel } => manager.call("events", json!({"id":id,"run":run,

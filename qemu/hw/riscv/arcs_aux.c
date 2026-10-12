@@ -3,6 +3,12 @@
 #include "qemu/osdep.h"
 #include "hw/riscv/arcs.h"
 #include "system/address-spaces.h"
+#include "hw/sd/sdhci.h"
+#include "hw/qdev-properties.h"
+#include "hw/qdev-properties-system.h"
+#include "hw/irq.h"
+#include "system/block-backend.h"
+#include "qapi/error.h"
 
 static bool adc_valid(hwaddr off, unsigned size)
 {
@@ -101,35 +107,26 @@ static const MemoryRegionOps adc_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
 };
 
-/* SDHCI with an empty slot. No data is manufactured on command timeout. */
+/* Standard SDHCI registers plus the ARCS vendor register bank. */
 static bool sd_byte_valid(hwaddr off)
 {
     return off < 0x180 && !(off >= 0x70 && off < 0xfc) && !(off >= 0x12c && off < 0x178);
 }
 
-static uint8_t sd_byte(ArcsSD *s, unsigned off)
-{
-    if (off >= 0x24 && off < 0x28) { return 0x00f00000u >> (8 * (off - 0x24)); }
-    if (off == 0x2c) { return s->regs[off] | ((s->regs[off] & 1) ? 2 : 0); }
-    return off == 0x2f ? 0 : s->regs[off];
-}
-
-static void sd_irq(ArcsSD *s)
-{
-    unsigned pending = 0;
-    for (unsigned i = 0; i < 4; i++) {
-        pending |= s->regs[0x30 + i] & s->regs[0x34 + i] & s->regs[0x38 + i];
-    }
-    arcs_soc_irq(s->soc, 25, !!pending);
-}
-
 static uint64_t sd_read(void *opaque, hwaddr off, unsigned size)
 {
     ArcsSD *s = opaque;
-    uint32_t value = 0;
+    uint64_t value = 0;
     for (unsigned i = 0; i < size; i++) {
         if (!sd_byte_valid(off + i)) { arcs_soc_fail(s->soc, 0x45a00000 + off, size, false, 0); }
-        value |= (uint32_t)sd_byte(s, off + i) << (8 * i);
+    }
+    if (off < 0x100) {
+        if (memory_region_dispatch_read(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->host), 0),
+                off, &value, ctz32(size) | MO_LE, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            arcs_soc_fail(s->soc, 0x45a00000 + off, size, false, 0);
+        }
+    } else {
+        for (unsigned i = 0; i < size; i++) { value |= (uint64_t)s->regs[off + i] << (8 * i); }
     }
     return value;
 }
@@ -140,19 +137,13 @@ static void sd_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
     for (unsigned i = 0; i < size; i++) {
         if (!sd_byte_valid(off + i)) { arcs_soc_fail(s->soc, 0x45a00000 + off, size, true, value); }
     }
-    for (unsigned i = 0; i < size; i++) {
-        unsigned at = off + i;
-        uint8_t byte = value >> (8 * i);
-        if (at >= 0x30 && at <= 0x33) { s->regs[at] &= ~byte; }
-        else if (at == 0x2f) {
-            if (byte & 1) { arcs_sd_reset(s->soc); }
-            if (byte & 6) { memset(s->regs + 0x30, 0, 4); }
-        } else { s->regs[at] = byte; }
-        if (at == 15) {
-            if (!(s->regs[14] & 3)) { s->regs[0x30] |= 1; }
-            else { s->regs[0x31] |= 0x80; s->regs[0x32] |= 1; }
+    if (off < 0x100) {
+        if (memory_region_dispatch_write(sysbus_mmio_get_region(SYS_BUS_DEVICE(s->host), 0),
+                off, value, ctz32(size) | MO_LE, MEMTXATTRS_UNSPECIFIED) != MEMTX_OK) {
+            arcs_soc_fail(s->soc, 0x45a00000 + off, size, true, value);
         }
-        sd_irq(s);
+    } else {
+        for (unsigned i = 0; i < size; i++) { s->regs[off + i] = value >> (8 * i); }
     }
 }
 
@@ -162,15 +153,17 @@ static const MemoryRegionOps sd_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 4, .unaligned = true },
 };
 
-void arcs_sd_reset(ArcsSoC *soc)
+static void sd_irq(void *opaque, int n, int level)
 {
-    ArcsSD *s = &soc->sd;
-    memset(s->regs, 0, sizeof(s->regs));
-    s->regs[0x41] = 100; s->regs[0x43] = 1; s->regs[0xfe] = 2;
-    sd_irq(s);
+    arcs_soc_irq(opaque, 25, level);
 }
 
-/* Unattached USB device controller. Configuration never creates bus traffic. */
+void arcs_sd_reset(ArcsSoC *soc)
+{
+    memset(soc->sd.regs, 0, sizeof(soc->sd.regs));
+    if (soc->sd.host) { device_cold_reset(soc->sd.host); }
+}
+
 static bool usb_dma_control(hwaddr off, unsigned size)
 {
     return size == 4 && off >= 0x204 && off <= 0x254 &&
@@ -298,7 +291,22 @@ void arcs_aux_init(ArcsSoC *soc)
     memory_region_init_io(&usb->io, OBJECT(soc), &usb_ops, usb, "arcs-usb-unattached", 0x1000);
     memory_region_add_subregion(get_system_memory(), 0x41000000, &usb->io);
     ArcsSD *sd = &soc->sd; sd->soc = soc;
-    memory_region_init_io(&sd->io, OBJECT(soc), &sd_ops, sd, "arcs-sd-empty", 0x1000);
+    sd->host = qdev_new(TYPE_SYSBUS_SDHCI);
+    object_property_add_child(OBJECT(soc), "sd-host", OBJECT(sd->host));
+    qdev_prop_set_uint8(sd->host, "sd-spec-version", 3);
+    qdev_prop_set_uint64(sd->host, "capareg", 0x01686432);
+    qdev_prop_set_bit(sd->host, "no-card-detect", soc->sd_no_card_detect);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(sd->host), &error_fatal);
+    sysbus_connect_irq(SYS_BUS_DEVICE(sd->host), 0, qemu_allocate_irq(sd_irq, soc, 0));
+    DeviceState *card = qdev_new(TYPE_SD_CARD);
+    qdev_prop_set_drive_err(card, "drive", blk_by_name("sdcard"), &error_fatal);
+    qdev_realize_and_unref(card, qdev_get_child_bus(sd->host, "sd-bus"), &error_fatal);
+    BlockBackend *backend = blk_by_name("sdcard");
+    if (backend) {
+        blk_set_perm(backend, BLK_PERM_CONSISTENT_READ | BLK_PERM_WRITE,
+                     BLK_PERM_CONSISTENT_READ, &error_fatal);
+    }
+    memory_region_init_io(&sd->io, OBJECT(soc), &sd_ops, sd, "arcs-sd", 0x1000);
     memory_region_add_subregion(get_system_memory(), 0x45a00000, &sd->io);
     ArcsADC *s = &soc->adc; s->soc = soc;
     memory_region_init_io(&s->io, OBJECT(soc), &adc_ops, s, "arcs-gpadc", 0x1000);

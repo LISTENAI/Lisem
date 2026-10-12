@@ -113,6 +113,17 @@ struct ButtonSequence {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct SdCard {
+    id: String,
+    /// Current run identifier required when mounting or ejecting while running.
+    run: Option<String>,
+    /// Raw image path for mounting. Omit both path and eject to inspect.
+    path: Option<String>,
+    #[serde(default)]
+    eject: bool,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Events {
     id: String,
     run: String,
@@ -405,6 +416,8 @@ fn tools() -> Vec<Tool> {
             "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
             false,
         ),
+        definition::<SdCard>("lisem_sd_card",
+            "Inspect, mount or eject a writable raw SD image, including while running. Image size must be a power of two, 8 MiB..32 GiB. Prepare its partition table, filesystem and test files before mounting; the firmware performs all card/filesystem operations. Writes persist directly in the image. One writer per image; mounting is saved per instance only after runtime confirmation.", false),
         definition::<Events>("lisem_events",
             "Prearm 1..32 board actions at an absolute virtual time or a future raw UART byte pattern. Actions run at trigger time plus after_ms. UART matching is bounded to 128 bytes with a virtual expiry. Returns program identity; poll status. Dispatched means actions were submitted, not firmware success: follow returned button/audio sequence identities. Reset cancels pending actions. Requires current run.", false),
         definition::<SequenceControl>("lisem_audio_input_cancel",
@@ -527,6 +540,14 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_sd_card" => {
+            let request: SdCard = arguments(value)?;
+            ensure!(!(request.eject && request.path.is_some()), "Choose image or eject");
+            let mut params = json!({"id":request.id,"run":request.run});
+            if request.eject { params["medium"] = Value::Null; }
+            else if let Some(path) = request.path { params["medium"] = json!({"path":path}); }
+            manager.call("sd_card", params)?
+        }
         "lisem_audio_input_cancel" => call(manager, "audio_cancel", arguments::<SequenceControl>(value)?)?,
         "lisem_events" => call(manager, "events", arguments::<Events>(value)?)?,
         "lisem_uart_capture" => call(manager, "uart_capture", arguments::<UartCapture>(value)?)?,

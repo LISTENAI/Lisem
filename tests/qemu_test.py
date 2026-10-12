@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
                  network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
-                 board='arcs-mini'):
+                 board='arcs-mini', sd_image=None, sd_slot=False):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -69,10 +69,12 @@ class Machine:
         if power_button:
             env['ARCS_QEMU_POWER_BUTTON'] = '%d,%d' % power_button
         firmware = []
+        if sd_slot or sd_image is not None:
+            firmware += ['-drive', 'if=none,id=sdcard' + (',format=raw,file=' + str(sd_image) if sd_image else '')]
         if flash is not None:
             image = directory / 'flash.bin'
             image.write_bytes(flash)
-            firmware = ['-bios', str(image)]
+            firmware += ['-bios', str(image)]
             env['ARCS_QEMU_FLASH_PERSIST'] = '1'
         if otp is not None:
             image = directory / 'otp.bin'
