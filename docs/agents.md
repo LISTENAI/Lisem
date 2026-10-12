@@ -116,3 +116,17 @@ worker 的 `id` 区分进程生命周期，`pid` 便于定位进程；
 启动默认关闭宿主网络和音频，按任务显式启用。虚拟运行预算为 5–86400 秒，
 宿主截止时间为 1–172800 秒。Flash 擦除和 UID 重新生成要求下电并提供当前
 `confirm_uid`；UID 位于 OTP，擦除 Flash 不改变它。
+
+长时运行、连续串口接收、预置动作及 SD 镜像准备见
+[自动化运行](automation.md)。
+
+## Lisem skill
+
+[Lisem skill](../skills/lisem/SKILL.md) 提供安装、实例操作和场景指导，
+其中的固件自动回归场景涵盖夹具准备、时序操作及证据判定。安装命令：
+
+```sh
+npx skills add LISTENAI/Lisem
+```
+
+CLI 和 MCP 参数仍以当前安装版本的帮助及工具 schema 为准。

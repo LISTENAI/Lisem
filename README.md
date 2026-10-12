@@ -118,6 +118,13 @@ Lisem 面向应用运行与调试，不能代替真机的电气、射频和精�
 可通过 `lisem mcp` 接入 MCP，也可让 agent 直接使用 CLI，
 详见[接入说明](docs/agents.md)。
 
+[Lisem skill](skills/lisem/SKILL.md) 提供安装、实例操作和固件自动回归指导，
+使用以下命令安装：
+
+```sh
+npx skills add LISTENAI/Lisem
+```
+
 ## 参与开发
 
 构建依赖、源码结构和验证方法分别见[开发说明](docs/development.md)与
