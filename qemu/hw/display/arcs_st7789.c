@@ -15,7 +15,8 @@ typedef struct ArcsST7789 {
     QemuConsole *console;
     QEMUTimer *scan;
     qemu_irq te;
-    uint16_t gram[240 * 320];
+    uint16_t gram[240 * 320], scanned[240 * 320], presented[240 * 320];
+    uint8_t scanned_flags[320], presented_flags[320];
     uint8_t command, madctl, parameters[32], analog[256][32], analog_count[256];
     uint32_t width, height, x_offset, y_offset, rotation;
     unsigned x_start, x_end, y_start, y_end, x, y, count, format;
@@ -23,7 +24,9 @@ typedef struct ArcsST7789 {
     bool panel_inverted, inverted, sleeping, on, tear, reset_released, data_mode, dirty;
     double backlight;
     uint64_t pixels;
-    int64_t scan_epoch;
+    int64_t scan_start, line_ns;
+    unsigned scanned_rows;
+    bool scanning, blanking, scan_reverse;
     void (*failure)(void *, const char *);
     void *failure_opaque;
 } ArcsST7789;
@@ -36,26 +39,77 @@ static void fail(ArcsST7789 *s, const char *message, unsigned value)
     exit(1);
 }
 
+static void update(void *opaque);
+
+/* Complete rows before a GRAM/control write. This gives each row its virtual
+ * sampling time without adding a timer callback for every scan line. */
+static void scan_rows(ArcsST7789 *s, int64_t now)
+{
+    if (!s->scanning || s->blanking || now <= s->scan_start) { return; }
+    unsigned rows = MIN((now - s->scan_start) / s->line_ns, 320);
+    while (s->scanned_rows < rows) {
+        unsigned y = s->scan_reverse ? 319 - s->scanned_rows : s->scanned_rows;
+        memcpy(s->scanned + y * 240, s->gram + y * 240, 240 * sizeof(uint16_t));
+        s->scanned_flags[y] = (s->madctl & 8) | (s->inverted ? 1 : 0);
+        s->scanned_rows++;
+    }
+}
+
+static int64_t line_period(ArcsST7789 *s)
+{
+    /* ST7789P3 FRCTRL2: 10 MHz oscillator, 250 + 16 * RTNA clocks/line. */
+    return (250 + 16 * (s->analog[0xc6][0] & 31)) * 100;
+}
+
 static void schedule(ArcsST7789 *s)
 {
-    timer_del(s->scan);
-    if (s->tear && !s->sleeping && s->reset_released) {
-        int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-        int64_t period = 16667000;
-        timer_mod(s->scan, s->scan_epoch + ((now - s->scan_epoch) / period + 1) * period);
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (s->sleeping || !s->reset_released) {
+        timer_del(s->scan); s->scanning = false;
+        qemu_set_irq(s->te, 0);
+    } else if (!s->scanning) {
+        s->scanning = s->blanking = true;
+        s->line_ns = line_period(s);
+        s->scan_start = now + s->analog[0xb2][0] * s->line_ns;
+        timer_mod(s->scan, s->scan_start);
     }
+    qemu_set_irq(s->te, s->scanning && s->blanking && s->tear);
 }
 
 static void scan(void *opaque)
 {
     ArcsST7789 *s = opaque;
-    qemu_irq_pulse(s->te);
-    schedule(s);
+    int64_t now = s->scan_start + (s->blanking ? 0 : 320 * s->line_ns);
+    if (s->blanking) {
+        s->blanking = false; s->scanned_rows = 0;
+        s->scan_reverse = s->madctl & 16;
+        qemu_set_irq(s->te, 0);
+        timer_mod(s->scan, s->scan_start + 320 * s->line_ns);
+        return;
+    }
+    scan_rows(s, now);
+    assert(s->scanned_rows == 320);
+    if (memcmp(s->presented, s->scanned, sizeof(s->presented)) ||
+        memcmp(s->presented_flags, s->scanned_flags, sizeof(s->presented_flags))) {
+        memcpy(s->presented, s->scanned, sizeof(s->presented));
+        memcpy(s->presented_flags, s->scanned_flags, sizeof(s->presented_flags));
+        s->dirty = true;
+    }
+    /* Publish at the completed scan's timestamp. GUI refresh never samples
+     * the live GRAM, and cannot advance or change the panel scan phase. */
+    update(s);
+    s->blanking = true;
+    s->line_ns = line_period(s);
+    s->scan_start = now + (s->analog[0xb2][0] + s->analog[0xb2][1]) * s->line_ns;
+    qemu_set_irq(s->te, s->tear);
+    timer_mod(s->scan, s->scan_start);
 }
 
 static void reset_controller(ArcsST7789 *s)
 {
     s->count = 0; memset(s->analog_count, 0, sizeof(s->analog_count));
+    s->analog[0xc6][0] = 15;
+    s->analog[0xb2][0] = s->analog[0xb2][1] = 12;
     s->sleeping = true; s->on = s->tear = s->inverted = false;
     s->madctl = s->command = 0; s->format = 6; s->pixel_high = -1;
     s->x_start = s->y_start = s->x = s->y = 0; s->x_end = 239; s->y_end = 319;
@@ -66,19 +120,19 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
 {
     ArcsST7789 *s = ARCS_ST7789(dev);
     if (!s->reset_released) { return 0; }
-    s->dirty = true;
+    scan_rows(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
     if (!s->data_mode) {
         if (s->pixel_high >= 0) { fail(s, "incomplete RGB565 pixel", data); }
         s->command = data; s->count = 0;
         switch (data) {
         case 0: case 0x13: break;
         case 1: reset_controller(s); break;
-        case 0x10: s->sleeping = true; break;
-        case 0x11: s->sleeping = false; break;
+        case 0x10: s->dirty = true; s->sleeping = true; break;
+        case 0x11: s->dirty = true; s->sleeping = false; break;
         case 0x20: s->inverted = false; break;
         case 0x21: s->inverted = true; break;
-        case 0x28: s->on = false; break;
-        case 0x29: s->on = true; break;
+        case 0x28: s->dirty = true; s->on = false; break;
+        case 0x29: s->dirty = true; s->on = true; break;
         case 0x2c: s->x = s->x_start; s->y = s->y_start; break;
         case 0x34: s->tear = false; qemu_set_irq(s->te, 0); break;
         case 0x2a: case 0x2b: case 0x35: case 0x36: case 0x3a:
@@ -124,6 +178,14 @@ static uint32_t transfer(SSIPeripheral *dev, uint32_t data)
     case 0x35:
         if (data) { fail(s, "horizontal TE is not modeled", data); }
         s->tear = true; schedule(s); break;
+    case 0xb2:
+        if (s->count > 5 || (s->count <= 2 && (data & 0x80)) ||
+            (s->count == 3 && data != 0)) {
+            fail(s, "unsupported porch setting", data);
+        }
+        s->analog[0xb2][s->count - 1] = data;
+        s->analog_count[0xb2] = s->count;
+        break;
     case 0xb0:
         /* Serial DBI RGB565, MSB first. Other RAM interface/endian modes
          * require distinct pixel transport and must not silently render. */
@@ -156,11 +218,13 @@ static uint32_t rgb(ArcsST7789 *s, unsigned x, unsigned y)
     case 180: px = s->width - 1 - x; py = s->height - 1 - y; break;
     case 270: px = y; py = s->height - 1 - x; break;
     }
-    uint16_t pixel = s->gram[(py + s->y_offset) * 240 + px + s->x_offset];
+    unsigned row = py + s->y_offset;
+    uint16_t pixel = s->presented[row * 240 + px + s->x_offset];
+    uint8_t flags = s->presented_flags[row];
     unsigned r = (pixel >> 11) & 31, g = (pixel >> 5) & 63, b = pixel & 31;
-    if (s->madctl & 8) { unsigned tmp = r; r = b; b = tmp; }
+    if (flags & 8) { unsigned tmp = r; r = b; b = tmp; }
     r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
-    if (s->inverted != s->panel_inverted) { r = 255 - r; g = 255 - g; b = 255 - b; }
+    if (!!(flags & 1) != s->panel_inverted) { r = 255 - r; g = 255 - g; b = 255 - b; }
     double duty = enabled(s) ? s->backlight : 0;
     return ((uint32_t)(r * duty) << 16) | ((uint32_t)(g * duty) << 8) | (uint32_t)(b * duty);
 }
@@ -233,8 +297,11 @@ void arcs_st7789_failure_callback(DeviceState *dev, void (*fn)(void *, const cha
 static void reset(DeviceState *dev)
 {
     ArcsST7789 *s = ARCS_ST7789(dev);
-    s->scan_epoch = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     reset_controller(s); memset(s->gram, 0, sizeof(s->gram)); s->pixels = 0;
+    memset(s->scanned, 0, sizeof(s->scanned));
+    memset(s->presented, 0, sizeof(s->presented));
+    memset(s->scanned_flags, 0, sizeof(s->scanned_flags));
+    memset(s->presented_flags, 0, sizeof(s->presented_flags));
     /* Pin levels and backlight belong to the board, not controller reset. */
 }
 

@@ -15,10 +15,12 @@ def main():
         for bank, base in enumerate((0x46700000, 0x46800000)):
             first = bank * 32
             m.write(base + 0x50, 0)
-            assert m.read(base + 0x20) == 0xffffffff
-            assert all(m.pins[first + p] for p in range(32))
+            # The Mini panel drives TE low while asleep.
+            inputs = 0xffffffff & ~(1 << 27) if bank == 0 else 0xffffffff
+            assert m.read(base + 0x20) == inputs
+            assert all(m.pins.get(first + p, 0) == bool(inputs & (1 << p)) for p in range(32))
             m.write(base + 0x28, 0x80000001)
-            assert m.read(base + 0x20) == 0x7ffffffe
+            assert m.read(base + 0x20) == inputs & 0x7ffffffe
             assert not m.pins[first] and not m.pins[first + 31]
             m.write(base + 0x30, 0x80000001)
             assert m.read(base + 0x24) == 0x80000001
@@ -85,8 +87,9 @@ def main():
         m.write(0x481000fc, 0x12345678)
         assert m.read(0x481000fc) == 0x12345678
         m.qmp_command('system_reset')
-        for base in (0x46700000, 0x46800000):
-            assert m.read(base + 0x20) == 0xffffffff
+        for bank, base in enumerate((0x46700000, 0x46800000)):
+            inputs = 0xffffffff & ~(1 << 27) if bank == 0 else 0xffffffff
+            assert m.read(base + 0x20) == inputs
             for offset in (0x24, 0x28, 0x50, 0x54, 0x64):
                 assert m.read(base + offset) == 0
         assert m.read(0x481000fc) == 0

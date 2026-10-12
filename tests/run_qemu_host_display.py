@@ -4,7 +4,7 @@ import mmap
 import struct
 import time
 from qemu_test import Machine, ROOT
-from run_qemu_display import connect, command, send
+from run_qemu_display import connect, command, send, step
 
 
 def main():
@@ -25,6 +25,7 @@ def main():
                                      (0x001f, b'\xff\x00\x00\xff')):
                 command(m, 0x2c); m.write(0x46700030, 1 << 23)
                 send(m, [rgb565 >> 8, rgb565 & 255])
+                step(m, 2 * 344 * 49000)
                 deadline = time.monotonic() + 1
                 while time.monotonic() < deadline:
                     publication = struct.unpack_from('<Q', memory, 40)[0]

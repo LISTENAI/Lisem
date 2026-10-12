@@ -60,8 +60,12 @@ TX 反馈根据当前波形能量、功率档位及补偿表计算 I/Q 均值和
 ## 显示
 
 屏幕器件使用 QEMU 的 `QemuConsole`、`DisplaySurface` 和更新通知。
-独立 DisplayChangeListener 以约 60 Hz 请求刷新，仅在像素变化时发布
-BGRA 帧；三个共享槽通过原子所有权交接，生产者不等待消费者。
+ST7789P3 按 PORCTRL、FRCTRL2 和扫描方向逐行读取 GRAM，完成一次扫描
+后发布画面；TE 电平表示同一扫描时序的垂直消隐区间。GRAM 写入与扫描
+相互独立，写入越过扫描位置仍可能产生撕裂。宿主刷新和截图读取已完成的
+扫描，不推进虚拟时间。
+独立 DisplayChangeListener 接收画面更新并发布 BGRA 帧；三个共享槽通过
+原子所有权交接，生产者不等待消费者。
 Mini 背光使用 PA21 的实际输出，支持 GPIO 开关或 GPT PWM 占空比；错误复用
 及未驱动引脚保持关闭。ST7789P3 支持串行 RGB565 的 CMD2EN、RAMCTRL 等
 初始化配置；模拟 gamma 和电压参数按理想校准保存，数字 gamma 和其他

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate unchanged display probe, SPI service boundaries and board wiring."""
+"""Validate display scanout, SPI clock boundaries and board wiring."""
 import json
 import os
 from pathlib import Path
@@ -131,7 +131,8 @@ def command(m, op, data=()):
         send(m, data)
 
 
-def screenshot(m, name):
+def screenshot(m, name, settle=True):
+    if settle: step(m, 2 * 344 * 49000)
     path = m.directory / (name + '.ppm')
     m.qmp_command('screendump', {'filename': str(path), 'format': 'ppm'})
     data = path.read_bytes()
@@ -151,6 +152,7 @@ def panel():
             command(m, op, data)
         for op in (0x11, 0x21, 0x29):
             command(m, op)
+            if op == 0x11: wake = step(m, 1) - 1
         command(m, 0x3a, [5])
         command(m, 0x2a, [0, 0, 0, 2])
         command(m, 0x2b, [0, 0, 0, 0])
@@ -192,22 +194,97 @@ def panel():
         m.write(0x46700030, 1 << 21)
         assert screenshot(m, 'wrong-backlight-route') == bytes(240 * 240 * 3)
         m.write(0x47500054, 12)
-        # TE pulses on the existing scan grid and stops while sleeping.
+        # TE follows the scan grid with a nonzero vertical blank interval.
         m.write(0x46700060, 6 << 12)  # GPIO27 rising edge.
         m.write(0x46700050, 1 << 27)
         command(m, 0x35, [0])
+        m.write(0x46700064, 1 << 27)
         now = step(m, 1)
-        boundary = (now // 16667000 + 1) * 16667000
+        first = wake + 332 * 49000
+        period = 344 * 49000
+        boundary = first + ((now - first) // period + 1) * period
         step(m, boundary - now - 1)
         assert not (m.read(0x46700064) & (1 << 27))
         step(m, 1)
         assert m.read(0x46700064) & (1 << 27)
         m.write(0x46700064, 1 << 27)
         command(m, 0x10)
-        step(m, 16667000)
+        step(m, period)
         assert not (m.read(0x46700064) & (1 << 27))
         assert screenshot(m, 'sleep') == bytes(240 * 240 * 3)
         print('Panel RGB565, byte order, merge, PWM routing, sleep and TE phase: PASS')
+    finally:
+        m.close()
+
+
+def scanout():
+    m = Machine(OUTPUT / 'scanout')
+    try:
+        connect(m)
+        command(m, 0x21)
+        command(m, 0x29)
+        command(m, 0x3a, [5])
+        # Two pixels on opposite ends of the physical scan, visible on Mini.
+        def pixel(y, value):
+            command(m, 0x2a, [0, 0, 0, 0])
+            command(m, 0x2b, [0, y, 0, y])
+            command(m, 0x2c)
+            m.write(0x46700030, 1 << 23)
+            send(m, [value >> 8, value & 255])
+        pixel(0, 0xf800)
+        pixel(239, 0xf800)
+        command(m, 0x11)
+        wake = step(m, 1) - 1
+        first = wake + 332 * 49000
+        step(m, first - step(m, 1))
+        red = screenshot(m, 'red-scan', False)
+        assert red[239 * 720:239 * 720 + 3] == b'\xff\0\0'
+        assert red[239 * 720 + 239 * 3:239 * 720 + 240 * 3] == b'\xff\0\0'
+        # Write both pixels after row 0 has been read, before row 239.
+        next_start = first + 24 * 49000
+        step(m, next_start + 120 * 49000 - step(m, 1))
+        pixel(0, 0x07e0)
+        pixel(239, 0x07e0)
+        assert screenshot(m, 'during-scan', False) == red
+        next_end = next_start + 320 * 49000
+        step(m, next_end - step(m, 1))
+        mixed = screenshot(m, 'sampled-rows', False)
+        assert mixed[239 * 720:239 * 720 + 3] == b'\xff\0\0'
+        assert mixed[239 * 720 + 239 * 3:239 * 720 + 240 * 3] == b'\0\xff\0'
+        step(m, 344 * 49000)
+        green = screenshot(m, 'following-scan', False)
+        assert green[239 * 720:239 * 720 + 3] == b'\0\xff\0'
+        # Reads and host refresh neither advance scanout nor reveal live GRAM.
+        before = step(m, 1)
+        assert screenshot(m, 'read-again', False) == green
+        assert step(m, 1) == before + 1
+        # Program 25 us lines, a 2-line back porch and 3-line front porch.
+        command(m, 0x10)
+        command(m, 0xc6, [0])
+        command(m, 0xb2, [2, 3, 0, 0x33, 0x33])
+        command(m, 0x36, [16])  # Reverse the physical row scan (ML).
+        command(m, 0x35, [0])
+        command(m, 0x11)
+        wake = step(m, 1) - 1
+        assert m.read(0x46700020) & (1 << 27)
+        step(m, wake + 2 * 25000 - step(m, 1) - 1)
+        assert m.read(0x46700020) & (1 << 27)
+        step(m, 1)
+        assert not m.read(0x46700020) & (1 << 27)
+        step(m, 120 * 25000)
+        pixel(0, 0xf800)
+        pixel(239, 0xf800)
+        end = wake + 322 * 25000
+        step(m, end - step(m, 1))
+        assert m.read(0x46700020) & (1 << 27)
+        reverse = screenshot(m, 'reverse-scan', False)
+        assert reverse[239 * 720:239 * 720 + 3] == b'\xff\0\0'
+        assert reverse[239 * 720 + 239 * 3:239 * 720 + 240 * 3] == b'\0\xff\0'
+        step(m, 5 * 25000 - 1)
+        assert m.read(0x46700020) & (1 << 27)
+        step(m, 1)
+        assert not m.read(0x46700020) & (1 << 27)
+        print('Panel row sampling, scan publication, physical tearing, rate/porch and TE width: PASS')
     finally:
         m.close()
 
@@ -233,7 +310,7 @@ def cpu_probe():
                                          b'\0\x7f\0' * (240 * 80) +
                                          b'\x7f\0\0' * (240 * 80))
     assert (out / 'screen.ppm').read_bytes() == expected
-    print('Unmodified display CPU probe: real DMA/FIFO, 57600 pixels and exact frame: PASS')
+    print('Display CPU probe: real DMA/FIFO, 57600 pixels and exact frame: PASS')
 
 
 def rejection():
@@ -315,6 +392,7 @@ def evb_panel():
             cmd(0x2c)
             m.write(0x46800030, 1)
             transfer([color >> 8, color & 255])
+        step(m, 2 * 344 * 49000)
         path = m.directory / 'corners.ppm'
         m.qmp_command('screendump', {'filename': str(path), 'format': 'ppm'})
         data = path.read_bytes()
@@ -342,6 +420,7 @@ def evb_panel():
 def main():
     timing()
     panel()
+    scanout()
     evb_panel()
     cpu_probe()
     rejection()
