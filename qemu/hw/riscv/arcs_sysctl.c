@@ -611,12 +611,14 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         request_chip_reset(soc, 1u << 1, false);
         return;
     case 0xc4: *reg = value & 0x7ffffbf4; return;
-    case 0x100: *reg = value & 0xffff; return;
+    case 0x100:
+        *reg = value & 0xffff; arcs_wifi_wake_config(&soc->wifi); return;
     case 0x104:
         if (value & 0x2000000) { goto fail; }
-        *reg = value & 0x3ffffff; return;
+        *reg = value & 0x3ffffff; arcs_wifi_wake_config(&soc->wifi); return;
     case 0x108: *reg = value & 0x1fffffff; return;
-    case 0x114: *reg = value & 0xffffff; return;
+    case 0x114:
+        *reg = value & 0xffffff; arcs_wifi_wake_config(&soc->wifi); return;
     case 0x124: *reg = value & 3; return;
     case 0x140:
         if (value & 0x3ffff) { goto fail; }

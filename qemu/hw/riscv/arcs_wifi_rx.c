@@ -91,6 +91,7 @@ bool arcs_wifi_receive(ArcsWiFi *s, const uint8_t *frame, unsigned length, int r
         (!bssid && !(filter & 0x10) && !scan_bssid)) {
         s->rx_filtered++; return false;
     }
+    if (beacon && bssid) { arcs_wifi_beacon(s, frame, length); }
     if (data_frame && (frame[1] & 0x40)) {
         unsigned header = frame[0] == 0x88 ? 26 : 24;
         if (length < header + 16) { s->rx_filtered++; return false; }

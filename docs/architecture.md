@@ -186,6 +186,13 @@ APC 与 DMA 交给固件，不替代固件的 AEC 算法。当前不模拟模拟
   MAC 的密钥 RAM、CCMP 加解密、GTK 广播均走实际帧；AP 检查发送方 PN，
   MCU 接收侧保留 IV/MIC，重放检查仍由固件负责。WPA3、TKIP、CCMP-256、
   企业认证与受保护管理帧未实现。配置保留在实例库，诊断不输出密码。
+  MAC 支持 IDLE、ACTIVE、DOZE，软件唤醒回到 IDLE 并锁存独立的 IDLE
+  中断。匹配 BSSID 的实际 Beacon 建立 TBTT/DTIM 相位，DOZE 唤醒使用
+  独立虚拟事件，经 Wi-Fi INTC source 0 汇总到 CPU IRQ 57；通用 MAC
+  alarm、接收 DMA 和密钥状态独立保存。唤醒事件独立锁存，MASK 控制
+  STATUS 可见性，EN 控制中断输出，CLR 写 1 清锁存并自清。
+  信标时基与 SDK 的 32 µs 提前量
+  构成功能模型，不代表 AON 振荡器、RF 或 PMU 的逐周期物理时序。
   固件自行完成 DHCP、
   TLS、鉴权和业务；默认 CLI 不连接公网。BLE 当前为逻辑报文对端，尚无
   真手机宿主桥接。

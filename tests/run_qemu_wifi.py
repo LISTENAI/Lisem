@@ -114,6 +114,33 @@ def functional(hart):
         m.write(CORE + 0x38, 0); assert m.read(PL + 0x6c) == 4 and irq(m)
         m.write(PL + 0x70, 4); assert not irq(m)
         m.write(CORE + 0x38, 0); assert m.read(PL + 0x6c) == 0
+        # DOZE retains the MAC context. Software wake completes at IDLE and
+        # latches the IDLE event even while its interrupt is masked.
+        m.write(CTRL + 0x158, 5)
+        m.write(INTC + 0x10, 1)
+        m.write(PL + 0x74, 0)
+        m.write(CORE + 0x10, 0x12345678)
+        m.write(CORE + 0x38, 0x20)
+        assert m.read(CORE + 0x38) == 0x22
+        before = m.read(CORE + 0x120)
+        step(m, 100000)
+        assert m.read(CORE + 0x120) - before == 100
+        assert not irq(m) and m.read(CTRL + 0x158) == 5
+        m.write(PL + 0x48, 0x80000000)
+        assert m.read(CORE + 0x38) == 0 and m.read(PL + 0x6c) == 4
+        assert m.read(PL + 0x48) == 0x80000000 and irq(m)
+        assert m.read(INTC) == 1 and m.read(CTRL + 0x158) == 13
+        m.write(CTRL + 0x158, 7); assert not irq(m)
+        m.write(PL + 0x74, 0x80000004); assert irq(m)
+        m.write(PL + 0x70, 4); assert not irq(m)
+        m.write(CORE + 0x38, 0x30)
+        m.write(PL + 0x48, 0)
+        assert m.read(CORE + 0x10) == 0x12345678
+        assert m.read(CORE + 0x38) == 0x33
+        m.write(CTRL + 0x158, 15)
+        assert m.read(CTRL + 0x158) == 5  # CLR strobes; STATUS is read-only.
+        m.write(CTRL + 0x158, 0)
+        m.write(INTC + 0x18, 1)
         # Freeze/update only counter2. TSF and AON continue; cancelled timers stay off.
         m.write(PL + 0x50, 1); enable(m, 0x180)
         m.write(CORE + 0x144, 30); m.write(CORE + 0x148, 40)

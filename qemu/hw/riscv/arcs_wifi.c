@@ -10,6 +10,7 @@ enum { CORE, PLATFORM, PHY, INTC, CONTROL, BYPASS, SYSCTRL, PTA };
 #define COUNTER_MASK UINT64_C(0xffffffffffff)
 #define CORE_REG(off) s->core[(off) / 4]
 #define PL_REG(off) s->platform[(off) / 4]
+#define DOZE_WAKE s->control[0x158 / 4]
 
 static const uint16_t core_offsets[] = {
     0, 4, 8, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24, 0x28, 0x2c, 0x34, 0x38,
@@ -81,7 +82,8 @@ static uint32_t general_status(ArcsWiFi *s)
 static void irq_update(ArcsWiFi *s)
 {
     const uint64_t general = UINT64_C(1) << 54, transmit = UINT64_C(1) << 53, receive = UINT64_C(1) << 50;
-    s->raw &= ~(general | transmit | receive);
+    s->raw &= ~(general | transmit | receive | 1);
+    if (s->doze_pending && (DOZE_WAKE & 5) == 5) { s->raw |= 1; }
     if ((PL_REG(0x74) & 0x80000000) && (general_status(s) & PL_REG(0x74) & 0x7fffffff)) {
         s->raw |= general;
     }
@@ -92,6 +94,70 @@ static void irq_update(ArcsWiFi *s)
         s->raw |= receive;
     }
     arcs_soc_irq(s->soc, 57, !!(s->raw & s->unmask));
+}
+
+/* Functional beacon clock: phase comes only from received, matching BSSID
+ * beacons. Radio startup is an ideal delay in the SDK's 32-us units, not a
+ * cycle model of the AON oscillator or RF/PMU handshake. */
+static int64_t next_tbtt(int64_t phase, int64_t period)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    if (phase <= now) { phase += ((now - phase) / period + 1) * period; }
+    return phase;
+}
+
+uint32_t arcs_wifi_next_tbtt(ArcsWiFi *s)
+{
+    if (!s->beacon_synced) { return 0; }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t target = next_tbtt(s->beacon_tbtt_ns, s->beacon_interval_us * 1000LL);
+    return MIN((target - now) / 32000, 65535);
+}
+
+void arcs_wifi_wake_config(ArcsWiFi *s)
+{
+    timer_del(s->doze_event);
+    if ((CORE_REG(0x38) & 15) != 2 || !s->beacon_synced || s->doze_notified) { return; }
+    uint32_t *aon = s->soc->sysctl.aon_regs;
+    unsigned listen = aon[0x100 / 4] & 65535;
+    bool dtim = aon[0x104 / 4] & 0x1000000;
+    if ((!dtim && !listen) || (dtim && !s->dtim_period)) { return; }
+    int64_t period = s->beacon_interval_us * 1000LL * (dtim ? s->dtim_period : listen);
+    int64_t target = next_tbtt(dtim ? s->dtim_tbtt_ns : s->beacon_tbtt_ns, period);
+    if (target <= s->last_wake_tbtt_ns) { target += period; }
+    s->wake_tbtt_ns = target;
+    int64_t advance = ((aon[0x114 / 4] >> 8) & 65535) * 32000LL;
+    timer_mod(s->doze_event, MAX(target - advance, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 1000));
+}
+
+void arcs_wifi_beacon(ArcsWiFi *s, const uint8_t *frame, unsigned length)
+{
+    unsigned interval = lduw_le_p(frame + 32) * 1024;
+    if (!interval) { return; }
+    unsigned count = 0, period = 0;
+    for (unsigned i = 36; i + 2 <= length; i += 2 + frame[i + 1]) {
+        if (i + 2 + frame[i + 1] > length) { return; }
+        if (frame[i] == 5 && frame[i + 1] >= 4) {
+            count = frame[i + 2]; period = frame[i + 3];
+            if (!period || count >= period) { return; }
+            break;
+        }
+    }
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    s->beacon_tbtt_ns = now - (int64_t)(ldq_le_p(frame + 24) % interval) * 1000;
+    s->dtim_tbtt_ns = s->beacon_tbtt_ns + count * interval * 1000LL;
+    s->beacon_interval_us = interval; s->dtim_period = period;
+    s->beacon_synced = true;
+}
+
+static void doze_complete(void *opaque)
+{
+    ArcsWiFi *s = opaque;
+    if ((CORE_REG(0x38) & 15) != 2) { return; }
+    s->doze_notified = true; s->last_wake_tbtt_ns = s->wake_tbtt_ns;
+    s->doze_wakes++;
+    s->doze_pending = true;
+    irq_update(s);
 }
 
 void arcs_wifi_rx_publish(ArcsWiFi *s, uint32_t pointer)
@@ -152,6 +218,10 @@ static void timer_mask(ArcsWiFi *s, uint32_t mask)
 
 static void mac_reset(ArcsWiFi *s)
 {
+    timer_del(s->doze_event);
+    s->beacon_synced = s->doze_notified = false;
+    s->last_wake_tbtt_ns = -1;
+    s->doze_entries = s->doze_wakes = s->software_wakes = 0;
     memset(s->core, 0, sizeof(s->core));
     memset(s->platform, 0, sizeof(s->platform));
     memset(s->keys, 0, sizeof(s->keys));
@@ -250,12 +320,21 @@ static bool core_write(ArcsWiFi *s, hwaddr off, uint32_t value)
     if (off == 0x224 && (value & 3)) { return false; }
     if (off == 0x38) {
         unsigned state = (value >> 4) & 15;
-        if (state != 0 && state != 3) { return false; }
+        if (state != 0 && state != 2 && state != 3) { return false; }
         if (!state && (CORE_REG(off) & 15)) { PL_REG(0x6c) |= 4; }
+        if (state == 2 && (CORE_REG(off) & 15) != 2) { s->doze_entries++; }
         value = state | (state << 4);
+        if (state != 2 || (CORE_REG(off) & 15) != 2) { s->doze_notified = false; }
     }
     if (off == 0xc4) { return key_command(s, value); }
+    bool bssid_changed = (off == 0x20 || off == 0x24 || off == 0x28 || off == 0x2c) &&
+                         CORE_REG(off) != value;
     CORE_REG(off) = off == 0xd8 ? value & 0xffffff : value;
+    if (off == 0x38) { arcs_wifi_wake_config(s); }
+    if (bssid_changed) {
+        s->beacon_synced = false; s->last_wake_tbtt_ns = -1;
+        timer_del(s->doze_event);
+    }
     irq_update(s);
     return true;
 }
@@ -295,6 +374,17 @@ static bool platform_write(ArcsWiFi *s, hwaddr off, uint32_t value)
     }
     if (!listed(off, platform_offsets, G_N_ELEMENTS(platform_offsets))) { return false; }
     switch (off) {
+    case 0x48:
+        if (value & ~0x80000000u) { return false; }
+        PL_REG(off) = value;
+        if ((value & 0x80000000) && (CORE_REG(0x38) & 15) == 2) {
+            s->software_wakes++;
+            CORE_REG(0x38) = 0;
+            PL_REG(0x6c) |= 4;
+            s->doze_pending = true;
+            timer_del(s->doze_event);
+        }
+        break;
     case 0x50:
         if (value & ~1u) { return false; }
         if (value & 1) { mac_reset(s); }
@@ -367,6 +457,7 @@ static uint64_t wifi_read(void *opaque, hwaddr off, unsigned size)
         if (off == 0xd8) { return CORE_REG(off) | 0x07000000; }
         return CORE_REG(off);
     case PLATFORM:
+        if (off == 0x40) { return arcs_wifi_next_tbtt(s); }
         if (off == 0xa4 || off == 0xa8) { return (elapsed_us(s) + s->tsf_offset) >> (off == 0xa4 ? 0 : 32); }
         if (off == 0x188) { return (s->tx[0].current ? 1u << 8 : 0) | (s->tx[1].current ? 1u << 16 : 0); }
         if (off == 0x180 || off == 0x184) { return (s->tx[0].halted ? 1u << 17 : 0) | (s->tx[1].halted ? 1u << 19 : 0); }
@@ -391,6 +482,9 @@ static uint64_t wifi_read(void *opaque, hwaddr off, unsigned size)
         break;
     }
     case CONTROL:
+        if (off == 0x158) {
+            return DOZE_WAKE | (s->doze_pending && (DOZE_WAKE & 4) ? 8 : 0);
+        }
         if (control_mask(off)) { return s->control[off / 4]; }
         if (off == 0x1a4) { return 0; }
         break;
@@ -441,6 +535,12 @@ static void wifi_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         else if ((off != 0x20 && off != 0x24) || value) { goto fail; }
         irq_update(s); return;
     case CONTROL:
+        if (off == 0x158 && !(value & ~0xfu)) {
+            DOZE_WAKE = value & 5;
+            if (value & 2) { s->doze_pending = false; }
+            irq_update(s);
+            return;
+        }
         if (off == 0x1a4 && !value) { return; } /* Calibration RAM dump disabled. */
         if (control_mask(off) && !(value & ~control_mask(off))) {
             s->control[off / 4] = value; return;
@@ -477,6 +577,7 @@ void arcs_wifi_init(ArcsSoC *soc)
 {
     ArcsWiFi *s = &soc->wifi; s->soc = soc;
     s->bypass_event = timer_new_ns(QEMU_CLOCK_VIRTUAL, bypass_complete, s);
+    s->doze_event = timer_new_ns(QEMU_CLOCK_VIRTUAL, doze_complete, s);
     const hwaddr bases[] = { 0x4b700000, 0x4b708000, 0x4b800000, 0x4b200000, 0x4bb00000, 0x4b900000, 0x4b100000, 0x4b300000 };
     const char *names[] = { "arcs-wifi-mac", "arcs-wifi-platform", "arcs-wifi-phy-config-mock",
                            "arcs-wifi-intc", "arcs-wifi-control", "arcs-wifi-bypass", "arcs-wifi-sysctrl", "arcs-wifi-pta-config-mock" };
@@ -496,6 +597,7 @@ void arcs_wifi_init(ArcsSoC *soc)
 void arcs_wifi_reset(ArcsSoC *soc)
 {
     ArcsWiFi *s = &soc->wifi;
+    s->doze_pending = false;
     timer_del(s->bypass_event);
     s->bypass_payload = s->bypass_delay = 0; s->bypass_completed = 0;
     memset(s->bypass_vector, 0, sizeof(s->bypass_vector));

@@ -654,6 +654,12 @@ static void report(void *opaque, const char *status)
             s->soc.wifi.tx[0].current ? "true" : "false", s->soc.wifi.tx[1].current ? "true" : "false");
     fprintf(f, ",\"wifi_rx\":{\"accepted\":%" PRIu64 ",\"filtered\":%" PRIu64 ",\"no_space\":%" PRIu64 "}",
             s->soc.wifi.rx_accepted, s->soc.wifi.rx_filtered, s->soc.wifi.rx_no_space);
+    fprintf(f, ",\"wifi_power_save\":{\"state\":%u,\"doze_entries\":%" PRIu64
+            ",\"timer_wakes\":%" PRIu64 ",\"software_wakes\":%" PRIu64
+            ",\"wake_control\":%u,\"beacon_synced\":%s}",
+            s->soc.wifi.core[0x38 / 4] & 15, s->soc.wifi.doze_entries,
+            s->soc.wifi.doze_wakes, s->soc.wifi.software_wakes,
+            s->soc.wifi.control[0x158 / 4], s->soc.wifi.beacon_synced ? "true" : "false");
     fprintf(f, ",\"hsu\":{\"completed\":%" PRIu64 ",\"bytes\":%" PRIu64 ",\"busy\":%s}",
             s->soc.hsu.completed, s->soc.hsu.bytes, s->soc.hsu.busy ? "true" : "false");
     fprintf(f, ",\"legacy_random_probe_reads\":%" PRIu64, s->soc.legacy_random_probe_reads);
