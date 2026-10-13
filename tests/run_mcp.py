@@ -166,7 +166,7 @@ def main():
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
             sd_state = client.tool('lisem_sd_card', {'id': identifier})
-            assert sd_state.get('path') == str(sd_image.resolve()), sd_state
+            assert sd_state.get('path') and sd_image.samefile(sd_state['path']), sd_state
             client.tool('lisem_sd_card', {'id': identifier, 'run': 'stale', 'eject': True}, error=True)
             client.tool('lisem_sd_card', {'id': identifier, 'eject': True}, error=True)
             ejected = client.tool('lisem_sd_card', {'id': identifier, 'run': run, 'eject': True})
