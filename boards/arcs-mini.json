@@ -57,5 +57,26 @@
     "width": 640,
     "height": 480,
     "label": "GC0328 · 640 × 480"
-  }
+  },
+  "inputs": [
+    {
+      "id": "usb_det",
+      "label": "USB_DET",
+      "description": "USB 检测",
+      "type": "digital",
+      "pin": 32,
+      "default": true
+    },
+    {
+      "id": "battery_voltage",
+      "label": "BAT_VCC_DET",
+      "description": "电池端电压",
+      "type": "voltage",
+      "channel": 7,
+      "default": 4200,
+      "max": 4500,
+      "divider_numerator": 2,
+      "divider_denominator": 5
+    }
+  ]
 }

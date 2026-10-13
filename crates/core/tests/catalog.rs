@@ -54,6 +54,8 @@ fn presentation_does_not_change_hardware_identity() {
         "/chip/name",
         "/board/screen/label",
         "/board/buttons/0/label",
+        "/board/inputs/0/label",
+        "/board/inputs/0/description",
         "/board/indicators/0/label",
     ] {
         *renamed.pointer_mut(pointer).unwrap() = json!("Alternative display name");
@@ -166,4 +168,29 @@ fn evb_touch_mount_enriches_saved_descriptor() {
     assert_eq!(catalog.check_hardware(&saved).unwrap(), expected);
     saved["board"]["touch"]["rotation_clockwise"] = json!(90);
     assert!(catalog.check_hardware(&saved).is_err());
+}
+
+#[test]
+fn board_inputs_enrich_existing_instances_and_validate_persisted_values() {
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let path = PathBuf::from(item["path"].as_str().unwrap());
+    let before = [storage::sha256(&path.join("flash.bin")).unwrap(),
+        storage::sha256(&path.join("otp.bin")).unwrap()];
+    let mut metadata = storage::read_json(&path.join("device.json")).unwrap();
+    metadata["hardware"]["board"].as_object_mut().unwrap().remove("inputs");
+    storage::write_json(&path.join("device.json"), &metadata).unwrap();
+    let enriched = catalog.describe(&path).unwrap();
+    assert_eq!(enriched["inputs"][0]["value"], true);
+    assert_eq!(enriched["inputs"][1]["value"], 4200);
+    let changed = catalog.update(&path, &json!({"inputs":{"usb_det":false}})).unwrap();
+    assert_eq!(changed["inputs"][0]["value"], false);
+    assert!(catalog.update(&path, &json!({"inputs":{"usb_det":1}})).is_err());
+    assert_eq!(catalog.describe(&path).unwrap()["inputs"][0]["value"], false);
+    assert_eq!(storage::sha256(&path.join("flash.bin")).unwrap(), before[0]);
+    assert_eq!(storage::sha256(&path.join("otp.bin")).unwrap(), before[1]);
+    let mut wrong_wiring = enriched["hardware"].clone();
+    wrong_wiring["board"]["inputs"][0]["pin"] = json!(31);
+    assert!(catalog.check_hardware(&wrong_wiring).is_err());
 }

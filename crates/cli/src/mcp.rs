@@ -295,6 +295,18 @@ struct Camera {
     device_id: Option<String>,
 }
 
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Signals {
+    id: String,
+    /// Current run identifier from lisem_status; required for edits while powered on.
+    run: Option<String>,
+    /// Omit to enumerate. Map board input IDs to boolean digital levels or integer mV.
+    /// A null value restores that input's board default. Valid IDs/ranges come from enumeration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    changes: Option<std::collections::BTreeMap<String, Value>>,
+}
+
 fn definition<T: JsonSchema + 'static>(
     name: &'static str,
     description: &'static str,
@@ -416,6 +428,8 @@ fn tools() -> Vec<Tool> {
             "Immediately press or release a board button, cancelling an active automatic sequence. Use lisem_button_sequence for timed holds or repeated presses.",
             false,
         ),
+        definition::<Signals>("lisem_signals",
+            "Enumerate or edit typed external board inputs. Digital values drive GPIO levels; voltage values pass through the board divider and ADC. Changes are saved per instance after runtime confirmation and survive reset. A pending response is not confirmation: poll this tool until change.request matches and status is applied or rejected. Firmware interprets inputs; inspect its response separately.", false),
         definition::<SdCard>("lisem_sd_card",
             "Inspect, mount or eject a writable raw SD image, including while running. Image size must be a power of two, 8 MiB..32 GiB. Prepare its partition table, filesystem and test files before mounting; the firmware performs all card/filesystem operations. Writes persist directly in the image. One writer per image; mounting is saved per instance only after runtime confirmation.", false),
         definition::<Events>("lisem_events",
@@ -540,6 +554,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,
         "lisem_sd_card" => {
             let request: SdCard = arguments(value)?;
             ensure!(!(request.eject && request.path.is_some()), "Choose image or eject");

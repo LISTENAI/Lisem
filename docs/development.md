@@ -209,7 +209,16 @@ python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --outp
 由原固件写入独立测试实例。
 它验证断网及固件动作，不代表手机小程序或 BLE 配网交互已经通过。
 
-`make qemu-wifi-doze` 验证 Beacon/DTIM 相位、休眠与唤醒中断、接收隔离及取消。
+`make qemu-wifi-doze` 验证 Beacon/DTIM 相位、休眠与唤醒中断、接收隔离及
+取消。Mini 固件提供 `power_policy status` 且配置五分钟待机时，可准备一个
+已联网、已下电的独立测试实例，将 `usb_det` 设为 `false`，再运行：
+
+```sh
+python3 tests/run_wifi_power_save_firmware.py --cli /path/to/lisem --data-dir /path/to/test-library --id DEVICE_ID --output artifacts/verify-standby --network
+```
+
+测试等待原固件自然待机，十五秒后按键唤醒，并查询固件恢复状态；结束后
+下电。输出目录保留原始 UART 与显式诊断归档；实例持久存储保留。
 
 修改相关链路须验证 ROM 身份、完整 LPK 烧录/回读、Flash 持久化、UART
 预连接/复位/上下电和实例隔离。错误必须来自原固件或模型的可观测状态，

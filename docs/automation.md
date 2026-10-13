@@ -112,3 +112,23 @@ lisem sd-card DEVICE --eject
 查询状态中的 `sd_change` 直到确认或报错。固件直接写回镜像，同一镜像不能
 由多个实例或宿主工具同时写入。弹出会让固件看到卡移除，未完成的文件系统
 写入可能使镜像损坏；需要可重复试验时使用镜像副本。
+
+## 信号输入
+
+`lisem signals` 和 `lisem_signals` 枚举板型提供的输入，包括类型、单位、范围、
+默认值和当前值。数字量使用布尔值表示高低电平，电压使用整数毫伏：
+
+```sh
+lisem signals DEVICE
+lisem signals DEVICE --set '{"usb_det":false,"battery_voltage":3800}'
+lisem signals DEVICE --set '{"usb_det":null}'
+```
+
+按输入 ID 更新，`null` 恢复该输入的板型默认值。设置按实例保存，可在运行中
+修改。CLI 自动取得当前运行标识，也可显式传入 `--run`；MCP 修改运行中输入
+须携带 `run`。返回 `pending` 时，继续查询并核对 `change.request`，直到状态为
+`applied`、`rejected` 或 `unknown`；后两者及 `error` 均须检查，不能当作完成。
+
+Arcs-Mini 的 `usb_det` 连接 PB0；高低电平含义由固件
+解释。`battery_voltage` 经 2/5 分压接入 PB5/VIN3，固件从 ADC 读取电压。
+输入已应用表示外部信号已送达，固件的滤波、轮询和业务响应需要另外观察。

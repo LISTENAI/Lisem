@@ -508,7 +508,7 @@ static void rc_complete(void *opaque)
 static bool aon_storage(hwaddr off)
 {
     switch (off) {
-    case 0x2c: case 0x50: case 0x54: case 0x64: case 0x90:
+    case 0x2c: case 0x50: case 0x54: case 0x64: case 0x84: case 0x90:
     case 0x94: case 0x98: case 0xa0: case 0xc4: case 0xc8:
     case 0x100: case 0x104: case 0x108: case 0x114: case 0x124: case 0x140:
     case 0x168: case 0x16c: case 0x170: case 0x174: case 0x178:
@@ -579,6 +579,9 @@ static void aon_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
         if (value & 0x10) { calendar_reset(soc); }
         if (value & 0x20) { memset(soc->pinmux[1].config, 0, sizeof(soc->pinmux[1].config)); }
         return;
+    case 0x84:
+        if ((value & ~7u) || (value & 3) != 3) { goto fail; }
+        *reg = value; return;
     case 0x90: case 0xc8: case 0x98: *reg = value; return;
     case 0x94:
         if ((value & 0x2000) && !(*reg & 0x2000)) {
@@ -732,6 +735,7 @@ void arcs_sysctl_reset(ArcsSoC *soc)
         s->aon_regs[0x128 / 4] = tsf_lo;
         s->aon_regs[0x12c / 4] = tsf_hi;
     }
+    s->aon_regs[0x84 / 4] = 3;
     s->aon_regs[0x190 / 4] = 0;
     s->aon_regs[0x54 / 4] = s->reset_status ? s->reset_status :
                              (s->warm_reset ? 0 : 1);

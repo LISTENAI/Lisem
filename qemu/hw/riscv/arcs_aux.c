@@ -55,6 +55,21 @@ static uint64_t adc_read(void *opaque, hwaddr off, unsigned size)
     return value >> shift;
 }
 
+static uint16_t adc_sample(ArcsADC *s, unsigned channel)
+{
+    if (!(s->voltage_mask & (1u << channel))) { return s->input[channel]; }
+    unsigned reference = (s->regs[0x0c / 4] >> 4) & 3;
+    unsigned divisor = s->regs[1] & 8 ? 3 : 1;
+    uint32_t reference_uv = 1200000;
+    if (reference == 2) {
+        reference_uv = 3300000 / ((s->soc->sysctl.aon_regs[0x84 / 4] & 4) ? 2 : 3);
+    } else if (reference == 3) {
+        /* No external reference source is wired to this chip model. */
+        arcs_soc_fail(s->soc, 0x4660000c, 4, true, s->regs[3]);
+    }
+    return MIN(1023, (uint64_t)s->voltage_uv[channel] * 1024 / (reference_uv * divisor));
+}
+
 static void adc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
 {
     ArcsADC *s = opaque;
@@ -78,7 +93,7 @@ static void adc_write(void *opaque, hwaddr off, uint64_t value, unsigned size)
             for (unsigned i = 0; i < 16; i++) {
                 if (!(s->regs[4] & (1u << i))) { continue; }
                 for (unsigned n = 0; n < count; n++) {
-                    s->fifo[i][(s->head[i] + s->count[i]++) % 16] = s->input[i];
+                    s->fifo[i][(s->head[i] + s->count[i]++) % 16] = adc_sample(s, i);
                 }
             }
             s->regs[0x78 / 4] |= 8;
@@ -98,6 +113,7 @@ static void adc_input(void *opaque, int channel, int code)
     ArcsADC *s = &((ArcsSoC *)opaque)->adc;
     /* Named input transports a raw ADC code, not a Boolean digital level. */
     if (code < 0 || code > 1023) { arcs_soc_fail(s->soc, 0x466000b0 + channel * 4, 4, true, code); }
+    s->voltage_mask &= ~(1u << channel);
     s->input[channel] = code;
 }
 

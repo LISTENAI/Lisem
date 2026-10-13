@@ -117,6 +117,8 @@ enum Action {
         #[arg(long, default_value_t = 80)]
         gap_ms: u64,
     },
+    /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
+    Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
     /// Inspect, mount or eject a raw SD card image.
     SdCard { id: String, #[arg(long, conflicts_with="eject")] image: Option<PathBuf>,
         #[arg(long)] eject: bool, #[arg(long)] run: Option<String> },
@@ -356,6 +358,19 @@ fn run() -> Result<i32> {
         Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
             "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
         )?,
+        Action::Signals { id, set, run } => {
+            let mut params = json!({"id":id,"run":run});
+            if let Some(values) = set {
+                if params["run"].is_null() {
+                    let state = manager.call("inspect", json!({"id":id}))?;
+                    if state["runtime"]["session"]["finished"] == false {
+                        params["run"] = state["runtime"]["session"]["output"].clone();
+                    }
+                }
+                params["changes"] = serde_json::from_str(&values)?;
+            }
+            manager.call("signals", params)?
+        }
         Action::SdCard { id, image, eject, run } => {
             let mut params = json!({"id":id});
             if image.is_some() || eject {

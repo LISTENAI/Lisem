@@ -10,6 +10,8 @@ typedef struct ArcsADC {
     MemoryRegion io;
     uint32_t regs[0xf0 / 4];
     uint16_t input[16], fifo[16][16];
+    uint32_t voltage_uv[16];
+    uint16_t voltage_mask;
     unsigned head[16], count[16];
 } ArcsADC;
 typedef struct ArcsI2C {

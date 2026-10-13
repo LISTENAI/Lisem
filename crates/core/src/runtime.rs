@@ -530,6 +530,11 @@ impl Session {
             }
         }
         let mut qmp = Qmp::new(control, &mut uart)?;
+        let board = &item["hardware"]["board"];
+        let metadata = catalog.metadata(&instance)?;
+        let inputs = metadata["inputs"].clone();
+        let physical = crate::signals::physical(board, &inputs)?;
+        qmp.set("x-lisa-signals", json!(physical.to_string()), &mut uart)?;
         let sd_card = crate::sd_card::medium(&item["media"]["sd"])?;
         if !sd_card.is_null() {
             qmp.call("blockdev-change-medium", sd_change_arguments(&sd_card), &mut uart)?;
@@ -569,7 +574,8 @@ impl Session {
             _workspace: workspace,
             _lease: lease,
             output,
-            state: json!({"qemu":qemu_identity,"sd_card":sd_card}),
+            state: json!({"qemu":qemu_identity,"sd_card":sd_card,"signal_overrides":inputs,
+                "signals":crate::signals::state(board, &inputs)?}),
             options,
             started: Instant::now(),
             capture_at: Instant::now(),
@@ -960,6 +966,25 @@ fn finish_camera_change(
     state["camera_change"] = change;
 }
 
+fn finish_signal_change(catalog: &Catalog, id: &str, state: &mut Value,
+    request: &str, values: Value, result: Result<()>) {
+    let mut change = json!({"request":request,"status":"applied"});
+    match result {
+        Ok(()) => {
+            state["signal_overrides"] = values.clone();
+            let saved = catalog.device(id).and_then(|item| {
+                state["signals"] = crate::signals::state(&item["hardware"]["board"], &values)?;
+                catalog.update(Path::new(item["path"].as_str().unwrap()), &json!({"inputs":values}))
+            });
+            if let Err(error) = saved {
+                change["error"] = json!(format!("Inputs applied but configuration was not saved: {error}"));
+            }
+        }
+        Err(error) => { change["status"] = json!("rejected"); change["error"] = json!(error.to_string()); }
+    }
+    state["signal_change"] = change;
+}
+
 fn finish_access_point_change(
     catalog: &Catalog,
     id: &str,
@@ -1024,6 +1049,7 @@ pub struct Runtime {
     last_uart: Vec<transport::Output>,
     pending_camera: Option<(u64, u64, CameraSource)>,
     pending_sd: Option<(u64, Value)>,
+    pending_signals: Option<(u64, String, Value)>,
     pending_access_point: Option<(u64, bool)>,
     pending_wifi_environment: Option<(u64, String, Value)>,
     ports: BTreeMap<u8, SerialPort>,
@@ -1053,6 +1079,7 @@ impl Runtime {
             last_uart: Vec::new(),
             pending_camera: None,
             pending_sd: None,
+            pending_signals: None,
             pending_access_point: None,
             pending_wifi_environment: None,
             ports,
@@ -1065,7 +1092,10 @@ impl Runtime {
             if !session.finished
                 && let Some((id, result)) = session.qmp.recover(&mut session.uart)?
             {
-                if self.pending_sd.as_ref().is_some_and(|(pending, _)| *pending == id) {
+                if self.pending_signals.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                    let (_, request, values) = self.pending_signals.take().unwrap();
+                    finish_signal_change(&self.catalog, &self.id, &mut session.state, &request, values, result.map(|_| ()));
+                } else if self.pending_sd.as_ref().is_some_and(|(pending, _)| *pending == id) {
                     let (_, medium) = self.pending_sd.take().unwrap();
                     finish_sd_change(&self.catalog, &self.id, &mut session.state, medium, result);
                 } else if self.pending_wifi_environment.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
@@ -1173,6 +1203,10 @@ impl Runtime {
             }
             Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
+            if session.finished && let Some((_, request, _)) = self.pending_signals.take() {
+                session.state["signal_change"] = json!({"request":request,"status":"unknown",
+                    "error":"Runtime ended before input change was confirmed"});
+            }
             if session.finished && let Some((_, request, _)) = self.pending_wifi_environment.take() {
                 session.state["wifi_environment_change"] = json!({"request":request,"status":"unknown",
                     "error":"Runtime ended before Wi-Fi environment change was confirmed"});
@@ -1383,6 +1417,7 @@ impl Runtime {
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
                 self.pending_sd = None;
+                self.pending_signals = None;
                 self.pending_access_point = None;
                 self.pending_wifi_environment = None;
                 let options: Options = serde_json::from_value(params["options"].clone())?;
@@ -1404,6 +1439,10 @@ impl Runtime {
             "stop" => {
                 if let Some(mut session) = self.session.take() {
                     session.stop()?;
+                    if let Some((_, request, _)) = self.pending_signals.take() {
+                        session.state["signal_change"] = json!({"request":request,"status":"unknown",
+                            "error":"Runtime stopped before input change was confirmed"});
+                    }
                     if self.pending_sd.take().is_some() {
                         session.state["sd_change"] = json!({"status":"unknown","error":"Runtime stopped before SD change was confirmed"});
                     }
@@ -1479,6 +1518,36 @@ impl Runtime {
                 };
                 session.qmp.set(property, json!(value), &mut session.uart)?;
                 Ok(json!({"x":x,"y":y,"pressed":pressed}))
+            }
+            "signals" => {
+                let item = self.catalog.device(&self.id)?;
+                if params.get("changes").is_none() {
+                    return Ok(json!({"inputs":self.session.as_ref().map(|s| s.state["signals"].clone())
+                        .unwrap_or(item["inputs"].clone()), "change":self.session.as_ref().map(|s| s.state["signal_change"].clone()).unwrap_or(self.last_state["signal_change"].clone()),
+                        "run":self.session.as_ref().map(|s| json!(s.output))}));
+                }
+                let metadata = self.catalog.metadata(Path::new(item["path"].as_str().unwrap()))?;
+                let saved = self.session.as_ref().map(|s| &s.state["signal_overrides"]).unwrap_or(&metadata["inputs"]);
+                let values = crate::signals::change(&item["hardware"]["board"], saved, &params["changes"])?;
+                let request = Uuid::new_v4().simple().to_string();
+                if let Some(session) = &mut self.session {
+                    ensure!(params["run"].is_string(), "Running input changes require a run identifier");
+                    ensure!(self.pending_signals.is_none(), "An input change is already pending");
+                    session.qmp.ensure_idle()?;
+                    let physical = crate::signals::physical(&item["hardware"]["board"], &values)?;
+                    match session.qmp.set("x-lisa-signals", json!(physical.to_string()), &mut session.uart) {
+                        Err(error) if error.is::<transport::ControlPending>() => {
+                            self.pending_signals = Some((session.qmp.pending_id().unwrap(), request.clone(), values));
+                            session.state["signal_change"] = json!({"request":request,"status":"pending"});
+                        }
+                        result => finish_signal_change(&self.catalog, &self.id, &mut session.state, &request, values, result),
+                    }
+                    Ok(session.state["signal_change"].clone())
+                } else {
+                    ensure!(params["run"].is_null(), "The request belongs to an earlier run");
+                    self.catalog.update(Path::new(item["path"].as_str().unwrap()), &json!({"inputs":values}))?;
+                    Ok(json!({"request":request,"status":"saved"}))
+                }
             }
             "sd_card" => {
                 if params.get("medium").is_none() {

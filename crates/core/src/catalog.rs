@@ -41,6 +41,7 @@ impl Catalog {
                 }
             }
         }
+        for board in this.boards.values() { crate::signals::definitions(board)?; }
         // Older libraries kept display metadata in their index. Upgrade only
         // that metadata; Flash, OTP and the storage manifest stay untouched.
         for entry in this.entries()? {
@@ -137,7 +138,7 @@ impl Catalog {
         Ok(
             json!({"id":value["id"],"name":value["name"],"path":path,"board":layout.board,
                   "hardware":hardware,"host":value["host"],"media":value["media"],
-                  "environment":environment,
+                  "environment":environment,"inputs":crate::signals::state(&hardware["board"], &value["inputs"])?,
                   "uid":storage::uid(&path,&layout)?}),
         )
     }
@@ -336,6 +337,10 @@ impl Catalog {
                 value["host"][key] = setting.clone();
             }
         }
+        if let Some(inputs) = changes.get("inputs") {
+            let hardware = self.check_hardware(&value["hardware"])?;
+            value["inputs"] = serde_json::to_value(crate::signals::overrides(&hardware["board"], inputs)?)?;
+        }
         if let Some(medium) = changes.get("sd_card") {
             if value["media"].is_null() { value["media"] = json!({}); }
             value["media"]["sd"] = crate::sd_card::medium(medium)?;
@@ -425,6 +430,9 @@ impl Catalog {
                     .or_insert_with(|| board["touch"]["rotation_clockwise"].clone());
             }
         }
+        if saved["board"]["inputs"].is_null() && !board["inputs"].is_null() {
+            saved["board"]["inputs"] = board["inputs"].clone();
+        }
         let expected = json!({"board":board,"chip":chip});
         let saved = hardware_identity(saved);
         let expected_identity = hardware_identity(expected.clone());
@@ -452,10 +460,13 @@ fn hardware_identity(mut value: Value) -> Value {
     if let Some(board) = value["board"].as_object_mut() {
         board.remove("indicators");
     }
-    if let Some(items) = value["board"]["buttons"].as_array_mut() {
-        for item in items {
-            if let Some(object) = item.as_object_mut() {
-                object.remove("label");
+    for field in ["buttons", "inputs"] {
+        if let Some(items) = value["board"][field].as_array_mut() {
+            for item in items {
+                if let Some(object) = item.as_object_mut() {
+                    object.remove("label");
+                    object.remove("description");
+                }
             }
         }
     }

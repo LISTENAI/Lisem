@@ -254,6 +254,7 @@ impl Manager {
             | "audio_cancel"
             | "audio_record"
             | "uart_read"
+            | "signals"
             | "sd_card"
             | "events"
             | "uart_capture"

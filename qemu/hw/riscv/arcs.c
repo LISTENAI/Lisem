@@ -42,6 +42,9 @@ struct ArcsMachine {
     DeviceState *camera;
     DeviceState *touch;
     bool evb;
+    uint64_t signal_pad_mask, signal_pad_levels;
+    uint16_t signal_adc_mask;
+    uint32_t signal_adc_uv[16];
     LisaMapping camera_mapping;
     QEMUTimer *camera_poll;
     uint64_t camera_generation, camera_sequence, camera_repeated;
@@ -1117,6 +1120,61 @@ static void boot_pin_set(Object *obj, bool asserted, Error **errp)
     qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", 3), !asserted);
 }
 
+static void signals_apply(ArcsMachine *s)
+{
+    for (unsigned pin = 0; pin < 64; pin++) {
+        if (s->signal_pad_mask & (1ull << pin)) {
+            qemu_set_irq(qdev_get_gpio_in_named(DEVICE(&s->soc), "pad-in", pin),
+                         !!(s->signal_pad_levels & (1ull << pin)));
+        }
+    }
+    s->soc.adc.voltage_mask = s->signal_adc_mask;
+    memcpy(s->soc.adc.voltage_uv, s->signal_adc_uv, sizeof(s->signal_adc_uv));
+}
+
+static void signals_set(Object *obj, const char *value, Error **errp)
+{
+    ArcsMachine *s = ARCS_MACHINE(obj);
+    if (strlen(value) > 8192) { error_setg(errp, "Input payload too large"); return; }
+    QObject *root = qobject_from_json(value, errp);
+    QDict *dict = qobject_to(QDict, root);
+    QDict *pads = dict ? qdict_get_qdict(dict, "pads") : NULL;
+    QDict *adc = dict ? qdict_get_qdict(dict, "adc_uv") : NULL;
+    uint64_t pad_mask = 0, pad_levels = 0;
+    uint16_t adc_mask = 0;
+    uint32_t adc_uv[16] = { 0 };
+    if (!root) { return; }
+    if (!dict || qdict_size(dict) != 2 || !pads || !adc) { goto invalid; }
+    for (const QDictEntry *e = qdict_first(pads); e; e = qdict_next(pads, e)) {
+        uint64_t pin;
+        QBool *level = qobject_to(QBool, qdict_entry_value(e));
+        if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &pin) || pin >= 64 || !level) { goto invalid; }
+        pad_mask |= 1ull << pin;
+        if (qbool_get_bool(level)) { pad_levels |= 1ull << pin; }
+    }
+    for (const QDictEntry *e = qdict_first(adc); e; e = qdict_next(adc, e)) {
+        uint64_t channel, uv;
+        QNum *number = qobject_to(QNum, qdict_entry_value(e));
+        if (qemu_strtou64(qdict_entry_key(e), NULL, 10, &channel) || channel < 4 || channel > 9 ||
+            !number || !qnum_get_try_uint(number, &uv) || uv > 3600000) { goto invalid; }
+        adc_mask |= 1u << channel;
+        adc_uv[channel] = uv;
+    }
+    /* A control batch is validated before any edge reaches the chip. */
+    if ((s->signal_pad_mask && s->signal_pad_mask != pad_mask) ||
+        (s->signal_adc_mask && s->signal_adc_mask != adc_mask)) { goto invalid; }
+    s->signal_pad_mask = pad_mask;
+    s->signal_pad_levels = pad_levels;
+    s->signal_adc_mask = adc_mask;
+    memcpy(s->signal_adc_uv, adc_uv, sizeof(adc_uv));
+    signals_apply(s);
+    qobject_unref(root);
+    return;
+invalid:
+    qobject_unref(root);
+    error_setg(errp, "Invalid board input levels or wiring");
+}
+
 static void machine_reset(MachineState *machine, ResetType type)
 {
     ArcsMachine *s = ARCS_MACHINE(machine);
@@ -1140,6 +1198,7 @@ static void machine_reset(MachineState *machine, ResetType type)
     if (s->ble_capture) { g_string_truncate(s->ble_capture, 0); s->ble_frames = 0; }
     if (s->ble_input) { timer_del(s->ble_input); s->ble_input_status = "idle"; }
     /* Board inputs are applied after every chip has finished resetting. */
+    signals_apply(s);
     timer_mod(s->deadline, s->budget);
     if (s->power_button) { power_button_update(s); }
     if (s->evb) {
@@ -1192,6 +1251,7 @@ static void machine_init(MachineState *machine)
     s->soc.psram.chip = &s->psram;
     s->soc.flash.chips[0] = &s->flash;
     sysbus_realize(SYS_BUS_DEVICE(&s->soc), &error_fatal);
+    object_property_add_str(OBJECT(s), "x-lisa-signals", NULL, signals_set);
     object_property_add_bool(OBJECT(s), "x-arcs-boot-asserted", boot_pin_get, boot_pin_set);
     const char *boot_release = getenv("ARCS_QEMU_BOOT_RELEASE_NS");
     if (boot_release) {

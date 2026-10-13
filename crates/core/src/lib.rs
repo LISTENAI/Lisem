@@ -21,3 +21,5 @@ mod sd_card;
 pub mod install;
 
 pub mod wifi_environment;
+
+pub mod signals;

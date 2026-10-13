@@ -106,7 +106,7 @@ def main():
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
             assert len(names) == len(definitions)
-            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card"} <= names
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -119,6 +119,12 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            inputs = client.tool('lisem_signals', {'id': identifier})['inputs']
+            assert {v['id'] for v in inputs} == {'usb_det', 'battery_voltage'}
+            assert client.tool('lisem_signals', {'id': identifier, 'changes': {'usb_det': False, 'battery_voltage': 3800}})['status'] == 'saved'
+            client.tool('lisem_signals', {'id': identifier, 'changes': {'usb_det': 1}}, error=True)
+            client.tool('lisem_signals', {'id': identifier, 'changes': {'battery_voltage': 4501}}, error=True)
+            client.tool('lisem_signals', {'id': identifier, 'changes': {'missing': None}}, error=True)
             sd_image = Path(temporary) / 'sd.img'
             with sd_image.open('wb') as image:
                 image.truncate(64 * 1024 * 1024)
@@ -165,6 +171,15 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            inputs = {v['id']: v for v in client.tool('lisem_signals', {'id': identifier})['inputs']}
+            assert inputs['usb_det']['value'] is False and inputs['battery_voltage']['value'] == 3800
+            for bad in ({}, {'run': 'stale'}):
+                client.tool('lisem_signals', {'id': identifier, 'changes': {'usb_det': True}, **bad}, error=True)
+            changed = client.tool('lisem_signals', {'id': identifier, 'run': run, 'changes': {'usb_det': None, 'battery_voltage': 3900}})
+            assert changed['status'] == 'applied', changed
+            inputs = {v['id']: v for v in client.tool('lisem_signals', {'id': identifier})['inputs']}
+            assert inputs['usb_det']['value'] is True and inputs['usb_det']['overridden'] is False
+            assert inputs['battery_voltage']['value'] == 3900
             sd_state = client.tool('lisem_sd_card', {'id': identifier})
             assert sd_state.get('path') and sd_image.samefile(sd_state['path']), sd_state
             client.tool('lisem_sd_card', {'id': identifier, 'run': 'stale', 'eject': True}, error=True)
