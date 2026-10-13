@@ -54,10 +54,13 @@ class Monitor:
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(3)
         deadline = time.monotonic() + 10
-        while not path.exists():
+        while True:
             assert process.poll() is None and time.monotonic() < deadline
-            time.sleep(.01)
-        self.sock.connect(str(path))
+            try:
+                self.sock.connect(str(path))
+                break
+            except (FileNotFoundError, ConnectionRefusedError):
+                time.sleep(.01)
         self.stream = self.sock.makefile('rwb', buffering=0)
         assert 'QMP' in json.loads(self.stream.readline())
         self.transcript = []
