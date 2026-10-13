@@ -55,13 +55,20 @@ def functional(hart):
             m.command('clock_step 123456789')
             assert read(10) == read(12, 'w') == 0
             assert m.command('readb 0xe0021060') == 0  # USB IRQ24 remains low.
-            if reset == 'soft': write(0x7f, 3)
+            if reset == 'soft':
+                write(0x7f, 3)
+                assert read(1) == 0x60  # ARCS soft reset retains pull-up and speed configuration.
+                write(1, 0)
+                assert read(6, "w") == 0x12ff and read(8, "w") == 0xff34 and read(11) == 255
+                write(6, 0, "w"); write(8, 0, "w"); write(11, 0)
             elif reset == 'module': m.write(0x4600000c, 0x200)
             else: m.qmp_command('system_reset')
             assert read(6, 'w') == read(8, 'w') == read(11) == 0
             for endpoint in range(8):
                 write(14, endpoint)
-                assert read(0x62) == read(0x64, 'w') == read(0x10, 'w') == 0
+                assert read(0x10, 'w') == 0
+                assert read(0x62) == (3 + endpoint % 6 if reset == 'soft' else 0)
+                assert read(0x64, 'w') == (endpoint * 64 if reset == 'soft' else 0)
             write(14, 0)
         assert read(0) == read(1) == read(14) == 0 and read(0x60) == 0x80
         print('Hart %d: unattached USB, masks, no SOF/IRQ/connection and three resets: PASS' % hart)
@@ -73,7 +80,8 @@ def rejection():
     commands = ['writeb 0x41000001 4', 'writeb 0x41000001 8',
                 'writeb 0x41000060 2', 'writeb 0x4100000e 8',
                 'writeb 0x4100000f 1', 'writeb 0x4100007f 4',
-                'writeb 0x41000012 2', 'writel 0x41000020 1',
+                'readb 0x41000180', 'readw 0x41000101',
+                'readl 0x41000100',
                 'writeb 0x41000062 10', 'readb 0x4100001f',
                 'writel 0x41000204 1', 'readl 0x41000260',
                 'readl 0x41000000',
@@ -91,7 +99,7 @@ def rejection():
             assert json.loads((m.directory / 'report.json').read_text())['status'] == 'unsupported-mmio'
         finally:
             m.close()
-    print('USB endpoint traffic, DMA, host/resume/test modes and malformed accesses rejected: PASS')
+    print('USB invalid DMA, host/resume/test modes and malformed accesses rejected: PASS')
 
 
 if __name__ == '__main__':

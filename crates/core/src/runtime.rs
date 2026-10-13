@@ -1549,6 +1549,23 @@ impl Runtime {
                     Ok(json!({"request":request,"status":"saved"}))
                 }
             }
+            "usb_adb" => {
+                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(!session.finished, "Instance is not running");
+                if let Some(enabled) = params.get("enabled") {
+                    ensure!(params["run"].is_string(), "USB ADB changes require a run identifier");
+                    let enabled = enabled.as_bool().context("USB ADB enabled must be a boolean")?;
+                    session.qmp.call("qom-set", json!({"path":"/machine/soc",
+                        "property":"x-lisem-usb-adb","value":if enabled {"enable"} else {"disable"}}),
+                        &mut session.uart)?;
+                }
+                let value = session.qmp.call("qom-get", json!({"path":"/machine/soc",
+                    "property":"x-lisem-usb-adb"}), &mut session.uart)?;
+                let mut state: Value = serde_json::from_str(value.as_str().context("Invalid USB ADB status")?)?;
+                ensure!(state.is_object(), "Invalid USB ADB status");
+                state["run"] = json!(session.output);
+                Ok(state)
+            }
             "sd_card" => {
                 if params.get("medium").is_none() {
                     return Ok(self.session.as_ref().map(|s| s.state["sd_card"].clone())

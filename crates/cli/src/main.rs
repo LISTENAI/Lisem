@@ -119,6 +119,16 @@ enum Action {
     },
     /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
     Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
+    /// Inspect or enable a loopback TCP bridge to the firmware USB ADB interface.
+    UsbAdb {
+        id: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Inspect, mount or eject a raw SD card image.
     SdCard { id: String, #[arg(long, conflicts_with="eject")] image: Option<PathBuf>,
         #[arg(long)] eject: bool, #[arg(long)] run: Option<String> },
@@ -371,6 +381,17 @@ fn run() -> Result<i32> {
             }
             manager.call("signals", params)?
         }
+        Action::UsbAdb { id, enable, disable, run } => {
+            let mut params = json!({"id":id,"run":run});
+            if enable || disable {
+                if params["run"].is_null() {
+                    let state = manager.call("inspect", json!({"id":id}))?;
+                    params["run"] = state["runtime"]["session"]["output"].clone();
+                }
+                params["enabled"] = json!(enable);
+            }
+            manager.call("usb_adb", params)?
+        }
         Action::SdCard { id, image, eject, run } => {
             let mut params = json!({"id":id});
             if image.is_some() || eject {
@@ -491,6 +512,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_adb_arguments_select_one_operation() {
+        for args in [
+            vec!["lisem", "usb-adb", "instance"],
+            vec!["lisem", "usb-adb", "instance", "--enable"],
+            vec!["lisem", "usb-adb", "instance", "--disable", "--run", "run-id"],
+        ] {
+            assert!(Args::try_parse_from(args).is_ok());
+        }
+        assert!(Args::try_parse_from([
+            "lisem", "usb-adb", "instance", "--enable", "--disable"
+        ]).is_err());
+    }
 
     #[test]
     fn camera_source_arguments_are_exclusive() {

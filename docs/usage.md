@@ -93,6 +93,26 @@ WPA2 密码需为 8–63 个可打印 ASCII 字符。
 不支持 WPA3、TKIP、企业认证或管理帧保护（PMF）。RSSI 和信道用于模拟扫描
 结果，不模拟射频调谐、干扰或传播衰减。
 
+## USB ADB
+
+固件提供 USB ADB 接口时，可开启本机 TCP 桥接，并使用宿主安装的 `adb`：
+
+```sh
+lisem usb-adb INSTANCE_ID --enable
+adb connect 127.0.0.1:PORT
+adb -s 127.0.0.1:PORT shell
+```
+
+将示例地址替换为命令返回的 `listen`。仅绑定宿主回环地址；每次开启自动
+分配端口。查询状态使用 `lisem usb-adb INSTANCE_ID`，关闭使用
+`lisem usb-adb INSTANCE_ID --disable`。CLI 自动取得当前运行标识，也可传入
+`--run RUN_ID` 拒绝过期操作。实例下电后桥接关闭，下次运行需重新开启。
+
+`enabled` 表示监听已开启，`connected` 表示 TCP 客户端已连接；固件 USB
+就绪情况见 `status` 和 `error`。用 `adb devices` 确认设备可用后再操作。
+可用的 shell 命令、日志位置和 `adb push` 目标路径取决于固件。
+固件切换 USB 模式时，等待重新枚举，必要时重新执行 `adb connect`。
+
 ## 摄像头
 
 Arcs-Mini 和 Arcs-EVB 的 GC0328 可使用本地 PNG、JPEG 或 PNM 图片作为

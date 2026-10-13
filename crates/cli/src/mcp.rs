@@ -113,6 +113,16 @@ struct ButtonSequence {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct UsbAdb {
+    id: String,
+    /// Current run identifier from lisem_status; required when changing enabled.
+    run: Option<String>,
+    /// Omit to inspect. True opens a local TCP listener; false closes it and disconnects ADB.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct SdCard {
     id: String,
     /// Current run identifier required when mounting or ejecting while running.
@@ -430,6 +440,8 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Signals>("lisem_signals",
             "Enumerate or edit typed external board inputs. Digital values drive GPIO levels; voltage values pass through the board divider and ADC. Changes are saved per instance after runtime confirmation and survive reset. A pending response is not confirmation: poll this tool until change.request matches and status is applied or rejected. Firmware interprets inputs; inspect its response separately.", false),
+        definition::<UsbAdb>("lisem_usb_adb",
+            "Inspect or enable the running instance's USB ADB bridge. Returns enabled, listen (127.0.0.1:port), connected, status and error. Use host adb connect with listen, then adb -s ADDRESS shell or push. The firmware must expose a USB ADB interface; TCP listening alone does not confirm firmware readiness. Enabling is explicit and lasts for this run; disabling disconnects clients. USB re-enumeration may require adb connect again. Requires current run for changes.", false),
         definition::<SdCard>("lisem_sd_card",
             "Inspect, mount or eject a writable raw SD image, including while running. Image size must be a power of two, 8 MiB..32 GiB. Prepare its partition table, filesystem and test files before mounting; the firmware performs all card/filesystem operations. Writes persist directly in the image. One writer per image; mounting is saved per instance only after runtime confirmation.", false),
         definition::<Events>("lisem_events",
@@ -555,6 +567,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
         "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,
+        "lisem_usb_adb" => call(manager, "usb_adb", arguments::<UsbAdb>(value)?)?,
         "lisem_sd_card" => {
             let request: SdCard = arguments(value)?;
             ensure!(!(request.eject && request.path.is_some()), "Choose image or eject");
@@ -708,6 +721,19 @@ pub fn serve(manager: Manager, stop: Arc<AtomicBool>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usb_adb_inspection_does_not_send_a_mutation() {
+        let request: UsbAdb = arguments(json!({"id":"instance"})).unwrap();
+        let value = serde_json::to_value(request).unwrap();
+        assert!(value.get("enabled").is_none());
+        let request: UsbAdb = arguments(json!({"id":"instance", "run":"current", "enabled":false})).unwrap();
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["enabled"], false);
+        assert_eq!(value["run"], "current");
+        assert!(arguments::<UsbAdb>(json!({"id":"instance", "enabled":"false"})).is_err());
+        assert!(arguments::<UsbAdb>(json!({"id":"instance", "address":"0.0.0.0:5555"})).is_err());
+    }
 
     #[test]
     fn camera_arguments_reject_ambiguous_sources() {

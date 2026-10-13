@@ -195,6 +195,28 @@ python3 tests/run_desktop_network_firmware.py --lpk /path/to/firmware.lpk --outp
 python3 tests/run_desktop_cskburn.py --cskburn /path/to/cskburn --lpk /path/to/firmware.lpk --output artifacts/verify-burn
 ```
 
+Arcs-Mini 固件提供正常模式 ADB shell 和 bootloader RAW 更新接口时，可运行：
+
+```sh
+python3 tests/run_usb_adb_firmware.py \
+  --lpk /path/to/baseline.lpk --update /path/to/application.bin \
+  --before-version 3.1.0 --after-version 3.1.2
+```
+
+宿主须安装 `adb`；可用 `--adb`、`--qemu` 指定可执行文件。测试为此固件接口
+准备独立 Flash 和随机 UID，验证正常模式 shell、持续日志、关闭和重连，再经
+`recovery` 进入更新模式，从固件读取的 UID 完成握手，并查询 bootloader 信息。
+随后通过 `adb push` 写入应用镜像、核对设备侧 MD5，重启检查目标版本、持续
+日志和重连，最后再次进入 recovery，只读检查身份与 Flash 信息。
+默认 RAW 写入偏移为 `0x600000`；其它布局使用 `--flash-offset` 指定。
+这些 shell 命令由被测固件实现，不属于模拟器的通用命令。
+
+默认上限为 600 秒宿主时间、900 秒虚拟时间，可分别用 `--timeout` 和
+`--seconds` 缩短。原始 UART、ADB 输出、USB 状态和结果 JSON 显式保存到
+`artifacts/qemu/usb-adb-firmware-时间戳`；`--output` 可指定尚不存在的目录。
+测试只修改该目录内的 Flash 副本，不回写输入 LPK 或应用镜像。
+此测试需要外部固件资源，不包含在 `make check-qemu` 中。
+
 Wi-Fi 主动断开使用 `make qemu-wifi-disconnect` 验证两核的去认证、解除关联、
 MAC ACK、待发响应取消和重新关联。原固件支持五击重新配网、八击恢复出厂时，运行：
 

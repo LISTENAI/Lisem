@@ -256,6 +256,7 @@ impl Manager {
             | "uart_read"
             | "signals"
             | "sd_card"
+            | "usb_adb"
             | "events"
             | "uart_capture"
             | "button_sequence"

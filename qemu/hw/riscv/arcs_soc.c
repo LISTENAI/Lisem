@@ -367,9 +367,12 @@ static void class_init(ObjectClass *klass, const void *data)
     dc->user_creatable = false;
 }
 
+static void finalize(Object *obj) { arcs_usb_finalize(ARCS_SOC(obj)); }
+
 static const TypeInfo soc_type = {
     .name = TYPE_ARCS_SOC, .parent = TYPE_SYS_BUS_DEVICE,
     .instance_size = sizeof(ArcsSoC), .class_init = class_init,
+    .instance_finalize = finalize,
 };
 static void register_types(void) { type_register_static(&soc_type); }
 type_init(register_types)

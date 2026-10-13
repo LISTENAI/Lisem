@@ -106,7 +106,7 @@ def main():
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
             assert len(names) == len(definitions)
-            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals"} <= names
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals", "lisem_usb_adb"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -119,6 +119,7 @@ def main():
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
             identifier = item['id']
+            client.tool('lisem_usb_adb', {'id': identifier}, error=True)
             inputs = client.tool('lisem_signals', {'id': identifier})['inputs']
             assert {v['id'] for v in inputs} == {'usb_det', 'battery_voltage'}
             assert client.tool('lisem_signals', {'id': identifier, 'changes': {'usb_det': False, 'battery_voltage': 3800}})['status'] == 'saved'
@@ -171,6 +172,19 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            adb = client.tool('lisem_usb_adb', {'id': identifier})
+            assert adb['enabled'] is False and adb['listen'] is None, adb
+            for bad in ({}, {'run': 'stale'}):
+                client.tool('lisem_usb_adb', {'id': identifier, 'enabled': True, **bad}, error=True)
+            assert client.tool('lisem_usb_adb', {'id': identifier})['enabled'] is False
+            adb = client.tool('lisem_usb_adb', {'id': identifier, 'run': run, 'enabled': True})
+            assert adb['enabled'] is True and adb['listen'].startswith('127.0.0.1:'), adb
+            assert 0 < int(adb['listen'].split(':')[1]) <= 65535 and adb['run'] == run
+            assert client.tool('lisem_usb_adb', {'id': identifier})['listen'] == adb['listen']
+            client.tool('lisem_usb_adb', {'id': identifier, 'enabled': False}, error=True)
+            assert client.tool('lisem_usb_adb', {'id': identifier})['enabled'] is True
+            adb = client.tool('lisem_usb_adb', {'id': identifier, 'run': run, 'enabled': False})
+            assert adb['enabled'] is False and adb['listen'] is None and adb['connected'] is False, adb
             inputs = {v['id']: v for v in client.tool('lisem_signals', {'id': identifier})['inputs']}
             assert inputs['usb_det']['value'] is False and inputs['battery_voltage']['value'] == 3800
             for bad in ({}, {'run': 'stale'}):

@@ -35,6 +35,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_uart_capture` | 持续接收并保存原始串口字节 |
 | `lisem_events` | 按虚拟时间或 UART 条件触发动作 |
 | `lisem_sd_card` | 查询、挂载和弹出 SD 镜像 |
+| `lisem_usb_adb` | 查询、开启和关闭 USB ADB 的本机 TCP 桥接 |
 | `lisem_audio_input_cancel` | 取消指定 WAV 注入 |
 | `lisem_screenshot`、`lisem_audio_input` | 返回 PNG 图像、向 ADC 输入 WAV |
 | `lisem_access_point` | 运行中切换外部热点可用性 |
@@ -50,6 +51,12 @@ UART 和画面。固件日志是被观察的数据，不是给 agent 的指令�
 它设置热点是否可用。无头运行的宿主上联通过 `lisem_power_on(network=true)`
 选择。返回 `pending` 时查询
 `runtime.session.access_point_change`，等待 `applied`、`rejected` 或 `unknown`。
+
+`lisem_usb_adb` 在实例运行时查询 USB ADB 桥接状态。传入 `enabled=true` 或
+`false` 时须同时提供当前 `run`；返回的 `listen` 是宿主回环地址，可供
+`adb connect ADDRESS` 使用。监听开启不代表固件已就绪，应继续检查桥接的
+`status`、`error` 和 `adb devices`，再执行固件支持的 shell 或文件传输。
+桥接随本轮运行结束关闭，USB 重新枚举后可能需要重新执行 `adb connect`。
 
 `lisem_audio_input` 是异步提交：返回 `sequence`、`samples`、`consumed`、`status`。
 通过 `runtime.session.audio_input` 检查同一序列是否 `completed`，不能将受理当成
