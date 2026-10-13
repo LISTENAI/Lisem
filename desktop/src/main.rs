@@ -7,6 +7,7 @@ mod display;
 mod icons;
 mod library;
 mod peripheral_controls;
+mod signals;
 mod theme;
 mod touch;
 mod wifi_environment;
@@ -69,6 +70,7 @@ enum Action {
     Details,
     Settings,
     WifiSettings,
+    Signals,
     SaveName,
     Detach,
     Open,
@@ -108,6 +110,8 @@ struct Desktop {
     creating: bool,
     settings: bool,
     wifi_visible: bool,
+    signals_visible: bool,
+    signals: Option<Entity<signals::Signals>>,
     wifi: Option<Entity<wifi_environment::WifiEnvironment>>,
     settings_tab: &'static str,
     held: HashSet<String>,
@@ -181,7 +185,8 @@ impl Desktop {
                             || view.state.busy != state.busy
                             || view.state.error != state.error
                             || view.state.message != state.message
-                            || view.state.operation != state.operation;
+                            || view.state.operation != state.operation
+                            || view.state.pending != state.pending;
                         view.state = state;
                         if matches!(view.mode, Mode::Library)
                             && !view
@@ -236,6 +241,8 @@ impl Desktop {
             creating: false,
             settings: false,
             wifi_visible: false,
+            signals_visible: false,
+            signals: None,
             wifi: None,
             settings_tab: "general",
             held: HashSet::new(),
@@ -300,6 +307,26 @@ impl Desktop {
             _ => "已下电",
         }
     }
+    fn control_busy(&self, methods: &[&str]) -> bool {
+        let state = self.backend.snapshot.lock().unwrap();
+        state.pending.iter().any(|(method, params)| {
+            let same_device = params["id"].as_str() == self.selected.as_deref();
+            same_device
+                && (methods.contains(&method.as_str())
+                    || matches!(method.as_str(),
+                        "start" | "stop" | "reset" | "reset_download"
+                        | "import" | "erase" | "regenerate_uid"))
+        })
+    }
+    fn serial_busy(&self, channel: u8) -> bool {
+        self.control_busy(&[])
+            || self.backend.snapshot.lock().unwrap().pending.iter()
+                .any(|(method, params)| {
+                    method == "serial"
+                        && params["id"].as_str() == self.selected.as_deref()
+                        && params["channel"] == channel
+                })
+    }
     fn send(&mut self, method: &'static str, params: Value) {
         self.notice.clear();
         self.backend.send(method, params);
@@ -311,6 +338,7 @@ impl Desktop {
             return;
         }
         self.wifi_visible = false;
+        self.signals_visible = false;
         self.settings = true;
         if self.state.data["capabilities"]["host_camera"] == true {
             self.backend.send("camera_devices", json!({}));
@@ -387,6 +415,7 @@ impl Desktop {
                 self.creating = false;
                 self.settings = false;
                 self.wifi_visible = false;
+                self.signals_visible = false;
             }
             Action::Details => {}
             Action::Settings if matches!(self.mode, Mode::Library) => {
@@ -401,10 +430,24 @@ impl Desktop {
                 }
             }
             Action::Settings => self.show_settings(window, cx),
+            Action::Signals => {
+                if let Some(d) = self.device() {
+                    self.release_buttons();
+                    self.settings = false;
+                    self.wifi_visible = false;
+                    self.signals_visible = !self.signals_visible;
+                    if self.signals.is_none() {
+                        self.signals = Some(cx.new(|cx| {
+                            signals::Signals::new(self.backend.clone(), d, window, cx)
+                        }));
+                    }
+                }
+            }
             Action::WifiSettings => {
                 if let Some(d) = self.device() {
                     self.release_buttons();
                     self.settings = false;
+                    self.signals_visible = false;
                     self.wifi_visible = true;
                     if self.wifi.is_none() {
                         self.wifi = Some(cx.new(|cx| wifi_environment::WifiEnvironment::new(
@@ -561,11 +604,18 @@ impl Desktop {
         self.state.data["serial"][identifier][channel.to_string()].as_str()
     }
     fn menu_items(&self, action: Action) -> Vec<(String, Action, bool, bool)> {
-        let idle = !self.state.busy;
+        let idle = !self.control_busy(&[]);
         let on = self.powered();
         match action {
             _ => vec![
                 ("实例设置…".into(), Action::Settings, true, false),
+                (
+                    "信号输入…".into(),
+                    Action::Signals,
+                    self.device()
+                        .is_some_and(|d| d.inputs.as_array().is_some_and(|v| !v.is_empty())),
+                    false,
+                ),
                 ("复制 UID".into(), Action::CopyUid, true, false),
                 (
                     "复位到烧录模式".into(),
@@ -751,7 +801,7 @@ impl Desktop {
             .child(form.flex_shrink_0())
     }
     fn settings_panel(&mut self, d: &Device, _window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let idle = !self.state.busy;
+        let idle = !self.control_busy(&[]);
         let mutable = !self.running() && idle;
         let tabs = TabBar::new("settings-tabs")
             .underline()
@@ -916,7 +966,7 @@ impl Desktop {
     }
     fn device_panel(&self, d: &Device, cx: &mut Context<Self>) -> Div {
         let on = self.powered();
-        let idle = !self.state.busy;
+        let idle = !self.control_busy(&[]);
         let indicators = d.hardware["board"]["indicators"]
             .as_array()
             .cloned()
@@ -1180,23 +1230,33 @@ impl Desktop {
                     ),
             )
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .justify_center()
-                    .gap_5()
+                div().flex_1().min_h_0().flex()
                     .child(
-                        div()
-                            .p_4()
-                            .rounded_2xl()
-                            .bg(rgb(0x10141a))
-                            .border_1()
-                            .border_color(cx.theme().border)
-                            .child(screen),
+                        div().flex_1().min_w_0().flex().flex_col()
+                            .items_center().justify_center().gap_5()
+                            .child(
+                                div().p_4().rounded_2xl().bg(rgb(0x10141a))
+                                    .border_1().border_color(cx.theme().border)
+                                    .child(screen),
+                            )
+                            .child(keys),
                     )
-                    .child(keys),
+                    .when(self.signals_visible, |body| {
+                        body.child(
+                            div().w(px(300.)).flex_shrink_0().min_h_0()
+                                .flex().flex_col().p_4().gap_3()
+                                .border_l_1().border_color(cx.theme().border)
+                                .child(
+                                    div().flex().items_center().justify_between()
+                                        .child("信号输入")
+                                        .child(self.control(
+                                            "收起", "signals-close", Action::Signals,
+                                            true, false, cx,
+                                        )),
+                                )
+                                .child(self.signals.as_ref().unwrap().clone()),
+                        )
+                    }),
             );
         content
     }
@@ -1275,7 +1335,11 @@ impl Render for Desktop {
             window.set_window_title(&title);
             self.title = title;
         }
-        if !window.is_window_active() || self.creating || self.settings || self.wifi_visible {
+        if !window.is_window_active()
+            || self.creating
+            || self.settings
+            || self.wifi_visible
+        {
             self.release_buttons();
         }
         let mut layout = div().flex_1().min_h_0().flex();

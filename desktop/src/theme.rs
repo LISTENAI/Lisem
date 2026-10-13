@@ -50,5 +50,7 @@ pub fn init(cx: &mut App) {
         c.tab_bar = c.background;
         c.switch = c.secondary_active;
         c.progress_bar = c.primary;
+        c.slider_bar = c.primary;
+        c.slider_thumb = c.foreground;
     });
 }

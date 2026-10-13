@@ -115,7 +115,7 @@ impl Desktop {
         let available = if microphone {
             self.microphone_change_enabled()
         } else {
-            !self.state.busy
+            !self.control_busy(&["sound"])
         };
         let view = cx.entity().downgrade();
         PopupMenuItem::new(label)
@@ -271,7 +271,7 @@ impl Desktop {
                     menu = menu.item(self.menu_action(
                         format!("UART {channel}"),
                         Action::SerialToggle(channel),
-                        !self.state.busy,
+                        !self.serial_busy(channel),
                         self.serial_path(channel).is_some(),
                         cx,
                     ));
@@ -385,7 +385,8 @@ impl Desktop {
     }
 
     fn sd_change_enabled(&self) -> bool {
-        !self.state.busy && self.state.data["session"]["sd_change"]["status"] != "pending"
+        !self.control_busy(&["sd_card"])
+            && self.state.data["session"]["sd_change"]["status"] != "pending"
     }
 
     fn sd_notice(&self) -> Option<String> {
@@ -399,7 +400,7 @@ impl Desktop {
 
     pub(super) fn camera_change_enabled(&self) -> bool {
         let pending = &self.state.data["session"]["camera_change"];
-        !self.state.busy
+        !self.control_busy(&["camera", "camera_host"])
             && (pending["status"] != "pending" || pending["phase"] == "waiting-first-frame")
     }
 
@@ -423,7 +424,8 @@ impl Desktop {
     }
 
     pub(super) fn network_change_enabled(&self) -> bool {
-        !self.state.busy && self.state.data["session"]["access_point_change"]["status"] != "pending"
+        !self.control_busy(&["access_point"])
+            && self.state.data["session"]["access_point_change"]["status"] != "pending"
     }
 
     pub(super) fn host_microphone_enabled(&self, d: &Device) -> bool {
@@ -444,11 +446,12 @@ impl Desktop {
             .state
             .operation
             .as_ref()
-            .is_some_and(|(op, _)| op == "microphone")
+            .is_some_and(|(op, params)| op == "microphone"
+                && params["id"].as_str() == self.selected.as_deref())
     }
 
     pub(super) fn microphone_change_enabled(&self) -> bool {
-        !self.state.busy
+        !self.control_busy(&["microphone"])
             && !self.microphone_pending()
             && self.state.data["session"]["input_busy"] != true
     }
@@ -499,7 +502,7 @@ impl Desktop {
                 Switch::new("settings-speaker")
                     .label("系统扬声器")
                     .checked(d.host["sound"] == true)
-                    .disabled(self.state.busy)
+                    .disabled(self.control_busy(&["sound"]))
                     .on_change(cx.listener(|v, _, w, cx| v.act(Action::Sound, w, cx))),
             ))
             .child(settings_row(
@@ -574,7 +577,7 @@ impl Desktop {
                         Switch::new(("settings-uart", channel as usize))
                             .label("启用")
                             .checked(ready)
-                            .disabled(self.state.busy)
+                            .disabled(self.serial_busy(channel))
                             .on_change(cx.listener(move |v, _, w, cx| {
                                 v.act(Action::SerialToggle(channel), w, cx)
                             })),
@@ -585,7 +588,7 @@ impl Desktop {
                             .icon(Icon::empty().path("copy"))
                             .tooltip("复制连接路径")
                             .accessibility_label(format!("复制 UART {channel} 连接路径"))
-                            .disabled(!ready || self.state.busy)
+                            .disabled(!ready)
                             .on_click(cx.listener(move |v, _, w, cx| {
                                 v.act(Action::CopySerialPath(channel), w, cx)
                             })),

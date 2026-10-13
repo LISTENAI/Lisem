@@ -29,6 +29,8 @@ pub struct Device {
     pub environment: Value,
     #[serde(default)]
     pub media: Value,
+    #[serde(default)]
+    pub inputs: Value,
     pub unavailable: Option<String>,
 }
 
@@ -43,6 +45,7 @@ pub struct Snapshot {
     pub error: Option<String>,
     pub busy: bool,
     pub operation: Option<(String, Value)>,
+    pub pending: Vec<(String, Value)>,
 }
 
 pub enum Request {
@@ -124,8 +127,11 @@ impl Backend {
                         output.lock().unwrap().operation = Some((method.into(), params.clone()));
                         let reply = bridge.call(method, params);
                         let mut state = output.lock().unwrap();
-                        state.busy = false;
-                        state.operation = None;
+                        if !state.pending.is_empty() {
+                            state.pending.remove(0);
+                        }
+                        state.busy = !state.pending.is_empty();
+                        state.operation = state.pending.first().cloned();
                         match reply {
                             Ok(value) => {
                                 if method == "camera_devices" {
@@ -172,6 +178,8 @@ impl Backend {
                         let mut state = output.lock().unwrap();
                         state.error = Some(error);
                         state.busy = false;
+                        state.pending.clear();
+                        state.operation = None;
                         break;
                     }
                 }
@@ -190,11 +198,16 @@ impl Backend {
         {
             let mut state = self.snapshot.lock().unwrap();
             state.busy = true;
-            state.operation = Some((method.into(), params.clone()));
+            state.pending.push((method.into(), params.clone()));
+            if state.operation.is_none() {
+                state.operation = state.pending.first().cloned();
+            }
         }
         if self.sender.send(Request::Call(method, params)).is_err() {
             let mut state = self.snapshot.lock().unwrap();
             state.busy = false;
+            state.pending.clear();
+            state.operation = None;
             state.error = Some("控制服务已退出，请重新打开应用。".into());
         }
     }
