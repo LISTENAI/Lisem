@@ -38,6 +38,7 @@ pub fn accept(listener: &TcpListener) -> Result<TcpStream> {
 }
 
 const UART_CAPACITY: usize = 1024 * 1024;
+const SERIAL_RETIRED_CAPACITY: usize = 7 * UART_CAPACITY;
 #[derive(Default)]
 pub struct OutputBuffer {
     bytes: VecDeque<u8>,
@@ -444,7 +445,8 @@ pub struct SerialPort {
     master: SocketTerminal,
     #[cfg(unix)]
     _slave: File,
-    sources: VecDeque<Output>,
+    source: Option<Output>,
+    retired: VecDeque<u8>,
     pending: Vec<u8>,
 }
 impl SerialPort {
@@ -496,7 +498,8 @@ impl SerialPort {
                     .into(),
                 master: master_file,
                 _slave: slave_file,
-                sources: VecDeque::new(),
+                source: None,
+                retired: VecDeque::new(),
                 pending: Vec::new(),
             })
         }
@@ -509,21 +512,45 @@ impl SerialPort {
             Ok(Self {
                 path: format!("tcp://{}", master.listener.local_addr()?),
                 master,
-                sources: VecDeque::new(),
+                source: None,
+                retired: VecDeque::new(),
                 pending: Vec::new(),
             })
         }
     }
-    pub fn bind(&mut self, output: Output) -> Result<()> {
-        self.sources.retain(|source| {
-            let source = source.lock().unwrap();
-            !source.exhausted()
-        });
+    // Finished runs share one byte budget. Their observer histories remain
+    // attached to their original OutputBuffer and are never merged.
+    fn collect_retired(&mut self) -> Result<()> {
+        while let Some(source) = &self.source {
+            let mut output = source.lock().unwrap();
+            if !output.closed {
+                break;
+            }
+            output.drain_tail()?;
+            let count = output.bytes.len()
+                .min(SERIAL_RETIRED_CAPACITY - self.retired.len());
+            self.retired.extend(output.bytes.drain(..count));
+            let exhausted = output.exhausted();
+            drop(output);
+            if exhausted {
+                self.source = None;
+            } else if count == 0 {
+                break;
+            }
+        }
+        Ok(())
+    }
+    pub fn prepare_bind(&mut self) -> Result<()> {
+        self.collect_retired()?;
         ensure!(
-            self.sources.len() < 8,
-            "UART output backlog spans too many runs; drain the terminal"
+            self.source.is_none(),
+            "UART terminal output is backlogged; read from the serial endpoint before starting"
         );
-        self.sources.push_back(output);
+        Ok(())
+    }
+    pub fn bind(&mut self, output: Output) -> Result<()> {
+        self.prepare_bind()?;
+        self.source = Some(output);
         self.discard_input();
         Ok(())
     }
@@ -547,24 +574,25 @@ impl SerialPort {
     }
     pub fn pump(&mut self, uart: Option<&mut Uart>) -> Result<()> {
         {
-            if let Some(source) = self.sources.front() {
+            self.collect_retired()?;
+            if !self.retired.is_empty() {
+                let bytes = self.retired.make_contiguous();
+                let length = bytes.len().min(4096);
+                match self.master.write(&bytes[..length]) {
+                    Ok(n) => { self.retired.drain(..n); }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                    Err(e) => return Err(e.into()),
+                }
+            } else if let Some(source) = &self.source {
                 let mut output = source.lock().unwrap();
-                output.drain_tail()?;
                 let bytes = output.bytes.make_contiguous();
                 let length = bytes.len().min(4096);
                 if length != 0 {
                     match self.master.write(&bytes[..length]) {
-                        Ok(n) => {
-                            output.bytes.drain(..n);
-                        }
+                        Ok(n) => { output.bytes.drain(..n); }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                         Err(e) => return Err(e.into()),
                     }
-                }
-                let exhausted = output.exhausted();
-                drop(output);
-                if exhausted {
-                    self.sources.pop_front();
                 }
             }
             if let Some(uart) = uart {
@@ -1057,6 +1085,70 @@ mod tests {
         }
         writer.join().unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn terminal_backlog_is_bounded_by_bytes_and_preserves_run_histories() {
+        let mut port = SerialPort::new().unwrap();
+        #[cfg(unix)]
+        let mut terminal = OpenOptions::new().read(true).write(true)
+            .custom_flags(libc::O_NONBLOCK).open(&port.path).unwrap();
+        #[cfg(windows)]
+        let mut terminal = {
+            let stream = TcpStream::connect(port.path.strip_prefix("tcp://").unwrap()).unwrap();
+            stream.set_nonblocking(true).unwrap();
+            stream
+        };
+        let mut expected = Vec::new();
+        let mut observers = Vec::new();
+        // No terminal reads between runs. More than eight modest runs must
+        // work, and observation must still describe each individual run.
+        for run in 0..40u8 {
+            let bytes = vec![run; 4096];
+            let mut output = OutputBuffer {
+                bytes: bytes.clone().into(), closed: true, ..Default::default()
+            };
+            output.observe(&bytes);
+            let output = Arc::new(Mutex::new(output));
+            observers.push(output.clone());
+            port.bind(output).unwrap();
+            expected.extend(bytes);
+        }
+        for (run, output) in observers.iter().enumerate() {
+            let history = output.lock().unwrap().read(0, 4096).unwrap();
+            assert_eq!(crate::storage::unhex(history["hex"].as_str().unwrap()).unwrap(),
+                       vec![run as u8; 4096]);
+        }
+        port.prepare_bind().unwrap();
+        // Fill the remaining byte budget and retain a live run's final byte.
+        let fill = SERIAL_RETIRED_CAPACITY - expected.len();
+        for chunk in vec![0x80; fill].chunks(UART_CAPACITY) {
+            port.bind(Arc::new(Mutex::new(OutputBuffer {
+                bytes: chunk.to_vec().into(), closed: true, ..Default::default()
+            }))).unwrap();
+            expected.extend_from_slice(chunk);
+        }
+        port.bind(Arc::new(Mutex::new(OutputBuffer {
+            bytes: vec![0xfe].into(), closed: true, ..Default::default()
+        }))).unwrap();
+        expected.push(0xfe);
+        assert!(port.prepare_bind().is_err());
+        assert_eq!(port.retired.len(), SERIAL_RETIRED_CAPACITY);
+        let mut actual = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while actual.len() < expected.len() {
+            assert!(Instant::now() < deadline);
+            port.pump(None).unwrap();
+            let mut bytes = [0; 65536];
+            match terminal.read(&mut bytes) {
+                Ok(n) => actual.extend_from_slice(&bytes[..n]),
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                Err(e) => panic!("{e}"),
+            }
+            std::thread::yield_now();
+        }
+        assert_eq!(actual, expected);
+        port.prepare_bind().unwrap();
     }
 
     #[test]

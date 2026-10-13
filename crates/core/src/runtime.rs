@@ -1386,6 +1386,9 @@ impl Runtime {
                 self.pending_access_point = None;
                 self.pending_wifi_environment = None;
                 let options: Options = serde_json::from_value(params["options"].clone())?;
+                for port in self.ports.values_mut() {
+                    port.prepare_bind()?;
+                }
                 let mut session =
                     Session::start(&self.catalog, &self.catalog.device(&self.id)?, options)?;
                 for (channel, uart) in session.uart.iter_mut().enumerate() {
