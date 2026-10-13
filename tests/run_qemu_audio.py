@@ -44,7 +44,7 @@ def configure(m, rate, values=VALUES, adc=None):
     m.write(AP + 8, 0x70000)
     m.write(APC, 1); m.write(APC + 12, 0x80000005); m.write(APC + 20, 5)
     for value in values: m.write(APC + 0xf4, (value << 16) & 0xffffffff)
-    for off, value in ((8, 3), (0x14, 0x180 | CODES[rate]), (0x2c, 2 if adc else 0),
+    for off, value in ((8, 3), (0x14, (0x180 if adc else 0) | CODES[rate]), (0x2c, 2 if adc else 0),
                        (0x3c, 0x60 | CODES[rate]), (0x48, 16), (0x54, 1), (0x58, 1)):
         m.write(CODEC + off, value)
     m.write(0x480000c0, 0x4000)
@@ -238,6 +238,40 @@ def mixed_capture(hart):
         assert samples == []
         print('Hart %d: stereo ADC -> mixed APC -> 2-item halfword DMA burst -> exact PCM16 bytes: PASS' % hart)
     finally: m.close()
+
+
+def analog_standby(hart):
+    pairs = [(1000 + n, -2000 - n) for n in range(8)]
+    states = [(3, 85, 85), (3, 85, 0), (2, 85, 0), (2, 85, 1),
+              (0, 0, 1), (1, 0, 85), (3, 0, 85), (3, 85, 85)]
+    m = Machine(OUTPUT / ('analog-standby%d' % hart), hart=hart,
+                audio=(struct.pack('<16h', *(v for p in pairs for v in p)), 16000, 2),
+                budget_ns=510000)
+    try:
+        configure(m, 16000, values=[])
+        m.write(CODEC + 0x54, 0)
+        m.write(APC + 0x14, 0x02070007)
+        m.write(DMA + 0x54, APC + 0x106); m.write(DMA + 0x5c, 0x20012000)
+        m.write(DMA + 0x270, 1); m.write(DMA + 0x2c, 16); m.write(DMA + 0x28, 17)
+        m.write(DMA, 0xb0000000 | 0x4000 | 0x200 | 0x40 | 3)
+        expected = []
+        for n, (power, left, right) in enumerate(states):
+            m.write(CODEC + 0x18, (left << 7) | right)
+            m.write(CODEC + 0x2c, power)
+            step(m, 62500 if n == 0 else 61500)
+            assert (m.read(APC + 0x14) >> 4) & 31 == 1
+            assert (m.read(APC + 0x14) >> 20) & 31 == 1
+            step(m, 1000)
+            expected.extend((pairs[n][0] if left > 1 else 0, pairs[n][1] if right > 1 else 0))
+        actual = bytes(m.command('readb 0x%x' % (0x20012000+n)) for n in range(32))
+        assert actual == struct.pack('<16h', *expected)
+        assert m.read(DMA + 0x158) & 1 and irq(m, 19)
+        assert not m.read(APC + 0x128) & 0x1ce  # No FIFO full/underflow/overrun.
+        audio, _, _ = finish(m, 510000)
+        assert audio['adc_frames'] == 8 and audio['dma_bytes'] == 32
+        print('Hart %d: analog ADC power, digital mute and stereo DMA cadence: PASS' % hart)
+    finally:
+        m.close()
 
 
 def feedback():
@@ -498,6 +532,7 @@ if __name__ == '__main__':
     formats()
     dma_channels(0); dma_channels(1)
     mixed_capture(0); mixed_capture(1)
+    analog_standby(0); analog_standby(1)
     feedback()
     digital_loopback()
     calibration()

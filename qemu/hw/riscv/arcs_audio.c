@@ -439,7 +439,7 @@ static void codec_update(ArcsCodec *s)
 {
     bool common = s->powered && (s->regs[2] & 3) == 3;
     bool adc = common && (s->clocks & 0x40000) && (s->regs[5] & 0x180) == 0x180 &&
-               (s->regs[11] & 3) && !(s->regs[11] & 0x10);
+               !(s->regs[11] & 0x10);
     bool dac = common && (s->clocks & 0x20000) && (s->regs[15] & 0x60) == 0x60 &&
                (s->regs[21] & 1) && (s->regs[18] & 0x10);
     if (adc && (s->regs[9] & 0x400000)) { arcs_soc_fail(s->soc, CODEC_BASE + 0x24, 4, true, s->regs[9]); }
@@ -456,9 +456,15 @@ static void sample(void *opaque)
     if (t->adc) {
         int16_t values[2] = { 0, 0 };
         if (s->input) { s->input(s->pcm_opaque, t->rate, values); }
-        unsigned shift = sample_bits(apc, 4) - 16;
-        if ((s->regs[11] & 10) == 2) { receive_sample(apc, 0, (int32_t)values[0] * (1 << shift)); }
-        if ((s->regs[11] & 5) == 1) { receive_sample(apc, 1, (int32_t)values[1] * (1 << shift)); }
+        for (unsigned ch = 0; ch < 2; ch++) {
+            unsigned analog = ch ? 1 : 2;
+            unsigned volume = (s->regs[6] >> (ch ? 0 : 7)) & 127;
+            bool active = (s->regs[11] & (analog | (analog << 2))) == analog;
+            /* Analog power and digital mute do not stop the stereo frame
+             * clock. Each enabled APC lane still receives its sample slot. */
+            int32_t value = active && volume > 1 ? values[ch] : 0;
+            receive_sample(apc, ch, value * (1 << (sample_bits(apc, ch + 4) - 16)));
+        }
         s->adc_frames++;
     } else {
         int32_t values[2];
@@ -519,6 +525,7 @@ void arcs_codec_reset(ArcsSoC *soc)
 {
     ArcsCodec *s = &soc->codec;
     memset(s->regs, 0, sizeof(s->regs)); s->calibration_status = 0;
+    s->regs[6] = 0x06062ad5; /* ADC PGA defaults and 0-dB digital volume. */
     s->adc.rate = s->dac.rate = 0; s->adc.phase = s->dac.phase = 0;
     timer_del(s->adc.event); timer_del(s->dac.event); timer_del(s->calibration);
     s->adc_frames = s->dac_samples = s->underruns = 0;
