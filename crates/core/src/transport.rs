@@ -17,9 +17,13 @@ pub fn listener() -> Result<TcpListener> {
     listener.set_nonblocking(true)?;
     Ok(listener)
 }
-pub fn accept(listener: &TcpListener) -> Result<TcpStream> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+pub fn accept_checked(
+    listener: &TcpListener,
+    deadline: Instant,
+    mut check_process: impl FnMut() -> Result<()>,
+) -> Result<TcpStream> {
     loop {
+        check_process()?;
         match listener.accept() {
             Ok((stream, _)) => {
                 stream.set_nodelay(true)?;
@@ -35,6 +39,11 @@ pub fn accept(listener: &TcpListener) -> Result<TcpStream> {
             Err(e) => return Err(e.into()),
         }
     }
+}
+
+#[cfg(test)]
+fn accept(listener: &TcpListener) -> Result<TcpStream> {
+    accept_checked(listener, Instant::now() + Duration::from_secs(5), || Ok(()))
 }
 
 const UART_CAPACITY: usize = 1024 * 1024;

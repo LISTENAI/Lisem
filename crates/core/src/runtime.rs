@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     fs::{self, File},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
@@ -31,7 +31,7 @@ fn qemu_failure(errors: &str) -> String {
     let failure: String = errors
         .lines()
         .rev()
-        .find(|line| line.contains("ARCS"))
+        .find(|line| line.contains("ARCS") || line.contains("VenusA unsupported "))
         .unwrap_or("QEMU failed")
         .chars()
         .take(2048)
@@ -50,6 +50,29 @@ fn qemu_failure(errors: &str) -> String {
         }
         _ => failure,
     }
+}
+
+fn startup_diagnostic(errors: &str) -> String {
+    // Match fixed host/model reasons without echoing arbitrary stderr, command
+    // arguments, environment variables or firmware credentials into the UI.
+    for reason in [
+        "VenusA requires an exact 64-byte OTP image",
+        "NOR requires an exact 16 MiB block image",
+        "NOR requires a readable exact 16 MiB Flash image",
+        "NOR block read failed",
+        "VenusA requires a pflash image",
+        "VenusA uses a fixed mask ROM and a pflash image",
+        "Failed to get \"write\" lock",
+        "Failed to get shared \"write\" lock",
+        "Permission denied",
+        "No such file or directory",
+        "unsupported machine type",
+    ] {
+        if errors.contains(reason) {
+            return reason.to_owned();
+        }
+    }
+    qemu_failure(errors)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -114,6 +137,67 @@ struct Process {
     child: Child,
 }
 impl Process {
+    fn startup_accept(
+        &mut self,
+        listener: &std::net::TcpListener,
+        deadline: Instant,
+    ) -> Result<TcpStream> {
+        transport::accept_checked(listener, deadline, || {
+            if let Some(status) = self.child.try_wait()? {
+                bail!("QEMU exited during startup ({status})");
+            }
+            Ok(())
+        })
+    }
+    fn startup_failure(
+        &mut self,
+        error: anyhow::Error,
+        stderr: &mut Option<PipeLog>,
+        log: Option<&Path>,
+    ) -> anyhow::Error {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        let errors = if let Some(stderr) = stderr {
+            // A descendant can retain a pipe after the process has exited.
+            // Never wait indefinitely for EOF during failed initialization.
+            let until = Instant::now() + Duration::from_millis(100);
+            while stderr
+                .reader
+                .as_ref()
+                .is_some_and(|reader| !reader.is_finished())
+                && Instant::now() < until
+            {
+                thread::sleep(Duration::from_millis(2));
+            }
+            if stderr
+                .reader
+                .as_ref()
+                .is_some_and(|reader| reader.is_finished())
+            {
+                let _ = stderr.reader.take().unwrap().join();
+            }
+            String::from_utf8_lossy(&stderr.bytes.lock().unwrap()).into_owned()
+        } else {
+            (|| -> std::io::Result<String> {
+                let mut file =
+                    File::open(log.ok_or_else(|| std::io::Error::other("No capture log"))?)?;
+                let length = file.metadata()?.len();
+                file.seek(SeekFrom::Start(length.saturating_sub(256 * 1024)))?;
+                let mut bytes = Vec::new();
+                file.take(256 * 1024).read_to_end(&mut bytes)?;
+                Ok(String::from_utf8_lossy(&bytes).into_owned())
+            })()
+            .unwrap_or_default()
+        };
+        let reason = startup_diagnostic(&errors);
+        if reason == "QEMU failed" {
+            anyhow::anyhow!("QEMU startup failed: {error:#}")
+        } else {
+            anyhow::anyhow!("QEMU startup failed: {error:#}; {reason}")
+        }
+    }
     fn guest(command: &mut Command, lease: &Lease) -> Result<Self> {
         #[cfg(unix)]
         {
@@ -510,23 +594,29 @@ impl Session {
         }
         let mut process = Process::guest(&mut command, &lease)?;
         let stdout = process.child.stdout.take().map(PipeLog::start);
-        let stderr = process.child.stderr.take().map(PipeLog::start);
-        let control = transport::accept(&qmp_listener)?;
-        let mut uart = Vec::new();
-        for (channel, listener) in listeners.iter().enumerate() {
-            let path = output.join(format!("uart{channel}.bin"));
-            uart.push(Uart::new(
-                transport::accept(listener)?,
-                options.capture.as_ref().map(|_| path.as_path()),
-            )?);
-            if options.capture.is_some() {
-                fs::hard_link(
-                    &path,
-                    output.join("live").join(format!("uart{channel}.bin")),
-                )?;
+        let mut stderr = process.child.stderr.take().map(PipeLog::start);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let connection = (|| -> Result<(Qmp, Vec<Uart>)> {
+            let control = process.startup_accept(&qmp_listener, deadline).context("QMP connection")?;
+            let mut uart = Vec::new();
+            for (channel, listener) in listeners.iter().enumerate() {
+                let path = output.join(format!("uart{channel}.bin"));
+                uart.push(Uart::new(
+                    process.startup_accept(listener, deadline)
+                        .with_context(|| format!("UART {channel} connection"))?,
+                    options.capture.as_ref().map(|_| path.as_path()),
+                )?);
+                if options.capture.is_some() {
+                    fs::hard_link(&path, output.join("live").join(format!("uart{channel}.bin")))?;
+                }
             }
-        }
-        let mut qmp = Qmp::new(control, &mut uart)?;
+            let qmp = Qmp::new(control, &mut uart).context("QMP initialization")?;
+            Ok((qmp, uart))
+        })();
+        let (mut qmp, mut uart) = connection.map_err(|error| {
+            process.startup_failure(error, &mut stderr,
+                options.capture.as_ref().map(|_| output.join("qemu.log")).as_deref())
+        })?;
         let board = &item["hardware"]["board"];
         let metadata = catalog.metadata(&instance)?;
         let inputs = metadata["inputs"].clone();
@@ -2460,6 +2550,190 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn startup_child_fixture() {
+        let Ok(mode) = std::env::var("LISEM_TEST_STARTUP_MODE") else {
+            return;
+        };
+        if mode == "partial" {
+            let mut stream =
+                TcpStream::connect(std::env::var("LISEM_TEST_STARTUP_ADDRESS").unwrap()).unwrap();
+            let mut acknowledged = [0];
+            stream.read_exact(&mut acknowledged).unwrap();
+        }
+        let mut stderr = std::io::stderr().lock();
+        stderr.write_all(&vec![b'x'; 300 * 1024]).unwrap();
+        writeln!(stderr, "\nprivate credential=do-not-display").unwrap();
+        writeln!(
+            stderr,
+            "qemu-system-riscv32: NOR requires an exact 16 MiB block image"
+        )
+        .unwrap();
+        stderr.flush().unwrap();
+        if mode == "timeout" {
+            thread::sleep(Duration::from_secs(10));
+        }
+        std::process::exit(17);
+    }
+
+    fn failed_startup(mode: &str, capture: bool) {
+        let temp = tempfile::tempdir().unwrap();
+        let lock_path = temp.path().join("storage.lock");
+        let lease = Lease::acquire(&lock_path).unwrap();
+        let first = transport::listener().unwrap();
+        let missing = transport::listener().unwrap();
+        let log = temp.path().join("qemu.log");
+        let mut command = crate::process::command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runtime::tests::startup_child_fixture",
+                "--nocapture",
+            ])
+            .env("LISEM_TEST_STARTUP_MODE", mode)
+            .env(
+                "LISEM_TEST_STARTUP_ADDRESS",
+                first.local_addr().unwrap().to_string(),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(if capture {
+                Stdio::from(File::create(&log).unwrap())
+            } else {
+                Stdio::piped()
+            });
+        let mut process = Process::guest(&mut command, &lease).unwrap();
+        let mut stderr = process.child.stderr.take().map(PipeLog::start);
+        let started = Instant::now();
+        let deadline = started
+            + if mode == "timeout" {
+                Duration::from_millis(300)
+            } else {
+                Duration::from_secs(2)
+            };
+        if mode == "partial" {
+            let mut stream = process.startup_accept(&first, deadline).unwrap();
+            stream.write_all(&[1]).unwrap();
+        }
+        let error = process
+            .startup_accept(&missing, deadline)
+            .context(if mode == "partial" {
+                "UART 1 connection"
+            } else {
+                "QMP connection"
+            })
+            .unwrap_err();
+        let error = process
+            .startup_failure(error, &mut stderr, capture.then_some(log.as_path()))
+            .to_string();
+        assert!(
+            error.contains("NOR requires an exact 16 MiB block image"),
+            "{error}"
+        );
+        assert!(!error.contains("credential"), "{error}");
+        assert!(error.len() < 4096);
+        assert!(
+            error.contains(if mode == "partial" { "UART 1" } else { "QMP" }),
+            "{error}"
+        );
+        assert!(
+            error.contains(if mode == "timeout" {
+                "timed out"
+            } else {
+                "exited during startup"
+            }),
+            "{error}"
+        );
+        assert!(process.child.try_wait().unwrap().is_some());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        if let Some(stderr) = &stderr {
+            assert!(stderr.bytes.lock().unwrap().len() <= 256 * 1024);
+        }
+        drop(process);
+        drop(lease);
+        // Parallel tests can fork while this lease is still open. Their
+        // CLOEXEC copies retain the lock until exec, even after our child exits.
+        // Allow that bounded transition without accepting a leaked lease.
+        let released_by = Instant::now() + Duration::from_millis(500);
+        loop {
+            match Lease::acquire(&lock_path) {
+                Ok(_) => break,
+                Err(error) if error.to_string().starts_with("Resource is in use:") => {
+                    assert!(Instant::now() < released_by, "{error}");
+                    thread::sleep(Duration::from_millis(2));
+                }
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn startup_exit_reports_model_reason_and_releases_storage() {
+        failed_startup("exit", false);
+    }
+
+    #[test]
+    fn startup_exit_after_control_connection_preserves_uart_failure() {
+        failed_startup("partial", false);
+    }
+
+    #[test]
+    fn startup_timeout_kills_child_and_reads_bounded_capture_tail() {
+        failed_startup("timeout", true);
+    }
+
+    #[test]
+    fn startup_failure_does_not_wait_for_a_retained_diagnostic_pipe() {
+        let temp = tempfile::tempdir().unwrap();
+        let lease = Lease::acquire(&temp.path().join("lock")).unwrap();
+        let mut command = crate::process::command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runtime::tests::startup_child_fixture",
+                "--nocapture",
+            ])
+            .env("LISEM_TEST_STARTUP_MODE", "exit")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut process = Process::guest(&mut command, &lease).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut retained = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let mut stderr = Some(PipeLog::start(listener.accept().unwrap().0));
+        retained
+            .write_all(b"NOR requires an exact 16 MiB block image\n")
+            .unwrap();
+        let start = Instant::now();
+        let error = process.startup_failure(
+            anyhow::anyhow!("QMP initialization failed"),
+            &mut stderr,
+            None,
+        );
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(
+            error
+                .to_string()
+                .contains("NOR requires an exact 16 MiB block image")
+        );
+        drop(retained);
+        stderr.as_mut().unwrap().finish();
+    }
+
+    #[test]
+    fn startup_diagnostics_exclude_credentials_and_preserve_venusa_fault() {
+        assert_eq!(
+            startup_diagnostic("private credential=secret"),
+            "QEMU failed"
+        );
+        let fault =
+            "VenusA unsupported read hart=0 pc=0x30000000 address=0x45500100 size=4 value=0x0";
+        assert_eq!(
+            qemu_failure(&format!("private credential=secret\n{fault}")),
+            fault
+        );
+    }
 
     #[test]
     fn camera_confirmation_persists_only_acknowledged_input() {
