@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod about;
+mod updates;
 mod backend;
 mod camera_selector;
 mod display;
