@@ -194,3 +194,46 @@ fn board_inputs_enrich_existing_instances_and_validate_persisted_values() {
     wrong_wiring["board"]["inputs"][0]["pin"] = json!(31);
     assert!(catalog.check_hardware(&wrong_wiring).is_err());
 }
+
+#[test]
+fn runtime_metadata_updates_preserve_instances_and_current_availability() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let path = PathBuf::from(item["path"].as_str().unwrap());
+    let before = ["flash.bin", "otp.bin", "device.json"].map(|file| {
+        storage::sha256(&path.join(file)).unwrap()
+    });
+    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"] = json!({
+        "machine":"arcs-mini", "available":false,
+        "unavailable_reason":"Runtime validation pending",
+        "capabilities":{"snapshot":false}
+    });
+    catalog.chips.get_mut("ls2684").unwrap()["runtime"] = json!({
+        "abi":"lisem-v1", "environment_prefix":"ARCS_QEMU_",
+        "clock_quantum_ns":20000, "flash":"bios"
+    });
+    let current = catalog.describe(&path).unwrap();
+    assert_eq!(current["uid"], item["uid"]);
+    assert_eq!(current["capabilities"]["snapshot"], false);
+    assert_eq!(current["hardware"]["chip"]["runtime"]["clock_quantum_ns"], 20000);
+    let error = lisem_core::assets::Backend::for_device(&catalog, &current).err().unwrap();
+    assert_eq!(error.to_string(), "Runtime validation pending");
+    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"]["available"] = json!(true);
+    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"]["capabilities"]["snapshot"] = json!(true);
+    let current = catalog.describe(&path).unwrap();
+    assert!(lisem_core::assets::Backend::for_device(&catalog, &current).unwrap().capabilities.snapshot);
+    for (file, hash) in ["flash.bin", "otp.bin", "device.json"].into_iter().zip(before) {
+        assert_eq!(storage::sha256(&path.join(file)).unwrap(), hash);
+    }
+    for pointer in ["/board/flash_bytes", "/chip/storage/otp_bytes",
+        "/chip/storage/uid_offset", "/board/buttons/0/pin", "/board/screen/width"] {
+        let mut different = current["hardware"].clone();
+        match pointer {
+            "/chip/storage/otp_bytes" => different["chip"]["storage"] = json!({"otp_bytes":64}),
+            "/chip/storage/uid_offset" => different["chip"]["storage"] = json!({"uid_offset":0}),
+            _ => *different.pointer_mut(pointer).unwrap() = json!(123),
+        }
+        assert!(catalog.check_hardware(&different).is_err(), "{pointer}");
+    }
+}

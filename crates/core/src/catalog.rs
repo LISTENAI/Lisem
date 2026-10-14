@@ -454,6 +454,9 @@ fn hardware_identity(mut value: Value) -> Value {
     for section in ["board", "chip"] {
         if let Some(object) = value[section].as_object_mut() {
             object.remove("name");
+            // Runtime controls and scheduling describe this emulator build,
+            // not the instance's physical hardware or persistent storage.
+            object.remove("runtime");
         }
     }
     if let Some(screen) = value["board"]["screen"].as_object_mut() {
