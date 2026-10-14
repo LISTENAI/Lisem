@@ -57,7 +57,8 @@ def with_service(args, device):
             if released and not wifi and uart.exists() and b'ListenAI:/$' in uart.read_bytes():
                 service.dispatch('uart_write', {'id': item['id'], 'channel': 0, 'hex': b'wifi connect Lisem\r\n'.hex()}); wifi = True
             if args.input and seconds >= 15 and not uploaded:
-                service.dispatch('audio', {'id': item['id'], 'path': str(args.input)}); uploaded = True
+                service.dispatch('audio', {'id': item['id'], 'run': str(output),
+                                           'path': str(args.input)}); uploaded = True
             path = output / 'live/framebuffer'
             if path.exists():
                 with path.open('rb') as image:
@@ -76,6 +77,9 @@ def with_service(args, device):
                             latencies.append(time.monotonic_ns() - host_ns)
             time.sleep(.01)
         assert status['finished'] and status['returncode'] == 0 and not status.get('error'), status
+        if args.input:
+            assert uploaded and status['audio_input']['status'] == 'completed', status.get('audio_input')
+            assert status['audio_input']['consumed'] == status['audio_input']['samples']
         stats = json.loads((output / 'host-audio/report.json').read_text())
         machine = json.loads((output / 'report.json').read_text())
         frames = (output / 'host-audio/dac-frames.bin').read_bytes()
@@ -96,7 +100,11 @@ def with_service(args, device):
         (args.output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
         print(json.dumps(result, indent=2))
     finally:
-        service.close()
+        try:
+            if 'item' in locals():
+                service.dispatch('shutdown', {'id': item['id']})
+        finally:
+            service.close()
 
 
 if __name__ == '__main__': main()
