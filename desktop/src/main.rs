@@ -217,9 +217,6 @@ impl Desktop {
             Mode::Device(id) => Some(id.clone()),
             Mode::Library => None,
         };
-        if matches!(mode, Mode::Device(_)) && cfg!(target_os = "macos") {
-            backend.send("camera_devices", json!({}));
-        }
         let camera_select =
             cx.new(|cx| SelectState::new(Vec::<CameraOption>::new(), None, window, cx));
         cx.subscribe_in(&camera_select, window, |view, _, event, window, cx| {
@@ -236,7 +233,7 @@ impl Desktop {
             state.data["session"] = state.data["sessions"][id].clone();
             state.frame = state.frames.get(id).cloned();
         }
-        Self {
+        let mut view = Self {
             backend,
             windows,
             mode,
@@ -259,6 +256,18 @@ impl Desktop {
             camera_select,
             camera_options: Vec::new(),
             rendered_frame: None,
+        };
+        if matches!(view.mode, Mode::Device(_)) {
+            view.refresh_cameras();
+        }
+        view
+    }
+
+    fn refresh_cameras(&mut self) {
+        if self.state.data["capabilities"]["host_camera"] == true
+            && self.device().is_some_and(|device| device.capabilities.camera)
+        {
+            self.send("camera_devices", json!({"id": self.selected}));
         }
     }
 
@@ -345,9 +354,7 @@ impl Desktop {
         self.wifi_visible = false;
         self.signals_visible = false;
         self.settings = true;
-        if self.state.data["capabilities"]["host_camera"] == true {
-            self.backend.send("camera_devices", json!({}));
-        }
+        self.refresh_cameras();
         if let Some(d) = self.device() {
             self.name
                 .update(cx, |name, cx| name.set_value(&d.name, window, cx));
@@ -471,7 +478,7 @@ impl Desktop {
             Action::ChoosePackage | Action::Attach | Action::Import | Action::Camera | Action::MountSd => {
                 self.choose_file(action, cx);
             }
-            Action::RefreshCameras => self.send("camera_devices", json!({})),
+            Action::RefreshCameras => self.refresh_cameras(),
             Action::ClearCamera => {
                 let mut params = self.params();
                 params["path"] = Value::Null;
