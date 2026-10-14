@@ -229,9 +229,9 @@ impl Manager {
                         timeout: params["timeout"].as_u64().unwrap_or(800),
                         network: params["online"]
                             .as_bool()
-                            .unwrap_or(item["host"]["online"].as_bool().unwrap_or(false)),
-                        host_audio: true,
-                        microphone: item["host"]["microphone"].as_bool().unwrap_or(false),
+                            .unwrap_or(item["capabilities"]["wifi"] == true && item["host"]["online"].as_bool().unwrap_or(false)),
+                        host_audio: item["capabilities"]["audio"] == true,
+                        microphone: item["capabilities"]["audio"] == true && item["host"]["microphone"].as_bool().unwrap_or(false),
                         sound: item["host"]["sound"].as_bool().unwrap_or(true),
                         download: false,
                         capture: params["capture"].as_str().map(PathBuf::from),

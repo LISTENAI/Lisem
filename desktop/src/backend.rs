@@ -24,6 +24,8 @@ pub struct Device {
     #[serde(default)]
     pub hardware: Value,
     #[serde(default)]
+    pub capabilities: lisem_core::assets::Capabilities,
+    #[serde(default)]
     pub host: Value,
     #[serde(default)]
     pub environment: Value,

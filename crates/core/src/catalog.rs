@@ -137,6 +137,7 @@ impl Catalog {
         )?;
         Ok(
             json!({"id":value["id"],"name":value["name"],"path":path,"board":layout.board,
+                  "capabilities":crate::assets::Backend::from_hardware(&hardware)?.capabilities,
                   "hardware":hardware,"host":value["host"],"media":value["media"],
                   "environment":environment,"inputs":crate::signals::state(&hardware["board"], &value["inputs"])?,
                   "uid":storage::uid(&path,&layout)?}),
@@ -181,6 +182,9 @@ impl Catalog {
     pub fn create(&self, board: &str, package: Option<&Path>, name: Option<&str>) -> Result<Value> {
         let _index = Lease::acquire(&self.data.join("library.lock"))?;
         let mut entries = self.entries()?;
+        let descriptor = self.boards.get(board).context("Unknown board")?;
+        ensure!(descriptor["runtime"]["available"] != false, "{}",
+            descriptor["runtime"]["unavailable_reason"].as_str().unwrap_or("This board runtime is unavailable"));
         let layout = self.layout(board)?;
         let id = Uuid::new_v4().simple().to_string();
         let path = self.data.join("devices").join(&id);
@@ -368,6 +372,8 @@ impl Catalog {
         );
         if let Some(uart) = changes.get("uart") {
             valid_uart(uart)?;
+            let backend = crate::assets::Backend::from_hardware(&self.check_hardware(&value["hardware"])?)?;
+            ensure!(uart.as_array().unwrap().iter().all(|v| backend.capabilities.uart_channels.contains(&(v.as_u64().unwrap() as u8))), "UART channel is unavailable on this board");
             value["host"]["uart"] = uart.clone();
         }
         if let Some(environment) = changes.get("wifi_environment") {
@@ -488,8 +494,8 @@ pub fn valid_uart(value: &Value) -> Result<()> {
     for channel in channels {
         let n = channel.as_u64().context("Invalid UART channel")?;
         ensure!(
-            n < 3 && !seen.contains(&n),
-            "UART channels must be unique integers in 0..2"
+            n < 16 && !seen.contains(&n),
+            "UART channels must be unique integers in 0..15"
         );
         seen.push(n);
     }

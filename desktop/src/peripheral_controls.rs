@@ -197,7 +197,7 @@ impl Desktop {
             let view = owner.read(cx);
             let mut content = div().flex().flex_col().gap_3();
             let mut count = 0;
-            for channel in 0..3u8 {
+            for channel in view.device().map(|d| d.capabilities.uart_channels).unwrap_or_default() {
                 let Some(path) = view.serial_path(channel) else {
                     continue;
                 };
@@ -280,7 +280,7 @@ impl Desktop {
                 menu
             }
             "serial" => {
-                for channel in 0..3u8 {
+                for channel in d.capabilities.uart_channels.iter().copied() {
                     menu = menu.item(self.menu_action(
                         format!("UART {channel}"),
                         Action::SerialToggle(channel),
@@ -528,7 +528,7 @@ impl Desktop {
             .flex()
             .flex_col()
             .gap_3()
-            .child(settings_row(
+            .when(d.capabilities.wifi, |body| body.child(settings_row(
                 "网络",
                 div()
                     .flex()
@@ -544,16 +544,16 @@ impl Desktop {
                     .when_some(self.access_point_notice(), |view, notice| {
                         view.child(caption(notice))
                     }),
-            ))
-            .child(settings_row(
+            )))
+            .when(d.capabilities.audio, |body| body.child(settings_row(
                 "扬声器",
                 Switch::new("settings-speaker")
                     .label("系统扬声器")
                     .checked(d.host["sound"] == true)
                     .disabled(self.control_busy(&["sound"]))
                     .on_change(cx.listener(|v, _, w, cx| v.act(Action::Sound, w, cx))),
-            ))
-            .child(settings_row(
+            )))
+            .when(d.capabilities.audio, |body| body.child(settings_row(
                 "麦克风",
                 div()
                     .flex()
@@ -568,8 +568,8 @@ impl Desktop {
                             .on_change(cx.listener(|v, _, w, cx| v.act(Action::Microphone, w, cx))),
                     )
                     .child(caption(self.microphone_notice(d))),
-            ))
-            .child(settings_row(
+            )))
+            .when(d.capabilities.camera, |body| body.child(settings_row(
                 "摄像头",
                 div()
                     .flex()
@@ -583,8 +583,8 @@ impl Desktop {
                             .disabled(!self.camera_change_enabled()),
                     )
                     .child(caption(self.camera_notice(d))),
-            ));
-        body = body.child(settings_row(
+            )));
+        body = body.when(d.capabilities.usb_adb, |body| body.child(settings_row(
             "USB",
             div().flex().flex_col().items_start().gap_2()
                 .child(Switch::new("settings-usb-adb")
@@ -597,8 +597,8 @@ impl Desktop {
                         .label(address.to_owned()).tooltip("复制地址")
                         .on_click(cx.listener(|v, _, w, cx| v.act(Action::CopyUsbAddress, w, cx)))))
                 .child(caption(self.usb_notice())),
-        ));
-        body = body.child(settings_row(
+        )));
+        body = body.when(d.capabilities.sd, |body| body.child(settings_row(
             "SD 卡",
             div()
                 .flex()
@@ -626,8 +626,8 @@ impl Desktop {
                         ),
                 )
                 .when_some(self.sd_notice(), |view, notice| view.child(caption(notice))),
-        ));
-        for channel in 0..3u8 {
+        )));
+        for channel in d.capabilities.uart_channels.iter().copied() {
             let ready = self.serial_path(channel).is_some();
             body = body.child(settings_row(
                 &format!("UART {channel}"),

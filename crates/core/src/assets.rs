@@ -1,7 +1,7 @@
 //! Runtime assets and backend selection. Platform and chip details stop here;
 //! instance storage and front ends consume descriptors and capabilities.
 use crate::{catalog::Catalog, storage};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -310,22 +310,209 @@ fn source_git(source: &Path, arguments: &[&str]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Chip/board adapter for the currently compiled QEMU machine. Additional
-/// chips register their launch and control ABI here; CPU/IP models remain QEMU's.
+/// Hardware-specific launch and control ABI. Session owns transport and lifetime.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct Capabilities {
+    pub snapshot: bool,
+    pub screen: bool,
+    pub audio: bool,
+    pub camera: bool,
+    pub touch: bool,
+    pub wifi: bool,
+    pub sd: bool,
+    pub usb_adb: bool,
+    pub download: bool,
+    pub signals: bool,
+    pub events: bool,
+    pub button_sequence: bool,
+    pub uart_channels: Vec<u8>,
+}
+
 pub struct Backend {
     pub machine: String,
+    pub capabilities: Capabilities,
+    pub environment_prefix: String,
+    buttons: std::collections::BTreeMap<String, String>,
+    sequence_ids: Vec<String>,
+    touch_property: Option<String>,
+    flash: String,
+    clock_quantum_ns: Option<u64>,
+    pub touch_size: Option<(u64, u64)>,
 }
 impl Backend {
     pub fn for_device(catalog: &Catalog, item: &Value) -> Result<Self> {
-        catalog.check_hardware(&item["hardware"])?;
+        let hardware = catalog.check_hardware(&item["hardware"])?;
         ensure!(
-            item["hardware"]["chip"]["id"] == "ls2684"
-                && matches!(item["board"].as_str(), Some("arcs-mini" | "arcs-evb")),
-            "No runtime backend registered for this chip and board"
+            hardware["board"]["runtime"]["available"] != false,
+            "{}",
+            hardware["board"]["runtime"]["unavailable_reason"]
+                .as_str()
+                .unwrap_or("This board runtime is unavailable")
         );
+        Self::from_hardware(&hardware)
+    }
+    pub fn from_hardware(hardware: &Value) -> Result<Self> {
+        let board = &hardware["board"];
+        let chip = &hardware["chip"];
+        let legacy = chip["id"] == "ls2684"
+            && matches!(board["id"].as_str(), Some("arcs-mini" | "arcs-evb"));
+        let runtime = &board["runtime"];
+        let machine = runtime["machine"]
+            .as_str()
+            .or_else(|| legacy.then(|| board["id"].as_str()).flatten())
+            .context("No runtime backend registered for this chip and board")?
+            .to_owned();
+        ensure!(
+            !machine.is_empty()
+                && machine
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"-_".contains(&c)),
+            "Invalid QEMU machine name"
+        );
+        ensure!(
+            legacy || chip["runtime"]["abi"] == "lisem-v1",
+            "Unsupported chip runtime ABI"
+        );
+        let environment_prefix = chip["runtime"]["environment_prefix"]
+            .as_str()
+            .unwrap_or(if legacy { "ARCS_QEMU_" } else { "LISEM_QEMU_" })
+            .to_owned();
+        ensure!(
+            !environment_prefix.is_empty()
+                && environment_prefix
+                    .bytes()
+                    .all(|c| c.is_ascii_uppercase() || c == b'_'),
+            "Invalid runtime environment prefix"
+        );
+        let mut capabilities: Capabilities = if runtime["capabilities"].is_null() {
+            Capabilities {
+                snapshot: legacy,
+                wifi: legacy,
+                sd: legacy,
+                usb_adb: legacy,
+                download: board["id"] == "arcs-mini",
+                signals: legacy,
+                events: legacy,
+                button_sequence: legacy,
+                ..Default::default()
+            }
+        } else {
+            serde_json::from_value(runtime["capabilities"].clone())?
+        };
+        capabilities.screen =
+            board["screen"].is_object() && runtime["capabilities"]["screen"] != false;
+        capabilities.camera =
+            board["camera"].is_object() && runtime["capabilities"]["camera"] != false;
+        capabilities.audio = board["audio"] == true && runtime["capabilities"]["audio"] != false;
+        capabilities.uart_channels = serde_json::from_value(board["uart_channels"].clone())
+            .context("Board UART channels missing or invalid")?;
+        ensure!(
+            capabilities.uart_channels.len() <= 16
+                && capabilities
+                    .uart_channels
+                    .iter()
+                    .enumerate()
+                    .all(|(i, n)| *n as usize == i),
+            "Board UART channels must be consecutive from zero, at most 16"
+        );
+        let mut buttons = std::collections::BTreeMap::new();
+        for button in board["buttons"].as_array().into_iter().flatten() {
+            let id = button["id"].as_str().context("Button ID missing")?;
+            let property = runtime["buttons"][id]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| {
+                    if !legacy {
+                        return None;
+                    }
+                    match (board["id"].as_str(), id) {
+                        (Some("arcs-mini"), "function") => Some("x-lisa-function-pressed".into()),
+                        (Some("arcs-evb"), "k1" | "k2" | "k3") => {
+                            Some(format!("x-lisa-evb-{id}-pressed"))
+                        }
+                        _ => None,
+                    }
+                })
+                .context("Board button has no runtime control")?;
+            ensure!(
+                !property.is_empty() && buttons.insert(id.to_owned(), property).is_none(),
+                "Invalid or duplicate runtime button"
+            );
+        }
+        let sequence_ids = if let Some(ids) = runtime["button_sequence_ids"].as_array() {
+            ids.iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .context("Invalid sequence button ID")
+                })
+                .collect::<Result<Vec<_>>>()?
+        } else if legacy && board["id"] == "arcs-evb" {
+            vec!["k1".into(), "k2".into(), "k3".into()]
+        } else {
+            Vec::new()
+        };
+        let unique: BTreeSet<_> = sequence_ids.iter().collect();
+        ensure!(
+            unique.len() == sequence_ids.len()
+                && sequence_ids.iter().all(|id| buttons.contains_key(id)),
+            "Invalid sequence button mapping"
+        );
+        ensure!(
+            !capabilities.button_sequence || !sequence_ids.is_empty() || buttons.len() == 1,
+            "Button sequences need an explicit ID mapping"
+        );
+        let touch_property = runtime["touch_property"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| (legacy && board["touch"].is_object()).then(|| "x-lisa-touch".into()));
+        let touch_size = if touch_property.is_some() {
+            Some((
+                board["touch"]["width"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .context("Touch width missing")?,
+                board["touch"]["height"]
+                    .as_u64()
+                    .filter(|n| *n > 0)
+                    .context("Touch height missing")?,
+            ))
+        } else {
+            None
+        };
+        capabilities.touch = touch_property.is_some();
+        let flash = chip["runtime"]["flash"]
+            .as_str()
+            .unwrap_or("bios")
+            .to_owned();
+        ensure!(
+            ["bios", "pflash"].contains(&flash.as_str()),
+            "Unsupported Flash attachment"
+        );
+        let clock_quantum_ns = if chip["runtime"]["clock_quantum_ns"].is_null() {
+            legacy.then_some(10_000)
+        } else {
+            let quantum = chip["runtime"]["clock_quantum_ns"]
+                .as_u64()
+                .context("Invalid clock quantum")?;
+            ensure!(quantum > 0, "Clock quantum must be positive");
+            Some(quantum)
+        };
         Ok(Self {
-            machine: item["board"].as_str().unwrap().into(),
+            machine,
+            capabilities,
+            environment_prefix,
+            buttons,
+            sequence_ids,
+            touch_property,
+            touch_size,
+            flash,
+            clock_quantum_ns,
         })
+    }
+    pub fn env(&self, suffix: &str) -> String {
+        format!("{}{suffix}", self.environment_prefix)
     }
     pub fn configure(
         &self,
@@ -335,9 +522,13 @@ impl Backend {
         seconds: u64,
         download: bool,
         capture: bool,
-    ) {
+    ) -> Result<()> {
+        ensure!(
+            !download || self.capabilities.download,
+            "Download reset is unavailable on this board"
+        );
         for (key, _) in std::env::vars_os() {
-            if key.to_string_lossy().starts_with("ARCS_QEMU_") {
+            if key.to_string_lossy().starts_with(&self.environment_prefix) {
                 command.env_remove(key);
             }
         }
@@ -354,46 +545,95 @@ impl Backend {
                 "-monitor",
                 "none",
                 "-S",
-                "-bios",
             ])
-            .arg(instance.join("flash.bin"))
-            .env("ARCS_QEMU_BUDGET_NS", (seconds * 1_000_000_000).to_string())
-            .args(["-drive", "if=none,id=sdcard"])
-            .env("ARCS_QEMU_BOOT_HART", "0")
-            .env("ARCS_QEMU_LUNA_SAFE_READS", "1")
-            .env("ARCS_QEMU_SOC_CLOCK", "10000")
-            .env("ARCS_QEMU_PACE", "1")
-            .env("ARCS_QEMU_FLASH_PERSIST", "1")
-            .env("ARCS_QEMU_OTP_IMAGE", instance.join("otp.bin"))
-            .env("ARCS_QEMU_DESKTOP", output.join("live"))
-            .env("ARCS_QEMU_WIFI_AP", "Lisem");
-        if capture {
-            command
-                .env("ARCS_QEMU_REPORT", output.join("report.json"))
-                .env("ARCS_QEMU_SCREEN", output.join("screen.ppm"))
-                .env("ARCS_QEMU_AUDIO_OUTPUT", output.join("audio.wav"))
-                .env("ARCS_QEMU_WIFI_CAPTURE", output.join("wifi-tx.pcap"))
-                .env("ARCS_QEMU_BLE_CAPTURE", output.join("ble-tx.jsonl"));
+            .env(self.env("BUDGET_NS"), (seconds * 1_000_000_000).to_string())
+            .env(self.env("PACE"), "1")
+            .env(self.env("FLASH_PERSIST"), "1")
+            .env(self.env("OTP_IMAGE"), instance.join("otp.bin"))
+            .env(self.env("DESKTOP"), output.join("live"));
+        if self.flash == "bios" {
+            command.arg("-bios").arg(instance.join("flash.bin"));
         } else {
-            command.env("ARCS_QEMU_REPORT", "-");
+            let path = instance
+                .join("flash.bin")
+                .to_string_lossy()
+                .replace(',', ",,");
+            command.args(["-drive", &format!("if=pflash,format=raw,file={path}")]);
+        }
+        if self.environment_prefix == "ARCS_QEMU_" {
+            command
+                .env(self.env("BOOT_HART"), "0")
+                .env(self.env("LUNA_SAFE_READS"), "1");
+        }
+        if let Some(quantum) = self.clock_quantum_ns {
+            command.env(self.env("SOC_CLOCK"), quantum.to_string());
+        }
+        if self.capabilities.sd {
+            command.args(["-drive", "if=none,id=sdcard"]);
+        }
+        if self.capabilities.wifi {
+            command.env(self.env("WIFI_AP"), "Lisem");
+        }
+        if capture {
+            command.env(self.env("REPORT"), output.join("report.json"));
+            if self.capabilities.screen {
+                command.env(self.env("SCREEN"), output.join("screen.ppm"));
+            }
+            if self.capabilities.audio {
+                command.env(self.env("AUDIO_OUTPUT"), output.join("audio.wav"));
+            }
+            if self.capabilities.wifi {
+                command.env(self.env("WIFI_CAPTURE"), output.join("wifi-tx.pcap"));
+            }
+            if self.environment_prefix == "ARCS_QEMU_" {
+                command.env(self.env("BLE_CAPTURE"), output.join("ble-tx.jsonl"));
+            }
+        } else {
+            command.env(self.env("REPORT"), "-");
         }
         if download {
-            command.env("ARCS_QEMU_BOOT_RELEASE_NS", "50000000");
+            command.env(self.env("BOOT_RELEASE_NS"), "50000000");
+        }
+        Ok(())
+    }
+    pub fn button(&self, id: &str) -> Result<&str> {
+        self.buttons
+            .get(id)
+            .map(String::as_str)
+            .context("Unknown board button")
+    }
+    pub fn button_ids(&self) -> impl Iterator<Item = &str> {
+        self.buttons.keys().map(String::as_str)
+    }
+    pub fn sequence_id(&self, id: &str) -> Result<Option<usize>> {
+        ensure!(
+            self.capabilities.button_sequence,
+            "Button sequences are unavailable on this board"
+        );
+        self.button(id)?;
+        if self.sequence_ids.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(
+                self.sequence_ids
+                    .iter()
+                    .position(|v| v == id)
+                    .context("Button has no sequence mapping")?,
+            ))
         }
     }
-    pub fn button(&self, id: &str) -> Result<&'static str> {
-        match (self.machine.as_str(), id) {
-            ("arcs-mini", "function") => Ok("x-lisa-function-pressed"),
-            ("arcs-evb", "k1") => Ok("x-lisa-evb-k1-pressed"),
-            ("arcs-evb", "k2") => Ok("x-lisa-evb-k2-pressed"),
-            ("arcs-evb", "k3") => Ok("x-lisa-evb-k3-pressed"),
-            _ => bail!("Unknown board button"),
+    pub fn sequence_button(&self, id: Option<u64>) -> Option<&str> {
+        if self.sequence_ids.is_empty() {
+            self.buttons.keys().next().map(String::as_str)
+        } else {
+            self.sequence_ids
+                .get(usize::try_from(id?).ok()?)
+                .map(String::as_str)
         }
     }
-    pub fn touch(&self) -> Result<&'static str> {
-        match self.machine.as_str() {
-            "arcs-evb" => Ok("x-lisa-touch"),
-            _ => bail!("Touch input is unavailable on this board"),
-        }
+    pub fn touch(&self) -> Result<&str> {
+        self.touch_property
+            .as_deref()
+            .context("Touch input is unavailable on this board")
     }
 }

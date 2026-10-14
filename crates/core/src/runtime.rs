@@ -88,7 +88,7 @@ struct ButtonSequence {
     gap_ms: u64,
 }
 impl ButtonSequence {
-    fn command(&self) -> Result<String> {
+    fn command(&self, backend: &Backend) -> Result<String> {
         ensure!((1..=32).contains(&self.count), "Button count must be 1..32");
         ensure!(
             (1..=60000).contains(&self.hold_ms),
@@ -102,13 +102,7 @@ impl ButtonSequence {
             self.count * self.hold_ms + (self.count - 1) * self.gap_ms <= 60000,
             "Button sequence must fit within 60000 ms"
         );
-        let prefix = match self.button.as_str() {
-            "function" => None,
-            "k1" => Some(0),
-            "k2" => Some(1),
-            "k3" => Some(2),
-            _ => bail!("Unknown board button"),
-        };
+        let prefix = backend.sequence_id(&self.button)?;
         Ok(match prefix {
             Some(id) => format!("{},{},{},{}", id, self.count, self.hold_ms, self.gap_ms),
             None => format!("{},{},{}", self.count, self.hold_ms, self.gap_ms),
@@ -339,7 +333,7 @@ pub struct Session {
     audio: Option<Audio>,
     stdout: Option<PipeLog>,
     stderr: Option<PipeLog>,
-    display: Display,
+    display: Option<Display>,
     frame: Option<Frame>,
     framebuffer: PathBuf,
     _regions: Regions,
@@ -367,6 +361,10 @@ impl Session {
             !options.microphone || options.host_audio,
             "Microphone requires host audio"
         );
+        let backend = Backend::for_device(catalog, item)?;
+        ensure!(!options.host_audio || backend.capabilities.audio, "Audio is unavailable on this board");
+        ensure!(!options.network || backend.capabilities.wifi, "Networking is unavailable on this board");
+        ensure!(backend.capabilities.camera || (item["host"]["camera_image"].is_null() && item["host"]["camera_device"].is_null()), "Camera input is unavailable on this board");
         let camera_frame = item["host"]["camera_image"]
             .as_str()
             .map(|path| {
@@ -379,7 +377,6 @@ impl Session {
         // Snapshot launch provenance; later updates on disk must not relabel
         // an already running QEMU process.
         let qemu_sha256 = storage::sha256(&assets.qemu())?;
-        let backend = Backend::for_device(catalog, item)?;
         let instance = Path::new(item["path"].as_str().context("Missing instance path")?);
         let lease = storage::locked(
             instance,
@@ -411,6 +408,7 @@ impl Session {
             .transpose()?;
         fs::create_dir_all(output.join("live"))?;
         let mut command = crate::process::command(assets.qemu());
+        command.stdin(Stdio::null());
         backend.configure(
             &mut command,
             instance,
@@ -418,34 +416,33 @@ impl Session {
             options.seconds,
             options.download,
             options.capture.is_some(),
-        );
-        command.env(
-            "ARCS_QEMU_WIFI_ENVIRONMENT",
-            serde_json::to_string(&crate::wifi_environment::WifiEnvironment::from_value(
-                &item["environment"]["wifi"],
-            )?)?,
-        );
-        command.stdin(Stdio::null());
-        command.env(
-            "ARCS_QEMU_WIFI_AP_PRESENT",
-            if item["host"]["wifi_ap_present"] == false {
-                "0"
-            } else {
-                "1"
-            },
-        );
+        )?;
+        if backend.capabilities.wifi {
+            command.env(
+                backend.env("WIFI_ENVIRONMENT"),
+                serde_json::to_string(&crate::wifi_environment::WifiEnvironment::from_value(
+                    &item["environment"]["wifi"],
+                )?)?,
+            );
+            command.env(
+                backend.env("WIFI_AP_PRESENT"),
+                if item["host"]["wifi_ap_present"] == false {
+                    "0"
+                } else {
+                    "1"
+                },
+            );
+        }
         if let Some(name) = &camera_shared {
-            command.env("ARCS_QEMU_CAMERA_SHM", name);
+            command.env(backend.env("CAMERA_SHM"), name);
         }
         if options.capture.is_some() {
             command
                 .stdout(File::create(output.join("qemu.log"))?)
                 .stderr(File::options().append(true).open(output.join("qemu.log"))?);
         } else {
-            command
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .env("ARCS_QEMU_DISPLAY_SHM", &framebuffer);
+            command.stdout(Stdio::piped()).stderr(Stdio::piped());
+            if backend.capabilities.screen { command.env(backend.env("DISPLAY_SHM"), &framebuffer); }
         }
         if options.network {
             ensure!(
@@ -453,11 +450,11 @@ impl Session {
                 "Host network backend is missing"
             );
             command
-                .env("ARCS_QEMU_NETWORK_LIBRARY", assets.network())
-                .env("ARCS_QEMU_NETWORK_LOOPBACK", "0");
+                .env(backend.env("NETWORK_LIBRARY"), assets.network())
+                .env(backend.env("NETWORK_LOOPBACK"), "0");
             if options.capture.is_some() {
                 command.env(
-                    "ARCS_QEMU_NETWORK_CAPTURE",
+                    backend.env("NETWORK_CAPTURE"),
                     output.join("host-network.pcap"),
                 );
             }
@@ -479,7 +476,7 @@ impl Session {
         };
         if audio.is_some() {
             command.env(
-                "ARCS_QEMU_HOST_AUDIO",
+                backend.env("HOST_AUDIO"),
                 audio_shared
                     .as_deref()
                     .map(Path::new)
@@ -497,7 +494,7 @@ impl Session {
             "-mon",
             "chardev=control,mode=control",
         ]);
-        let listeners: Vec<_> = (0..3)
+        let listeners: Vec<_> = backend.capabilities.uart_channels.iter()
             .map(|_| transport::listener())
             .collect::<Result<_>>()?;
         for (channel, listener) in listeners.iter().enumerate() {
@@ -534,15 +531,16 @@ impl Session {
         let metadata = catalog.metadata(&instance)?;
         let inputs = metadata["inputs"].clone();
         let physical = crate::signals::physical(board, &inputs)?;
-        qmp.set("x-lisa-signals", json!(physical.to_string()), &mut uart)?;
+        if backend.capabilities.signals { qmp.set("x-lisa-signals", json!(physical.to_string()), &mut uart)?; }
         let sd_card = crate::sd_card::medium(&item["media"]["sd"])?;
+        ensure!(sd_card.is_null() || backend.capabilities.sd, "SD card is unavailable on this board");
         if !sd_card.is_null() {
             qmp.call("blockdev-change-medium", sd_change_arguments(&sd_card), &mut uart)?;
         }
         let qemu_version = qmp.call("query-version", json!({}), &mut uart)?;
         let qemu_identity = json!({"version":qemu_version,"sha256":qemu_sha256,
             "pid":process.child.id()});
-        let display = Display::open(&framebuffer)?;
+        let display = backend.capabilities.screen.then(|| Display::open(&framebuffer)).transpose()?;
         let camera = camera_shared
             .as_deref()
             .map(crate::camera_input::Input::open)
@@ -623,16 +621,20 @@ impl Session {
         Ok(session)
     }
     fn capture(&mut self) -> Result<()> {
-        let snapshot = self.qmp.get("x-lisa-snapshot", &mut self.uart)?;
-        let fields: Value =
-            serde_json::from_str(snapshot.as_str().context("Invalid QEMU snapshot")?)?;
-        for (key, value) in fields.as_object().context("Invalid snapshot object")? {
-            self.state[key] = value.clone();
+        if self.backend.capabilities.snapshot {
+            let snapshot = self.qmp.get("x-lisa-snapshot", &mut self.uart)?;
+            let fields: Value =
+                serde_json::from_str(snapshot.as_str().context("Invalid QEMU snapshot")?)?;
+            for (key, value) in fields.as_object().context("Invalid snapshot object")? {
+                self.state[key] = value.clone();
+            }
         }
-        let usb = self.qmp.call("qom-get", json!({"path":"/machine/soc",
-            "property":"x-lisem-usb-adb"}), &mut self.uart)?;
-        self.state["usb_adb"] = serde_json::from_str::<Value>(
-            usb.as_str().context("Invalid USB ADB status")?)?;
+        if self.backend.capabilities.usb_adb {
+            let usb = self.qmp.call("qom-get", json!({"path":"/machine/soc",
+                "property":"x-lisem-usb-adb"}), &mut self.uart)?;
+            self.state["usb_adb"] = serde_json::from_str::<Value>(
+                usb.as_str().context("Invalid USB ADB status")?)?;
+        }
         self.state["continuous_audio"] = json!(self.audio.is_some());
         self.state["microphone"] = json!(self.options.microphone);
         self.state["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());
@@ -641,7 +643,7 @@ impl Session {
             "virtual_remaining_seconds":(self.options.seconds as f64 - self.state["seconds"].as_f64().unwrap_or(0.0)).max(0.0),
             "host_remaining_seconds":(self.options.timeout as f64 - self.started.elapsed().as_secs_f64()).max(0.0)});
         self.state["output"] = json!(self.output);
-        self.state["framebuffer"] = json!(self.framebuffer);
+        self.state["framebuffer"] = if self.backend.capabilities.screen { json!(self.framebuffer) } else { Value::Null };
         if self.options.capture.is_some() {
             storage::write_json(&self.output.join("live/state.json"), &self.state)?;
         }
@@ -653,12 +655,7 @@ impl Session {
         let state: Value =
             serde_json::from_str(value.as_str().context("Invalid button sequence state")?)?;
         self.state["button_sequence"] = state.clone();
-        let button = match state["button_id"].as_u64() {
-            Some(0) => Some("k1"),
-            Some(1) => Some("k2"),
-            Some(2) => Some("k3"),
-            _ => Some("function"),
-        };
+        let button = self.backend.sequence_button(state["button_id"].as_u64());
         if let Some(button) = button {
             self.state["controls"]["buttons"][button] = state["pressed"].clone();
         }
@@ -735,12 +732,8 @@ impl Session {
             if self.state["button_sequence"].is_object() {
                 self.state["button_sequence"]["pressed"] = json!(false);
             }
-            if self.backend.machine == "arcs-evb" {
-                for button in ["k1", "k2", "k3"] {
-                    self.state["controls"]["buttons"][button] = json!(false);
-                }
-            } else {
-                self.state["controls"]["buttons"]["function"] = json!(false);
+            for button in self.backend.button_ids() {
+                self.state["controls"]["buttons"][button] = json!(false);
             }
             if let Some(audio) = &mut self.audio
                 && let Err(error) = audio.finish(!self.stopped)
@@ -801,7 +794,7 @@ impl Session {
         Ok(())
     }
     fn frame(&mut self) -> Option<Frame> {
-        if let Some(frame) = self.display.latest() {
+        if let Some(frame) = self.display.as_mut().and_then(Display::latest) {
             self.frame = Some(frame);
         }
         self.frame.clone()
@@ -1063,9 +1056,11 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(catalog: Catalog, id: String) -> Result<Self> {
         let item = catalog.device(&id)?;
+        let capabilities = Backend::for_device(&catalog, &item)?.capabilities;
         let mut ports = BTreeMap::new();
         if let Some(channels) = item["host"]["uart"].as_array() {
             for channel in channels {
+                ensure!(channel.as_u64().is_some_and(|n| n < 256 && capabilities.uart_channels.contains(&(n as u8))), "Saved UART is unavailable on this board");
                 ports.insert(
                     channel.as_u64().context("Invalid UART channel")? as u8,
                     SerialPort::new()?,
@@ -1416,6 +1411,26 @@ impl Runtime {
                 "The request belongs to an earlier run"
             );
         }
+        let board = self.catalog.device(&self.id)?;
+        let capabilities = Backend::for_device(&self.catalog, &board)?.capabilities;
+        let required = match method {
+            "screenshot" => capabilities.screen,
+            "usb_adb" => capabilities.usb_adb,
+            "sd_card" => capabilities.sd,
+            "camera" => capabilities.camera,
+            "audio" | "audio_record" | "audio_cancel" | "microphone" | "sound" => capabilities.audio,
+            "access_point" | "wifi_environment" => capabilities.wifi,
+            "signals" if params.get("changes").is_some() => capabilities.signals,
+            "events" => capabilities.events,
+            "button_sequence" | "button_sequence_status" | "button_sequence_cancel" => capabilities.button_sequence,
+            "reset_download" => capabilities.download,
+            _ => true,
+        };
+        ensure!(required, "This control is unavailable on this board");
+        if matches!(method, "serial" | "uart_read" | "uart_write" | "uart_capture") {
+            let channel = params["channel"].as_u64().unwrap_or(0);
+            ensure!(channel < 256 && capabilities.uart_channels.contains(&(channel as u8)), "UART channel is unavailable on this board");
+        }
         match method {
             "status" => self.status(),
             "start" => {
@@ -1512,7 +1527,8 @@ impl Runtime {
                 ensure!(params["run"].is_string(), "Touch input requires a run identifier");
                 let x = params["x"].as_u64().context("Touch X is required")?;
                 let y = params["y"].as_u64().context("Touch Y is required")?;
-                ensure!(x < 240 && y < 320, "Touch coordinates are outside CST328 bounds");
+                let (width, height) = session.backend.touch_size.context("Touch is unavailable on this board")?;
+                ensure!(x < width && y < height, "Touch coordinates are outside sensor bounds");
                 let pressed = params["pressed"].as_bool().context("Touch state is required")?;
                 let property = session.backend.touch()?;
                 let value = if pressed {
@@ -1650,9 +1666,8 @@ impl Runtime {
                     "Button sequences require a run identifier"
                 );
                 let request: ButtonSequence = serde_json::from_value(params.clone())?;
-                let command = request.command()?;
                 let session = self.session.as_mut().context("Instance is not running")?;
-                session.backend.button(&request.button)?;
+                let command = request.command(&session.backend)?;
                 session
                     .qmp
                     .set("x-lisa-button-sequence", json!(command), &mut session.uart)?;
@@ -2056,7 +2071,7 @@ impl Runtime {
                 Ok(session.state["audio_input"].clone())
             }
             "uart_capture" => {
-                let channel = params["channel"].as_u64().filter(|n| *n < 3).context("UART channel must be 0..2")? as u8;
+                let channel = params["channel"].as_u64().filter(|n| *n < 16).context("Invalid UART channel")? as u8;
                 let action = params["action"].as_str().context("Capture action missing")?;
                 if action == "start" {
                     ensure!(self.uart_captures.get(&channel).is_none_or(|c| c.status()["status"] != "running"),
@@ -2077,7 +2092,7 @@ impl Runtime {
             }
             "uart_read" => {
                 let channel = params["channel"].as_u64().context("Missing UART channel")?;
-                ensure!(channel < 3, "UART channel must be 0..2");
+                ensure!(channel < capabilities.uart_channels.len() as u64, "UART channel is unavailable on this board");
                 let source = self
                     .session
                     .as_ref()
@@ -2096,7 +2111,7 @@ impl Runtime {
             }
             "uart_write" => {
                 let channel = params["channel"].as_u64().context("Missing UART channel")?;
-                ensure!(channel < 3, "UART channel must be 0..2");
+                ensure!(channel < capabilities.uart_channels.len() as u64, "UART channel is unavailable on this board");
                 let bytes = storage::unhex(params["hex"].as_str().context("Missing UART bytes")?)?;
                 ensure!(bytes.len() <= 4096, "UART command exceeds 4096 bytes");
                 self.session
@@ -2112,7 +2127,7 @@ impl Runtime {
                     ensure!(self.uart_captures.get(&channel).is_none_or(|c| c.status()["status"] != "running"), "Stop the UART receiver before disabling its endpoint");
                 }
                 let channel = params["channel"].as_u64().unwrap_or(0);
-                ensure!(channel < 3, "UART channel must be 0..2");
+                ensure!(channel < capabilities.uart_channels.len() as u64, "UART channel is unavailable on this board");
                 let enabled = params["enabled"].as_bool().unwrap_or(true);
                 if enabled && !self.ports.contains_key(&(channel as u8)) {
                     let mut port = SerialPort::new()?;
@@ -2211,7 +2226,8 @@ fn event_program(plan: &Value, backend: &Backend) -> Result<Value> {
         let hex = trigger["uart_hex"].as_str().context("Event trigger requires at_ns or uart_hex")?;
         let pattern = storage::unhex(hex)?;
         ensure!((1..=128).contains(&pattern.len()), "UART trigger must contain 1..128 bytes");
-        let channel = trigger["channel"].as_u64().filter(|n| *n < 3).context("UART channel must be 0..2")?;
+        let channel = trigger["channel"].as_u64().filter(|n| *n < 16).context("Invalid UART channel")?;
+        ensure!(backend.capabilities.uart_channels.contains(&(channel as u8)), "UART channel is unavailable on this board");
         let timeout = trigger["timeout_ms"].as_u64().filter(|n| (1..=86400000).contains(n))
             .context("UART trigger requires timeout_ms in 1..86400000")?;
         program["uart_hex"] = json!(hex);
@@ -2231,13 +2247,17 @@ fn event_program(plan: &Value, backend: &Backend) -> Result<Value> {
             Some("button") => {
                 let request: ButtonSequence = serde_json::from_value(action.clone())?;
                 backend.button(&request.button)?;
-                let command = request.command()?;
+                let command = request.command(backend)?;
                 ensure!(delay >= button_end, "Scheduled button sequences overlap");
                 button_end = delay + request.count * request.hold_ms + (request.count - 1) * request.gap_ms;
                 ("x-lisa-button-sequence", json!(command))
             }
-            Some("access_point") => ("wifi-ap-present", json!(action["enabled"].as_bool().context("Missing hotspot state")?)),
+            Some("access_point") => {
+                ensure!(backend.capabilities.wifi, "Networking is unavailable on this board");
+                ("wifi-ap-present", json!(action["enabled"].as_bool().context("Missing hotspot state")?))
+            },
             Some("audio") => {
+                ensure!(backend.capabilities.audio, "Audio is unavailable on this board");
                 let path = fs::canonicalize(action["path"].as_str().context("WAV path missing")?)?;
                 let (offset, length) = crate::wave_input::samples(&path)?;
                 ("x-lisa-audio-file", json!(json!({"path":path,"offset":offset,"length":length}).to_string()))

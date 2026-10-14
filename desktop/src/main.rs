@@ -484,7 +484,7 @@ impl Desktop {
             Action::Create => self.send("create", json!({
                 "name": self.name.read(cx).value(), "board": self.new_board, "package": self.package
             })),
-            Action::Start => self.send("start", json!({"id": self.selected, "online":true})),
+            Action::Start => self.send("start", json!({"id": self.selected, "online":self.device().is_some_and(|d| d.capabilities.wifi)})),
             Action::Reset | Action::ResetDownload | Action::Stop => {
                 self.release_buttons();
                 let method = match action {
@@ -629,7 +629,7 @@ impl Desktop {
                     "信号输入…".into(),
                     Action::Signals,
                     self.device()
-                        .is_some_and(|d| d.inputs.as_array().is_some_and(|v| !v.is_empty())),
+                        .is_some_and(|d| d.capabilities.signals && d.inputs.as_array().is_some_and(|v| !v.is_empty())),
                     false,
                 ),
                 ("复制 UID".into(), Action::CopyUid, true, false),
@@ -639,7 +639,7 @@ impl Desktop {
                     idle && on
                         && self
                             .device()
-                            .is_some_and(|d| d.hardware["board"]["id"] == "arcs-mini"),
+                            .is_some_and(|d| d.capabilities.download),
                     false,
                 ),
                 (
@@ -737,6 +737,7 @@ impl Desktop {
             .cloned()
             .unwrap_or_default()
         {
+            if board["runtime"]["available"] == false { continue; }
             let id = board["id"].as_str().unwrap_or_default().to_owned();
             let selected = self.new_board.as_deref() == Some(&id);
             let name = board["name"].as_str().unwrap_or_default().to_owned();
@@ -1009,7 +1010,7 @@ impl Desktop {
                 screen = screen.child(img(frame.clone()).size_full());
             }
         }
-        if let Some(mapping) = touch::Mapping::from_descriptor(&d.hardware["board"]["touch"]) {
+        if let Some(mapping) = touch::Mapping::from_descriptor(&d.hardware["board"]["touch"]).filter(|_| d.capabilities.touch) {
             let bounds = Rc::new(RefCell::new(None));
             let painted_bounds = bounds.clone();
             let move_bounds = bounds.clone();
@@ -1196,25 +1197,25 @@ impl Desktop {
                                     .items_center()
                                     .gap_1()
                                     .child(status_lights)
-                                    .when(d.hardware["board"]["camera"].is_object(), |bar| {
+                                    .when(d.capabilities.camera, |bar| {
                                         let active = on && self.state.data["session"]["camera_input"]["receiver_enabled"] == true;
                                         bar.child(self.peripheral_menu("camera", active, cx))
                                     })
-                                    .child(self.peripheral_menu(
+                                    .when(d.capabilities.audio, |bar| bar.child(self.peripheral_menu(
                                         "microphone",
                                         on && self.state.data["session"]["audio_input_enabled"]
                                             == true,
                                         cx,
-                                    ))
-                                    .child(self.peripheral_menu("speaker", pa_enabled, cx))
-                                    .child(self.peripheral_menu(
+                                    )))
+                                    .when(d.capabilities.audio, |bar| bar.child(self.peripheral_menu("speaker", pa_enabled, cx)))
+                                    .when(d.capabilities.wifi, |bar| bar.child(self.peripheral_menu(
                                         "network",
                                         self.access_point_present(&d),
                                         cx,
-                                    ))
-                                    .child(self.peripheral_menu("sd", self.sd_medium(&d)["path"].is_string(), cx))
-                                    .child(self.peripheral_menu("usb", self.usb_configured(), cx))
-                                    .child(self.peripheral_menu("serial", false, cx))
+                                    )))
+                                    .when(d.capabilities.sd, |bar| bar.child(self.peripheral_menu("sd", self.sd_medium(&d)["path"].is_string(), cx)))
+                                    .when(d.capabilities.usb_adb, |bar| bar.child(self.peripheral_menu("usb", self.usb_configured(), cx)))
+                                    .when(!d.capabilities.uart_channels.is_empty(), |bar| bar.child(self.peripheral_menu("serial", false, cx)))
                                     .child(self.icon(
                                         "power",
                                         match self.lifecycle() {
@@ -1251,11 +1252,11 @@ impl Desktop {
                     .child(
                         div().flex_1().min_w_0().flex().flex_col()
                             .items_center().justify_center().gap_5()
-                            .child(
+                            .when(d.capabilities.screen, |body| body.child(
                                 div().p_4().rounded_2xl().bg(rgb(0x10141a))
                                     .border_1().border_color(cx.theme().border)
                                     .child(screen),
-                            )
+                            ))
                             .child(keys),
                     )
                     .when(self.signals_visible, |body| {
