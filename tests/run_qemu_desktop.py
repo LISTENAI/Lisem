@@ -109,11 +109,11 @@ def main():
             assert json.loads(get('x-lisa-snapshot'))['pads'][bank] == {'driven': 2, 'levels': 2}
             m.write(base + 0x2c, 2)
             assert json.loads(get('x-lisa-snapshot'))['pads'][bank] == {'driven': 2, 'levels': 0}
-            m.write(mux, 5)  # Unconnected alternate function: not driven.
+            m.write(mux, 31)  # Unassigned alternate function: not driven.
             assert json.loads(get('x-lisa-snapshot'))['pads'][bank]['driven'] == 0
-            m.write(mux, 5 | 0x1c00000)  # Forced output high overrides GPIO low.
+            m.write(mux, 31 | 0x1c00000)  # Forced output high overrides GPIO low.
             assert json.loads(get('x-lisa-snapshot'))['pads'][bank] == {'driven': 2, 'levels': 2}
-            m.write(mux, 5 | 0x1e00000)  # OEN override disables the pad.
+            m.write(mux, 31 | 0x1e00000)  # OEN override disables the pad.
             assert json.loads(get('x-lisa-snapshot'))['pads'][bank]['driven'] == 0
             assert m.read(base + 0x24) == 0 and m.read(base + 0x64) == 0
         m.qmp_command('system_reset')

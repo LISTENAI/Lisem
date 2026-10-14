@@ -19,6 +19,8 @@ QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库�
 - `make check-qemu`：CPU、时钟、器件、存储、控制和宿主传输回归。
 
 单项测试使用 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
+`make qemu-serial` 验证 ARCS 和 VenusA 的 SPI、I2S 控制器及数字接线。
+`make qemu-venusa` 还验证 VenusA 的其它共享 IP，构建与执行均设有期限。
 `make qemu-camera qemu-camera-capture qemu-camera-input` 验证 GC0328 SCCB 的重复起始、FIFO
 背压与取消，并核对静态图片经 DVP FIFO/GPDMA 写入 RAM 的字节、内存边界、
 帧快照、SOF/EOF 中断及复位取消。共享输入另覆盖连续发布、代际隔离、SOF

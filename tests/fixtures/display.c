@@ -37,6 +37,7 @@ __attribute__((used)) static void run(void)
     R(0x46800024) = 1u << 9; R(0x46800028) = 1u << 9;
     R(0x4680002c) = 1u << 9; R(0x46800030) = 1u << 9;
     R(SPI + 0x30) = 7; check((R(SPI + 0x30) & 7) == 0);
+    R(SPI + 0x38) = 16; // Enable END event latching for polling.
     command(0x11, 0, 0);
     uint8_t format = 5; command(0x3a, &format, 1);
     command(0x21, 0, 0); command(0x29, 0, 0);

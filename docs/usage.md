@@ -29,6 +29,22 @@ Linux 可在解压目录运行 `./install-desktop.sh`，将 Lisem 加入当前�
 复位保留 Flash、OTP 和 UART 连接。
 关闭窗口或退出应用后，实例继续在后台运行；需要停止时使用下电按钮。
 
+### 写入原始二进制
+
+使用原始镜像时，先创建目标板型的空白实例，再将文件写入 Flash：
+
+```sh
+lisem create --board BOARD_ID --name Test
+lisem write INSTANCE_ID firmware.bin
+lisem start INSTANCE_ID --seconds 30
+lisem logs INSTANCE_ID 0
+```
+
+`BOARD_ID` 选择固件的目标板型，`INSTANCE_ID` 使用创建结果中的 ID。
+`write` 默认从 Flash 偏移 0 写入，`--offset` 可指定其它字节偏移；写入前须下电。
+多核固件按发布布局准备合并镜像，或将各段写到对应偏移。
+串口、SD 镜像和其它运行设置使用本文对应的操作入口。
+
 ## 信号输入
 
 从设备窗口的「实例」菜单展开「信号输入…」面板。数字量可切换高低电平；

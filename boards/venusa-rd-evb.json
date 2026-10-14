@@ -1,0 +1,29 @@
+{
+  "id": "venusa-rd-evb",
+  "name": "VenusA RD EVB",
+  "chip": "venusa",
+  "version": 1,
+  "flash_bytes": 16777216,
+  "uart_channels": [
+    0,
+    1,
+    2
+  ],
+  "audio": true,
+  "buttons": [],
+  "runtime": {
+    "machine": "venusa-rd-evb",
+    "available": true,
+    "capabilities": {
+      "snapshot": true,
+      "wifi": false,
+      "sd": true,
+      "usb_adb": false,
+      "download": false,
+      "signals": false,
+      "events": false,
+      "button_sequence": false,
+      "audio": false
+    }
+  }
+}

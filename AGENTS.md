@@ -3,7 +3,8 @@
 ## 产品边界
 
 - Lisem 是聆思多芯片 emulator，命令为 `lisem`，应用标识为
-  `com.listenai.emulator`；当前支持 LS2684（ARCS）、Arcs-Mini 和 Arcs-EVB。
+  `com.listenai.emulator`；支持 LS2684（ARCS）的 Arcs-Mini / Arcs-EVB，
+  以及 CSK7004J8U（VenusA）的 VenusA RD EVB。
   用户管理设备实例；板型描述芯片、外设和连线。QEMU 是唯一运行后端。
 - 本仓库包含产品源码、构建入口与文档，QEMU 通过固定提交的 submodule 引入。
   LUNA 使用仓库随附的二进制组件，维护边界见 `docs/luna.md`。
@@ -123,7 +124,9 @@
 - `python3 tests/run_mcp.py`：打包后的 MCP 握手、工具、原 ROM、截图、
   UART 旁路观察和所有权清理；`--lpk` 追加原固件启动验证。
 - `make test`：Python 验证工具及 Rust workspace 测试；`make check-qemu`：芯片与
-  器件、CPU/时钟、控制接口及宿主传输回归。按改动先跑相关单项，再跑整套。
+  器件、CPU/时钟、控制接口及宿主传输回归。`make qemu-serial` 验证两芯片的
+  SPI/I2S 控制器与数字接线；`make qemu-venusa` 包含该项及 VenusA 的其它
+  共享 IP QTest。按改动先跑相关单项，再跑整套。
 - `python3 tests/run_host_audio_endpoint.py`：Windows/Linux PCM 与 AEC 时间映射、
   PA/宿主静音分离。宿主平台改动须在相应系统验证原包及移出的自包含包。
 - LUNA 以固定版本静态库提供，公开边界见 `qemu/include/lisem/luna.h` 与

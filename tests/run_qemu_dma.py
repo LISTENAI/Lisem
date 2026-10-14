@@ -193,7 +193,7 @@ def main():
         functional(hart)
         receive(hart)
     for name, ctrl in (('bus-width', 0x37), ('address-mode', 0x625),
-                       ('direction', 0x200025), ('peripheral-link', 0x18100125),
+                       ('direction', 0x200025), ('partial-peripheral-link', 0x08100125),
                        ('unequal-peripheral', 0x100105)):
         reject(name, lambda m: configure(m, 0, SOURCE, DEST, ctrl, 4), start)
     reject('cycle', cycle, start)
