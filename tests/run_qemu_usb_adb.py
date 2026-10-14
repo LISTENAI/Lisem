@@ -403,6 +403,10 @@ def outgoing_backpressure():
             raise AssertionError(('Output never reached stable backpressure', state,
                                   {'dma_remaining': remaining, 'usb': u.status()}))
         assert u.read(0x200, 'l') == 0  # Backpressure cannot invent DMA completion.
+        # Resume normal TCP reception after proving that the unread stream
+        # stalls DMA. Keeping the tiny receive window measures host TCP window
+        # update delays rather than the bridge's ability to resume delivery.
+        u.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
         digest, received = hashlib.sha256(), 0
         deadline = time.monotonic() + 15
         for _ in range(10_000):  # At most ten virtual seconds spent draining.
