@@ -2280,28 +2280,43 @@ pub struct Client {
     endpoint: Value,
 }
 impl Client {
-    pub fn connect(instance: &Path) -> Result<Self> {
+    fn endpoint(instance: &Path) -> Result<Self> {
         let endpoint = storage::read_json(&instance.join("runtime.json"))?;
         ensure!(endpoint["version"] == 1, "Unsupported runtime protocol");
         ensure!(
             endpoint["instance_id"] == storage::read_json(&instance.join("device.json"))?["id"],
             "Runtime endpoint belongs to another instance"
         );
-        let this = Self { endpoint };
+        Ok(Self { endpoint })
+    }
+    pub fn connect(instance: &Path) -> Result<Self> {
+        let this = Self::endpoint(instance)?;
         this.call("status", json!({}))?;
         Ok(this)
     }
+    pub(crate) fn connect_for_control(instance: &Path) -> Result<Self> {
+        let this = Self::endpoint(instance)?;
+        this.call_with_timeout("status", json!({}), Duration::from_millis(500))?;
+        Ok(this)
+    }
+    /// One bounded observation, independent of operation deadlines.
+    pub fn status_at(instance: &Path) -> Result<Value> {
+        Self::endpoint(instance)?.call_with_timeout("status", json!({}), Duration::from_millis(500))
+    }
     pub fn call(&self, method: &str, params: Value) -> Result<Value> {
+        self.call_with_timeout(method, params, Duration::from_secs(60))
+    }
+    fn call_with_timeout(&self, method: &str, params: Value, timeout: Duration) -> Result<Value> {
         let port = self.endpoint["port"]
             .as_u64()
             .context("Runtime port missing")?;
         ensure!(port > 0 && port <= 65535, "Invalid runtime port");
         let mut stream = TcpStream::connect_timeout(
             &([127, 0, 0, 1], port as u16).into(),
-            Duration::from_secs(1),
+            timeout.min(Duration::from_secs(1)),
         )?;
-        stream.set_read_timeout(Some(Duration::from_secs(60)))?;
-        stream.set_write_timeout(Some(Duration::from_secs(3)))?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout.min(Duration::from_secs(3))))?;
         writeln!(
             stream,
             "{}",

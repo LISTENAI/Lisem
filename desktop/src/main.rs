@@ -177,7 +177,9 @@ impl Desktop {
                                 view.backend.snapshot.lock().unwrap().selected = None;
                             }
                         }
+                        if matches!(view.mode, Mode::Library) { state.for_device(backend::LIBRARY_NOTICE); }
                         if let Some(id) = &view.selected {
+                            if matches!(view.mode, Mode::Device(_)) { state.for_device(id); }
                             state.data["session"] = state.data["sessions"][id].clone();
                             state.frame = state.frames.get(id).cloned();
                         }

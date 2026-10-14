@@ -17,6 +17,15 @@ use std::{
     time::{Duration, Instant},
 };
 
+const OBSERVATION_CONCURRENCY: usize = 8;
+
+#[derive(Default)]
+struct Observations {
+    values: BTreeMap<String, Value>,
+    errors: BTreeMap<String, String>,
+    next: usize,
+}
+
 pub struct Manager {
     pub catalog: Catalog,
     executable: PathBuf,
@@ -24,6 +33,7 @@ pub struct Manager {
     runs: BTreeMap<String, Value>,
     selected: Option<String>,
     available_qemu_sha256: Option<String>,
+    observed: std::sync::Mutex<Observations>,
 }
 impl Manager {
     pub fn new(root: &Path, data: &Path, executable: &Path) -> Result<Self> {
@@ -33,6 +43,7 @@ impl Manager {
             owned: BTreeMap::new(),
             runs: BTreeMap::new(),
             selected: None,
+            observed: std::sync::Mutex::new(Observations::default()),
             available_qemu_sha256: crate::assets::Assets::new(root)
                 .and_then(|assets| storage::sha256(&assets.qemu()))
                 .ok(),
@@ -52,8 +63,13 @@ impl Manager {
     fn worker(&mut self, id: &str) -> Result<Client> {
         let item = self.catalog.device(id)?;
         let path = Path::new(item["path"].as_str().unwrap());
-        if let Ok(client) = Client::connect(path) {
-            return Ok(client);
+        match Client::connect_for_control(path) {
+            Ok(client) => return Ok(client),
+            Err(error) if error.chain().any(|cause| cause.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock))) => {
+                return Err(error.context("Instance runtime is not responding"));
+            }
+            Err(_) => {}
         }
         if let Some(mut previous) = self.owned.remove(id) {
             let _ = previous.kill();
@@ -83,7 +99,7 @@ impl Manager {
         self.owned.insert(id.into(), child);
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Ok(client) = Client::connect(path) {
+            if let Ok(client) = Client::connect_for_control(path) {
                 return Ok(client);
             }
             if let Some(status) = self.owned.get_mut(id).unwrap().try_wait()? {
@@ -140,29 +156,61 @@ impl Manager {
         let mut runtimes = json!({});
         let client_build = crate::identity::build();
         let mut session = Value::Null;
-        for item in &devices {
-            if !item["unavailable"].is_null() {
-                continue;
+        let endpoints: Vec<_> = devices.iter().filter_map(|item| {
+            if !item["unavailable"].is_null() { return None; }
+            let id = item["id"].as_str()?;
+            let path = Path::new(item["path"].as_str()?);
+            path.join("runtime.json").exists().then_some((id, path))
+        }).collect();
+        // One bounded round per refresh, with fair rotation for larger libraries.
+        // Cached observations preserve other devices while slow workers time out.
+        let mut observed = self.observed.lock().unwrap();
+        observed.values.retain(|id, _| endpoints.iter().any(|(key, _)| *key == id));
+        observed.errors.retain(|id, _| endpoints.iter().any(|(key, _)| *key == id));
+        let count = endpoints.len().min(OBSERVATION_CONCURRENCY);
+        let start = observed.next;
+        let observations = thread::scope(|scope| {
+            let probes: Vec<_> = (0..count).map(|offset| {
+                let (id, path) = endpoints[(start + offset) % endpoints.len()];
+                (id, scope.spawn(move || Client::status_at(path)))
+            }).collect();
+            probes.into_iter().map(|(id, probe)| {
+                (id, probe.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Runtime observation failed"))))
+            }).collect::<Vec<_>>()
+        });
+        observed.next = if endpoints.is_empty() { 0 } else { (start + count) % endpoints.len() };
+        let sampled: Vec<_> = observations.iter().map(|(id, _)| *id).collect();
+        for (id, result) in observations {
+            match result {
+                Ok(value) => {
+                    observed.values.insert(id.to_owned(), value);
+                    observed.errors.remove(id);
+                }
+                Err(error) => { observed.errors.insert(id.to_owned(), error.to_string()); }
             }
-            let id = item["id"].as_str().context("Missing ID")?;
-            if let Ok(client) = Client::connect(Path::new(item["path"].as_str().unwrap())) {
-                let value = client.call("status", json!({}))?;
+        }
+        let errors = json!(observed.errors);
+        for (id, _) in endpoints {
+            let stale = !sampled.contains(&id) || observed.errors.contains_key(id);
+            if let Some(value) = observed.values.get(id) {
                 sessions[id] = value["session"].clone();
                 serial[id] = value["serial"].clone();
                 runtimes[id] = json!({"worker":value["worker"],
                     "client_worker_build":crate::identity::comparison(&client_build, &value["worker"]["build"]),
-                    "client_qemu_binary":self.qemu_comparison(&value)});
+                    "client_qemu_binary":self.qemu_comparison(value),
+                    "observation_error":errors[id], "stale":stale});
                 if self.selected.as_deref() == Some(id)
-                    || (session.is_null() && value["session"].is_object())
-                {
+                    || (session.is_null() && value["session"].is_object()) {
                     session = value["session"].clone();
                 }
+            } else {
+                runtimes[id] = json!({"observation_error":errors[id],"stale":true});
             }
         }
         Ok(
             json!({"devices":devices,"boards":self.catalog.boards.values().collect::<Vec<_>>(),"chips":self.catalog.chips.values().collect::<Vec<_>>(),
             "sessions":sessions,"session":session,"serial":serial,"data_dir":self.catalog.data,
-            "client_build":client_build,"runtimes":runtimes,
+            "client_build":client_build,"runtimes":runtimes,"runtime_errors":errors,
             "available_qemu_sha256":self.available_qemu_sha256,
             "capabilities":{"host_camera":cfg!(target_os = "macos"),"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
         )
@@ -209,9 +257,7 @@ impl Manager {
         self.selected = Some(id.clone());
         match method {
             "inspect" => {
-                let runtime = Client::connect(&path)
-                    .and_then(|c| c.call("status", json!({})))
-                    .unwrap_or(Value::Null);
+                let runtime = Client::status_at(&path).unwrap_or(Value::Null);
                 let client_build = crate::identity::build();
                 Ok(
                     json!({"device":item,"runtime":runtime,"client_build":client_build,

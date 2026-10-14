@@ -36,6 +36,14 @@ pub struct Device {
     pub unavailable: Option<String>,
 }
 
+pub const LIBRARY_NOTICE: &str = "__library";
+
+#[derive(Clone, Default)]
+pub struct Notice {
+    pub message: String,
+    pub error: Option<String>,
+}
+
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub data: Value,
@@ -45,9 +53,27 @@ pub struct Snapshot {
     pub selected: Option<String>,
     pub message: String,
     pub error: Option<String>,
+    pub notices: BTreeMap<String, Notice>,
+    status_error: Option<String>,
     pub busy: bool,
     pub operation: Option<(String, Value)>,
     pub pending: Vec<(String, Value)>,
+}
+
+impl Snapshot {
+    fn notice(&mut self, owner: Option<&str>, notice: Notice) {
+        if let Some(id) = owner { self.notices.insert(id.to_owned(), notice); }
+        else { self.error = notice.error; self.message = notice.message; }
+    }
+    pub fn for_device(&mut self, id: &str) {
+        let notice = self.notices.get(id);
+        self.message = notice.map(|n| n.message.clone()).unwrap_or_default();
+        if let Some(error) = &self.status_error { self.error = Some(error.clone()); }
+        if self.error.is_none() {
+            self.error = notice.and_then(|n| n.error.clone()).or_else(||
+                self.data["runtime_errors"][id].as_str().map(str::to_owned));
+        }
+    }
 }
 
 pub enum Request {
@@ -121,10 +147,14 @@ impl Backend {
                         let _ = reply.send(bridge.call(method, params));
                     }
                     Ok(Request::Call(method, params)) => {
+                        let owner = if matches!(method, "create" | "attach" | "detach") {
+                            Some(LIBRARY_NOTICE.to_owned())
+                        } else { params["id"].as_str().map(str::to_owned) };
                         {
                             let mut state = output.lock().unwrap();
                             state.busy = true;
-                            state.error = None;
+                            if let Some(id) = &owner { state.notices.remove(id); }
+                            else { state.error = None; }
                         }
                         output.lock().unwrap().operation = Some((method.into(), params.clone()));
                         let reply = bridge.call(method, params);
@@ -142,7 +172,7 @@ impl Backend {
                                 if method == "create" || method == "attach" {
                                     state.selected = value["id"].as_str().map(str::to_owned);
                                 }
-                                state.message = match method {
+                                let message = match method {
                                     "rename" => "名称已保存".into(),
                                     "settings" | "sound" => String::new(),
                                     "detach" => "已从实例库移除，文件保留".into(),
@@ -160,8 +190,9 @@ impl Backend {
                                     "stop" | "start" | "reset" => String::new(),
                                     _ => String::new(),
                                 };
+                                state.notice(owner.as_deref(), Notice { message, error: None });
                             }
-                            Err(error) => state.error = Some(error),
+                            Err(error) => state.notice(owner.as_deref(), Notice { message: String::new(), error: Some(error) }),
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -169,20 +200,19 @@ impl Backend {
                 match bridge.call("status", json!({})) {
                     Ok(data) => {
                         let mut state = output.lock().unwrap();
+                        state.status_error = None;
                         let previous = state.data["sessions"].clone();
                         state.frames.retain(|id, _| {
                             data["sessions"][id]["output"].is_string()
                                 && data["sessions"][id]["output"] == previous[id]["output"]
                         });
+                        state.notices.retain(|id, _| id == LIBRARY_NOTICE || data["devices"].as_array().is_some_and(|devices|
+                            devices.iter().any(|d| d["id"].as_str() == Some(id))));
                         state.data = data;
                     }
                     Err(error) => {
                         let mut state = output.lock().unwrap();
-                        state.error = Some(error);
-                        state.busy = false;
-                        state.pending.clear();
-                        state.operation = None;
-                        break;
+                        state.status_error = Some(error);
                     }
                 }
             }
@@ -303,5 +333,43 @@ impl Drop for Bridge {
         // Closing this client leaves instance workers and UART endpoints alive.
         self.input.take();
         let _ = self.child.wait();
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn device_errors_and_messages_remain_with_their_owner() {
+        let mut state = Snapshot::default();
+        state.notice(Some("a"), Notice { error: Some("bad image".into()), message: String::new() });
+        state.notice(Some("b"), Notice { error: None, message: "saved".into() });
+        let mut a = state.clone();
+        a.for_device("a");
+        assert_eq!(a.error.as_deref(), Some("bad image"));
+        let mut b = state.clone();
+        b.for_device("b");
+        assert_eq!(b.error, None);
+        assert_eq!(b.message, "saved");
+        state.data["runtime_errors"] = json!({"a":"worker unavailable"});
+        state.notices.remove("a");
+        let mut a = state.clone();
+        a.for_device("a");
+        assert_eq!(a.error.as_deref(), Some("worker unavailable"));
+        let mut b = state.clone();
+        b.for_device("b");
+        assert_eq!(b.error, None);
+        state.status_error = Some("status unavailable".into());
+        let mut failed = state.clone();
+        failed.for_device("b");
+        assert_eq!(failed.error.as_deref(), Some("status unavailable"));
+        state.status_error = None;
+        let mut recovered = state.clone();
+        recovered.for_device("b");
+        assert!(recovered.error.is_none());
+        state.error = Some("bridge stopped".into());
+        state.for_device("b");
+        assert_eq!(state.error.as_deref(), Some("bridge stopped"));
     }
 }

@@ -103,8 +103,8 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
     old_build["source_sha256"] = json!("earlier source snapshot");
     let worker = json!({"id":"existing-worker","build":old_build,"pid":123});
     let thread = thread::spawn(move || {
-        // connect() probes status before inspect/status asks for it again.
-        for index in 0..8 {
+        // Each inspect/status observation sends exactly one request.
+        for index in 0..4 {
             let deadline = Instant::now() + Duration::from_secs(5);
             let mut stream = loop {
                 match listener.accept() {
@@ -135,7 +135,7 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
                 "Observation must not stop or restart the worker"
             );
             assert_eq!(request["token"], "test-token");
-            let response = if index < 4 {
+            let response = if index < 2 {
                 json!({"worker":worker,"session":null,"serial":{}})
             } else {
                 json!({"session":null,"serial":{}})
