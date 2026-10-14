@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class LunaBundle(unittest.TestCase):
     def test_all_targets(self):
-        entries = list((ROOT / 'qemu/luna').glob('*/manifest.json'))
+        entries = list((ROOT / 'assets/luna').glob('*/manifest.json'))
         self.assertEqual(
             {entry.parent.name for entry in entries},
             {f"{system}-{arch}" for system in ("darwin", "linux", "windows")
@@ -30,12 +30,12 @@ class LunaBundle(unittest.TestCase):
         self.assertEqual(len(versions), 1)
 
     def test_corrupt_or_mismatched_asset_is_rejected(self):
-        source = next((ROOT / 'qemu/luna').glob('*/manifest.json')).parent
+        source = next((ROOT / 'assets/luna').glob('*/manifest.json')).parent
         system, arch = source.name.split('-')
         host = {'darwin': 'Darwin', 'linux': 'Linux', 'windows': 'Windows'}[system]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            dest = root / 'qemu/luna' / source.name
+            dest = root / 'assets/luna' / source.name
             shutil.copytree(source, dest)
             header = root / 'qemu/include/lisem/luna.h'
             header.parent.mkdir(parents=True)

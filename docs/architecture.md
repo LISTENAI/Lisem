@@ -6,8 +6,9 @@
 导入不会改变身份。板型指定芯片、屏幕、外部存储和引脚交互；LS2684 芯片
 包含 AP/CP、控制器、片内 Codec、LUNA 和 PinMux。芯片模型不实现应用业务。
 
-QEMU 上游版本由 `tools/build_qemu.py` 固定并校验；`qemu/` 是源码覆盖层，
-`patches/qemu-n300.patch` 保存上游改动。两核以串行时间片执行，LUNA 在
+`qemu/` 是 `LISTENAI/qemu` 的 submodule，以具体提交锁定运行后端。
+芯片和器件模型直接在 QEMU 仓库维护，ROM 与 LUNA 资产位于 `assets/`。
+构建校验源码提交、本地修改与资产哈希。两核以串行时间片执行，LUNA 在
 宿主计算，结果在虚拟完成事件写回。未实现的寄存器或模式明确报错。
 
 `crates/core` 是与前端无关的 Rust 核心，管理硬件描述、实例库、LPK、

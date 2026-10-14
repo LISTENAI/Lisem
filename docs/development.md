@@ -1,5 +1,14 @@
 # 构建与维护
 
+首次检出或更新 QEMU 指针后，初始化本仓库锁定的源码：
+
+```sh
+git submodule update --init qemu
+```
+
+QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库指针。
+构建直接使用 `qemu/`，不需要递归初始化上游的固件 ROM 子模块。
+
 ## 入口
 
 - `make build`：构建并封装自包含的 release 应用、CLI 和原生运行组件。
@@ -36,8 +45,9 @@ SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC
 真实宿主摄像头仍需显式选择设备，使用原 LPK 验证取景方向、连续帧、切换来源、
 下电释放和拍照业务；自动测试不能代替系统权限和物理采集验证。
 
-QEMU、音频和摄像头构建记录输入/产物哈希，启动前拒绝过期模型。上游源码和下载
-缓存放 `.tools/`，生成物放 `artifacts/`。不得在生成目录修改源码后交付。
+QEMU 构建记录 submodule 提交、本地修改、固定资产及产物哈希；音频和摄像头
+同样记录输入与产物哈希，启动前拒绝过期模型。工具缓存放 `.tools/`，生成物
+放 `artifacts/`。不得在生成目录修改源码后交付。
 
 无归档实时通道可用原始 LPK 验证：
 
@@ -68,7 +78,7 @@ Flash；测试只写新建实例，不改输入镜像。固件应在开机后启
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、
-Git、patch 和 libjpeg-turbo。Python 仅参与构建与验证，不随运行产品启动。
+Git 和 libjpeg-turbo。Python 仅参与构建与验证，不随运行产品启动。
 
 macOS 使用 Xcode Command Line Tools，以及 GLib、Pixman 和 libslirp 的构建依赖。
 Linux 使用 Clang/GCC、GLib、Pixman、PulseAudio 开发包、patchelf，以及 GPUI
@@ -302,7 +312,7 @@ macOS 应用使用 ad-hoc 签名，未公证。首次打开可能需要在系统
 依赖闭包不能替代跨机器兼容性验证，构建机上的第三方库可能提高最终应用的
 最低系统版本。
 不随应用分发业务固件、用户实例或平台凭据。ARCS 固定 ROM 属于已授权
-芯片资产，其哈希与用途见 `qemu/roms/arcs/manifest.json`。
+芯片资产，其哈希与用途见 `assets/roms/arcs/manifest.json`。
 
 ## 应用图标
 

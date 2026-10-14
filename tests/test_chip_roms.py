@@ -14,7 +14,7 @@ class ChipROMTests(unittest.TestCase):
     def test_corrupt_or_misplaced_rom_is_rejected_before_embedding(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            directory = root / 'qemu/roms/arcs'
+            directory = root / 'assets/roms/arcs'
             directory.mkdir(parents=True)
             source = root / 'upstream'
             (source / 'hw/riscv').mkdir(parents=True)
@@ -27,21 +27,17 @@ class ChipROMTests(unittest.TestCase):
             metadata = directory / 'manifest.json'
             metadata.write_text(json.dumps(manifest))
             with patch.object(build_qemu, 'ROOT', root), patch.object(build_qemu, 'SOURCE', source):
-                build_qemu.embed_chip_roms()
-                generated = source / 'hw/riscv/arcs_roms.inc'
-                before = generated.read_bytes()
+                self.assertEqual(build_qemu.chip_roms(), manifest)
                 ap = directory / 'ap.bin'
                 original = ap.read_bytes()
                 ap.write_bytes(original[:-1] + bytes([original[-1] ^ 1]))
                 with self.assertRaisesRegex(ValueError, 'fixed manifest'):
-                    build_qemu.embed_chip_roms()
-                self.assertEqual(generated.read_bytes(), before)
+                    build_qemu.chip_roms()
                 ap.write_bytes(original)
                 manifest['cp']['address'] = 0
                 metadata.write_text(json.dumps(manifest))
                 with self.assertRaisesRegex(ValueError, 'fixed manifest'):
-                    build_qemu.embed_chip_roms()
-                self.assertEqual(generated.read_bytes(), before)
+                    build_qemu.chip_roms()
 
 
 if __name__ == '__main__':

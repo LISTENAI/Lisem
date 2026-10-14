@@ -136,11 +136,11 @@ def package(bundle, target):
             (staged / 'install-desktop.sh').chmod(0o755)
         shutil.copytree(ROOT / 'LICENSES', staged / 'LICENSES')
         shutil.copy2(ROOT / 'LICENSE', staged / 'LICENSES' / 'Lisem.txt')
-        for directory, names in [('.tools/qemu-10.1.0', ['COPYING', 'COPYING.LIB']),
+        for directory, names in [('qemu', ['COPYING', 'COPYING.LIB']),
                                   ('.tools/network-source', ['COPYRIGHT', 'LICENSE'])]:
             for name in names:
                 shutil.copy2(ROOT / directory / name, staged / 'LICENSES' / (Path(directory).name + '-' + name))
-        shutil.copy2(ROOT / 'qemu/roms/arcs/manifest.json', runtime / 'chip-roms.json')
+        shutil.copy2(ROOT / 'assets/roms/arcs/manifest.json', runtime / 'chip-roms.json')
         pending = list(copies)
         copied = {}
         binaries = [dst for _, dst in copies]

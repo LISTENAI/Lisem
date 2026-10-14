@@ -1,0 +1,4 @@
+[submodule "qemu"]
+	path = qemu
+	url = https://github.com/LISTENAI/qemu.git
+	branch = listenai

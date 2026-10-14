@@ -6,7 +6,7 @@ LUNA 后端以版本化静态库随仓库提供。构建只读取当前宿主平
 ## 文件与平台
 
 - `qemu/include/lisem/luna.h`：版本化 C ABI。
-- `qemu/luna/<system>-<arch>/liblisem-luna.a`：普通机器码静态库。
+- `assets/luna/<system>-<arch>/liblisem-luna.a`：普通机器码静态库。
 - 同目录 `manifest.json`：版本、ABI、目标、库 SHA-256 与接口头文件 SHA-256。
 
 目标名称使用 `darwin`、`linux`、`windows` 和 `aarch64`、`x86_64`。
@@ -19,7 +19,7 @@ LUNA 后端以版本化静态库随仓库提供。构建只读取当前宿主平
 
 ## 接入契约
 
-`qemu/hw/riscv/arcs_luna.c` 是 QEMU 接入层。每个设备创建独立的不透明上下文，
+`qemu/hw/riscv/arcs/arcs_luna.c` 是 QEMU 接入层。每个设备创建独立的不透明上下文，
 不读取内部结构，也不解析内部命令参数。库只通过 `LisemLunaHost` 调用宿主。
 
 - 内存回调使用 guest 地址和宿主缓冲，必须经过 QEMU 地址空间及其错误检查。

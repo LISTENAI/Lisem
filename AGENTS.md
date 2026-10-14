@@ -5,7 +5,7 @@
 - Lisem 是聆思多芯片 emulator，命令为 `lisem`，应用标识为
   `com.listenai.emulator`；当前支持 LS2684（ARCS）、Arcs-Mini 和 Arcs-EVB。
   用户管理设备实例；板型描述芯片、外设和连线。QEMU 是唯一运行后端。
-- 本仓库包含产品维护所需的源码、构建入口与文档，不依赖额外的源码仓库。
+- 本仓库包含产品源码、构建入口与文档，QEMU 通过固定提交的 submodule 引入。
   LUNA 使用仓库随附的二进制组件，维护边界见 `docs/luna.md`。
 - 原始真机固件与上层业务保持不变。适配、理想校准和宿主桥接在模拟器侧
   实现；未实现行为明确报错，不能伪造联网、外设完成或业务成功。
@@ -20,8 +20,10 @@
 
 - `crates/core/`：共享 Rust 实例、存储与运行控制；`crates/cli/`：`lisem`。
 - `desktop/`：Rust + GPUI Kit 界面，通过原生管理协议共用核心。
-- `qemu/`：QEMU 源码覆盖层，包含 CPU、芯片、板型及独立器件模型。
-  上游修改只放在 `patches/qemu-n300.patch`，不能只修改 `.tools/` 生成源码。
+- `qemu/`：`LISTENAI/qemu` 的 `listenai` 分支 submodule，锁定具体提交。
+  CPU、芯片、板型及独立器件模型直接在该仓库维护；先提交并推送 QEMU，
+  再更新本仓库指针。不得仅修改生成目录，也不得引用未推送的提交。
+- `assets/`：随产品交付的固定 ROM 和 LUNA 二进制及校验清单。
 - `native/`：宿主音频和网络；`tools/`：Python 3.10+ 构建与芯片验证工具。
   产品 GUI/CLI 运行路径不得依赖 Python 或窗口系统之外的隐式服务。
 - `boards/`、`chips/`：板型与芯片描述；`tests/`：当前功能的回归测试。

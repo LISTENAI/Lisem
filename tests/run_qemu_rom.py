@@ -12,8 +12,8 @@ OUTPUT = ROOT / 'artifacts/qemu' / ('rom-tests-' + time.strftime('%Y%m%d-%H%M%S'
 
 
 def main():
-    ap = (ROOT / 'qemu/roms/arcs/ap.bin').read_bytes()
-    cp = (ROOT / 'qemu/roms/arcs/cp.bin').read_bytes()
+    ap = (ROOT / 'assets/roms/arcs/ap.bin').read_bytes()
+    cp = (ROOT / 'assets/roms/arcs/cp.bin').read_bytes()
     m = Machine(OUTPUT / 'mapping', flash=b'\0' * 0x1000000)
     try:
         for address, data in ((0, ap), (0x200000, cp)):

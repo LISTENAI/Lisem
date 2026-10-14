@@ -3,6 +3,7 @@
 use crate::{catalog::Catalog, storage};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     fs,
@@ -116,9 +117,56 @@ impl Assets {
             }
             Ok(())
         }
-        walk(&self.root, &self.root.join("qemu"), &mut paths)?;
+        walk(&self.root, &self.root.join("assets"), &mut paths)?;
         paths.insert("tools/build_qemu.py".into());
-        paths.insert("patches/qemu-n300.patch".into());
+        let source = self.root.join("qemu").canonicalize()?;
+        let top = String::from_utf8(source_git(&source, &["rev-parse", "--show-toplevel"])?)?;
+        ensure!(
+            Path::new(top.trim()).canonicalize()? == source,
+            "QEMU source is not an initialized submodule"
+        );
+        let revision = String::from_utf8(source_git(&source, &["rev-parse", "HEAD"])?)?;
+        ensure!(
+            stamp["qemu_revision"].as_str() == Some(revision.trim()),
+            "QEMU revision changed; rebuild the runtime"
+        );
+        let mut digest = Sha256::new();
+        digest.update(source_git(&source, &["diff", "--binary", "HEAD", "--"])?);
+        let names = source_git(
+            &source,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+        )?;
+        let mut names: Vec<_> = names
+            .split(|b| *b == 0)
+            .filter(|name| !name.is_empty())
+            .collect();
+        names.sort();
+        for name in names {
+            #[cfg(unix)]
+            let path = {
+                use std::os::unix::ffi::OsStrExt;
+                source.join(std::ffi::OsStr::from_bytes(name))
+            };
+            #[cfg(not(unix))]
+            let path = source.join(std::str::from_utf8(name)?);
+            digest.update(name);
+            digest.update([0]);
+            if path.is_symlink() {
+                let target = fs::read_link(path)?;
+                digest.update(
+                    target
+                        .to_str()
+                        .context("QEMU symlink target is not UTF-8")?
+                        .as_bytes(),
+                );
+            } else {
+                digest.update(storage::sha256(&path)?.as_bytes());
+            }
+        }
+        ensure!(
+            stamp["qemu_worktree_sha256"].as_str() == Some(&storage::hex(&digest.finalize())),
+            "QEMU source changed; rebuild the runtime"
+        );
         ensure!(
             paths == inputs.keys().cloned().collect(),
             "QEMU source set changed; rebuild the runtime"
@@ -212,6 +260,54 @@ fn verify_files(root: &Path, files: &serde_json::Map<String, Value>) -> Result<(
         );
     }
     Ok(())
+}
+
+fn source_git(source: &Path, arguments: &[&str]) -> Result<Vec<u8>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    const LIMIT: usize = 64 * 1024 * 1024;
+    let mut child = crate::process::command("git")
+        .arg("-C")
+        .arg(source)
+        .args(arguments)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .context("Cannot inspect QEMU source; install Git and initialize the submodule")?;
+    let output = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        output
+            .take((LIMIT + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+    });
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
+            result => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break match result {
+                    Err(error) => Err(anyhow::Error::from(error)),
+                    _ => Err(anyhow::anyhow!("QEMU source inspection timed out")),
+                };
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("QEMU source reader failed"))??;
+    ensure!(status?.success(), "Cannot inspect QEMU submodule with Git");
+    ensure!(
+        bytes.len() <= LIMIT,
+        "QEMU source inspection exceeds 64 MiB"
+    );
+    Ok(bytes)
 }
 
 /// Chip/board adapter for the currently compiled QEMU machine. Additional

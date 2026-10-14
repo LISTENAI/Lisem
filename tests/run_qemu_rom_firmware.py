@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--flash-image', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    rom = (ROOT / 'qemu/roms/arcs/ap.bin').read_bytes()
+    rom = (ROOT / 'assets/roms/arcs/ap.bin').read_bytes()
     assert len(rom) == 65536
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)

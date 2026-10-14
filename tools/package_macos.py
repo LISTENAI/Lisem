@@ -130,12 +130,12 @@ def package(bundle, target):
         shutil.copytree(ROOT / 'LICENSES', resources / 'LICENSES')
         shutil.copy2(ROOT / 'LICENSE', resources / 'LICENSES' / 'Lisem.txt')
         for name in ('COPYING', 'COPYING.LIB'):
-            shutil.copy2(ROOT / '.tools/qemu-10.1.0' / name, resources / 'LICENSES' / ('QEMU-' + name))
+            shutil.copy2(ROOT / 'qemu' / name, resources / 'LICENSES' / ('QEMU-' + name))
         for name in ('COPYRIGHT', 'LICENSE'):
             shutil.copy2(ROOT / '.tools/network-source' / name,
                          resources / 'LICENSES' / ('Libslirp-' + name))
         # QEMU embeds the fixed ROM; its identification manifest is inspectable.
-        shutil.copy2(ROOT / 'qemu/roms/arcs/manifest.json', runtime / 'chip-roms.json')
+        shutil.copy2(ROOT / 'assets/roms/arcs/manifest.json', runtime / 'chip-roms.json')
         libraries = bundle_libraries(contents, copies)
         executables = [path for _, path in copies] + libraries
         for path in executables:

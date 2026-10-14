@@ -136,7 +136,7 @@ def main():
 
             assert exchange(8, bytes.fromhex('07071220') + b'\x55' * 32) == (0, b'\0\0')
             assert exchange(1)[1] == b'\0\5'
-            rom = (ROOT / 'qemu/roms/arcs/ap.bin').read_bytes()
+            rom = (ROOT / 'assets/roms/arcs/ap.bin').read_bytes()
             for address in (0, 0x1c0, 0xfffc):
                 value, status = exchange(0x0a, struct.pack('<I', address))
                 assert status == b'\0\0'

@@ -9,13 +9,10 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import tarfile
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = '10.1.0'
-ARCHIVE_SHA256 = 'e0517349b50ca73ebec2fa85b06050d5c463ca65c738833bd8fc1f15f180be51'
-SOURCE = ROOT / '.tools' / ('qemu-' + VERSION)
+SOURCE = ROOT / 'qemu'
 BUILD = ROOT / '.tools/qemu-build'
 BINARY = BUILD / ('qemu-system-riscv32.exe' if os.name == 'nt' else 'qemu-system-riscv32')
 
@@ -44,7 +41,7 @@ def host_cflags():
 
 def chip_roms():
     """Validate fixed chip assets before embedding them; no runtime override."""
-    directory = ROOT / 'qemu/roms/arcs'
+    directory = ROOT / 'assets/roms/arcs'
     manifest = json.loads((directory / 'manifest.json').read_text())
     for name, size, address in (('ap', 65536, 0), ('cp', 32768, 0x200000)):
         entry = manifest[name]
@@ -57,35 +54,12 @@ def chip_roms():
     return manifest
 
 
-def embed_chip_roms():
-    manifest = chip_roms()
-    lines = ['/* Generated from the fixed, hash-verified ARCS mask ROM assets. */',
-             'typedef struct ArcsROMImage {',
-             '    const char *name; uint32_t address, size; const uint8_t *bytes; const char *sha256;',
-             '} ArcsROMImage;']
-    for name in ('ap', 'cp'):
-        data = (ROOT / 'qemu/roms/arcs' / manifest[name]['file']).read_bytes()
-        lines.append('static const uint8_t arcs_%s_rom[] = {' % name)
-        lines.extend('    ' + ','.join('0x%02x' % b for b in data[i:i + 16]) + ','
-                     for i in range(0, len(data), 16))
-        lines.append('};')
-    lines.append('static const ArcsROMImage arcs_rom_images[] = {')
-    for name in ('ap', 'cp'):
-        lines.append('    {"arcs-%s-rom", 0x%x, sizeof(arcs_%s_rom), arcs_%s_rom, "%s"},' %
-                     (name, manifest[name]['address'], name, name, manifest[name]['sha256']))
-    lines.append('};\n')
-    path = SOURCE / 'hw/riscv/arcs_roms.inc'
-    content = '\n'.join(lines)
-    if not path.exists() or path.read_text() != content:
-        path.write_text(content)
-
-
 def luna_backend():
     system = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
     arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'amd64': 'x86_64',
             'x86_64': 'x86_64'}.get(platform.machine().lower())
     target = system + '-' + (arch or platform.machine().lower())
-    directory = ROOT / 'qemu/luna' / target
+    directory = ROOT / 'assets/luna' / target
     manifest_path = directory / 'manifest.json'
     if not manifest_path.is_file():
         raise ValueError('No bundled LUNA backend for ' + target)
@@ -99,81 +73,58 @@ def luna_backend():
     return manifest
 
 
+def source_state():
+    """Identify committed and local source changes without hashing build outputs."""
+    def git(*arguments):
+        return subprocess.check_output(['git', '-C', str(SOURCE), *arguments],
+                                       stderr=subprocess.PIPE, timeout=30)
+    try:
+        top = Path(os.fsdecode(git('rev-parse', '--show-toplevel')).strip()).resolve()
+        if top != SOURCE.resolve():
+            raise ValueError('QEMU source is not an initialized submodule')
+        revision = git('rev-parse', 'HEAD').decode().strip()
+    except (subprocess.CalledProcessError, FileNotFoundError) as error:
+        raise ValueError('Initialize QEMU with git submodule update --init qemu') from error
+    digest = hashlib.sha256(git('diff', '--binary', 'HEAD', '--'))
+    for name in sorted(git('ls-files', '--others', '--exclude-standard', '-z').split(b'\0')):
+        if name:
+            path = SOURCE / os.fsdecode(name)
+            digest.update(name + b'\0')
+            digest.update((os.readlink(path) if path.is_symlink() else sha256(path)).encode())
+    return {'qemu_revision': revision, 'qemu_worktree_sha256': digest.hexdigest()}
+
+
+def build_inputs():
+    paths = [ROOT / 'tools/build_qemu.py'] + sorted(
+        path for path in (ROOT / 'assets').rglob('*') if path.is_file())
+    return {path.relative_to(ROOT).as_posix(): sha256(path) for path in paths}
+
+
 def current_build():
-    """An app launched from this checkout must not silently use stale models."""
+    """Reject binaries built from a different revision, local edit or asset."""
     stamp = BUILD / 'arcs-build.json'
-    binary = BINARY
-    if not stamp.is_file() or not binary.is_file():
+    if not stamp.is_file() or not BINARY.is_file():
         return False
-    manifest = json.loads(stamp.read_text())
-    inputs = [Path(__file__).resolve(), ROOT / 'patches/qemu-n300.patch'] + sorted(
-        path for path in (ROOT / 'qemu').rglob('*') if path.is_file())
-    return (manifest.get('qemu_version') == VERSION and
-            manifest.get('host_cflags') == host_cflags() and
-            manifest.get('lto') == (sys.platform == 'darwin' and platform.machine() == 'arm64') and
-            manifest.get('binary_sha256') == sha256(binary) and
-            manifest.get('inputs_sha256') == {p.relative_to(ROOT).as_posix(): sha256(p) for p in inputs})
+    try:
+        manifest = json.loads(stamp.read_text())
+        state = source_state()
+        return (all(manifest.get(key) == value for key, value in state.items()) and
+                manifest.get('qemu_version') == VERSION and
+                manifest.get('host_cflags') == host_cflags() and
+                manifest.get('lto') == (sys.platform == 'darwin' and platform.machine() == 'arm64') and
+                manifest.get('binary_sha256') == sha256(BINARY) and
+                manifest.get('inputs_sha256') == build_inputs())
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return False
 
 
 def prepare():
+    state = source_state()
+    if (SOURCE / 'VERSION').read_text().strip() != VERSION:
+        raise ValueError('QEMU submodule version does not match the supported baseline')
     chip_roms()
     luna_backend()
-    archive = ROOT / '.tools/downloads' / ('qemu-' + VERSION + '.tar.xz')
-    archive.parent.mkdir(parents=True, exist_ok=True)
-    if not archive.exists():
-        temporary = archive.with_suffix('.download')
-        with urllib.request.urlopen('https://download.qemu.org/' + archive.name, timeout=60) as response, temporary.open('wb') as output:
-            shutil.copyfileobj(response, output)
-        temporary.replace(archive)
-    if sha256(archive) != ARCHIVE_SHA256:
-        raise ValueError('QEMU source archive checksum mismatch')
-    if not SOURCE.exists():
-        # These vendored firmware/CI trees are not built by the ARCS target;
-        # they contain symlinks to absent or absolute host paths on Windows.
-        windows_tar = ['--force-local', '--exclude=*/roms', '--exclude=*/tests/lcitool']
-        try:
-            subprocess.run([shutil.which('tar') or 'tar', *(windows_tar if os.name == 'nt' else []),
-                            '-xf', archive.as_posix(), '-C', SOURCE.parent.as_posix()],
-                           check=True, timeout=180)
-        except BaseException:
-            # A partial extraction must never be mistaken for a source tree.
-            if SOURCE.exists():
-                shutil.rmtree(SOURCE)
-            raise
-    patch = ROOT / 'patches/qemu-n300.patch'
-    # Validate the patched inputs so an unchanged build leaves their mtimes
-    # intact. Reapplying an identical patch would rebuild every QEMU object.
-    paths = [line[6:] for line in patch.read_text().splitlines() if line.startswith('--- a/')]
-    patch_stamp = SOURCE / '.lisa-patch.json'
-    previous = json.loads(patch_stamp.read_text()) if patch_stamp.exists() else {}
-    unchanged = previous.get('sha256') == sha256(patch) and all(
-        (SOURCE / name).is_file() and sha256(SOURCE / name) == digest
-        for name, digest in previous.get('files', {}).items())
-    if not unchanged:
-        # Include removed patch entries so reverting a patch cannot leave an
-        # obsolete upstream edit in the generated source tree.
-        restore = set(paths) | set(previous.get('files', {}))
-        wanted = {'qemu-' + VERSION + '/' + name: name for name in restore}
-        with tarfile.open(archive, mode='r|xz') as tar:
-            for member in tar:
-                if member.name in wanted:
-                    with tar.extractfile(member) as stream:
-                        (SOURCE / wanted.pop(member.name)).write_bytes(stream.read())
-                    if not wanted:
-                        break
-        if wanted:
-            raise ValueError('Missing upstream patch inputs: ' + str(sorted(wanted)))
-        subprocess.run(['patch', '-p1', '-i', patch.as_posix()], cwd=SOURCE, check=True, timeout=30)
-        patch_stamp.write_text(json.dumps({'sha256': sha256(patch),
-            'files': {name: sha256(SOURCE / name) for name in paths}}, indent=2) + '\n')
-    for path in (ROOT / 'qemu').rglob('*'):
-        if path.is_file():
-            destination = SOURCE / path.relative_to(ROOT / 'qemu')
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            if not destination.exists() or destination.read_bytes() != path.read_bytes():
-                shutil.copy2(path, destination)
-    embed_chip_roms()
-    return patch
+    return state
 
 
 def main():
@@ -186,7 +137,7 @@ def main():
     args = parser.parse_args()
     if not 1 <= args.jobs <= 64:
         parser.error('--jobs must be in 1..64')
-    patch = prepare()
+    state = prepare()
     if args.prepare_only:
         return
     BUILD.mkdir(exist_ok=True)
@@ -203,10 +154,17 @@ def main():
                      '--disable-guest-agent', '--disable-user', '--disable-hvf',
                      '--disable-containers', '--without-default-devices',
                      '--with-devices-riscv32=arcs',
+                     '-Dlisem_rom_dir=' + str(ROOT / 'assets/roms/arcs'),
+                     '-Dlisem_luna_dir=' + str(ROOT / 'assets/luna' / luna_backend()['target']),
                      '--enable-lto' if args.lto else '--disable-lto']
     configure_stamp = {'arguments': configuration, 'host_cflags': cflags,
                        'lto': args.lto}
     config_stamp = BUILD / 'arcs-configure.json'
+    previous = json.loads(config_stamp.read_text()) if config_stamp.exists() else {}
+    if (previous.get('arguments', [None])[0] != configuration[0]
+            and (BUILD / 'meson-private/coredata.dat').exists()):
+        shutil.rmtree(BUILD)
+        BUILD.mkdir()
     if not config_stamp.exists() or json.loads(config_stamp.read_text()) != configure_stamp:
         configure_environment = os.environ.copy()
         configure_environment['CFLAGS'] = cflags
@@ -216,12 +174,9 @@ def main():
     subprocess.run(['ninja', '-C', str(BUILD), '-j', str(args.jobs),
                     BINARY.name], check=True, timeout=1800)
     binary = BINARY
-    inputs = [Path(__file__).resolve(), patch] + sorted(path for path in (ROOT / 'qemu').rglob('*') if path.is_file())
-    manifest = {'qemu_version': VERSION, 'upstream_archive_sha256': ARCHIVE_SHA256,
-                'host_cflags': host_cflags(),
-                'lto': args.lto,
-                'binary_sha256': sha256(binary),
-                'inputs_sha256': {p.relative_to(ROOT).as_posix(): sha256(p) for p in inputs}}
+    manifest = {**state, 'qemu_version': VERSION,
+                'host_cflags': host_cflags(), 'lto': args.lto,
+                'binary_sha256': sha256(binary), 'inputs_sha256': build_inputs()}
     (BUILD / 'arcs-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print('Built QEMU ARCS:', binary)
 

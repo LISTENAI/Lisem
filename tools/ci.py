@@ -57,7 +57,7 @@ def component_paths(component):
             '.tools/qemu-build/arcs-build.json',
             f'.tools/audio/lisa-audio{suffix}', '.tools/audio/build.json',
             f'.tools/network/{library}',
-            '.tools/qemu-10.1.0/COPYING', '.tools/qemu-10.1.0/COPYING.LIB',
+            'qemu/COPYING', 'qemu/COPYING.LIB',
             '.tools/network-source/COPYRIGHT', '.tools/network-source/LICENSE']
     if sys.platform == 'darwin':
         paths += ['.tools/camera/lisa-camera', '.tools/camera/build.json']

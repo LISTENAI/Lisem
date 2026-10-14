@@ -1,49 +1,51 @@
-"""Generated runtime preparation must be incremental and repairable."""
-import io
+"""Submodule edits and asset changes invalidate generated runtimes."""
 from pathlib import Path
+import subprocess
 import sys
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import patch
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import build_qemu
 
 
 class RuntimePreparation(unittest.TestCase):
-    def test_unchanged_repair_and_removed_patch_entry(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            downloads = root / '.tools/downloads'; downloads.mkdir(parents=True)
-            source = root / ('.tools/qemu-' + build_qemu.VERSION)
-            prefix = 'qemu-' + build_qemu.VERSION
-            archive = downloads / (prefix + '.tar.xz')
-            with tarfile.open(archive, 'w:xz') as tar:
-                for name in ('first', 'second'):
-                    info = tarfile.TarInfo(prefix + '/' + name)
-                    data = b'original\n'; info.size = len(data)
-                    tar.addfile(info, io.BytesIO(data))
-            (root / 'qemu').mkdir(); (root / 'qemu/model').write_text('model\n')
-            (root / 'patches').mkdir(); patch_file = root / 'patches/qemu-n300.patch'
-            def change(name):
-                return '--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-original\n+patched\n' % (name, name)
-            patch_file.write_text(change('first') + change('second'))
-            with patch.multiple(build_qemu, ROOT=root, SOURCE=source,
-                                ARCHIVE_SHA256=build_qemu.sha256(archive)), \
-                    patch.object(build_qemu, 'chip_roms'), patch.object(build_qemu, 'luna_backend'), \
-                    patch.object(build_qemu, 'embed_chip_roms'):
-                build_qemu.prepare()
-                before = {name: (source / name).stat().st_mtime_ns for name in ('first', 'second', 'model')}
-                build_qemu.prepare()
-                self.assertEqual(before, {name: (source / name).stat().st_mtime_ns for name in before})
-                (source / 'second').write_text('untracked generated edit\n')
-                build_qemu.prepare()
-                self.assertEqual((source / 'second').read_text(), 'patched\n')
-                patch_file.write_text(change('second'))
-                build_qemu.prepare()
-                self.assertEqual((source / 'first').read_text(), 'original\n')
-                self.assertEqual((source / 'second').read_text(), 'patched\n')
+    def test_revision_local_edits_and_untracked_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary)
+            def git(*args):
+                subprocess.run(['git', '-C', str(source), *args], check=True,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            git('init', '-q')
+            model = source / 'model.c'; model.write_text('model\n')
+            git('add', 'model.c')
+            git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                'commit', '-qm', 'fixture')
+            with patch.object(build_qemu, 'SOURCE', source):
+                before = build_qemu.source_state()
+                self.assertEqual(before, build_qemu.source_state())
+                model.write_text('edited\n')
+                self.assertNotEqual(before, build_qemu.source_state())
+                model.write_text('model\n')
+                self.assertEqual(before, build_qemu.source_state())
+                added = source / 'new.c'; added.write_text('new model\n')
+                self.assertNotEqual(before, build_qemu.source_state())
+                added.unlink()
+                self.assertEqual(before, build_qemu.source_state())
+                model.write_text('committed edit\n'); git('add', 'model.c')
+                git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                    'commit', '-qm', 'next revision')
+                self.assertNotEqual(before['qemu_revision'], build_qemu.source_state()['qemu_revision'])
+
+    def test_parent_repository_is_not_a_submodule(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['git', 'init', '-q', str(root)], check=True)
+            source = root / 'qemu'; source.mkdir()
+            with patch.object(build_qemu, 'SOURCE', source):
+                with self.assertRaises(ValueError):
+                    build_qemu.source_state()
 
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    unittest.main()
