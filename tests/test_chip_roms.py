@@ -39,6 +39,29 @@ class ChipROMTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'fixed manifest'):
                     build_qemu.chip_roms()
 
+    def test_venusa_fixed_rom_size_address_and_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            directory = root / 'assets/roms/venusa'
+            directory.mkdir(parents=True)
+            data = bytes(range(256)) * 128
+            rom = directory / 'ap.bin'
+            rom.write_bytes(data)
+            manifest = {'ap': {'file': 'ap.bin', 'size': 32768, 'address': 0,
+                               'sha256': hashlib.sha256(data).hexdigest()}}
+            metadata = directory / 'manifest.json'
+            metadata.write_text(json.dumps(manifest))
+            with patch.object(build_qemu, 'ROOT', root):
+                self.assertEqual(build_qemu.chip_roms('venusa'), manifest)
+                rom.write_bytes(data[:-1] + b'\x00')
+                with self.assertRaisesRegex(ValueError, 'fixed manifest'):
+                    build_qemu.chip_roms('venusa')
+                rom.write_bytes(data)
+                manifest['ap']['address'] = 0x1000
+                metadata.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(ValueError, 'fixed manifest'):
+                    build_qemu.chip_roms('venusa')
+
 
 if __name__ == '__main__':
     unittest.main()

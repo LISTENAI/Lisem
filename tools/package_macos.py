@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import tempfile
 
+from build_qemu import chip_rom_manifests
+
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_PREFIXES = ('/System/Library/', '/usr/lib/')
 
@@ -135,7 +137,8 @@ def package(bundle, target):
             shutil.copy2(ROOT / '.tools/network-source' / name,
                          resources / 'LICENSES' / ('Libslirp-' + name))
         # QEMU embeds the fixed ROM; its identification manifest is inspectable.
-        shutil.copy2(ROOT / 'assets/roms/arcs/manifest.json', runtime / 'chip-roms.json')
+        (runtime / 'chip-roms.json').write_text(
+            json.dumps(chip_rom_manifests(), indent=2) + '\n')
         libraries = bundle_libraries(contents, copies)
         executables = [path for _, path in copies] + libraries
         for path in executables:

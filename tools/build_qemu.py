@@ -39,19 +39,28 @@ def host_cflags():
     return '-O3'
 
 
-def chip_roms():
+def chip_roms(chip="arcs"):
     """Validate fixed chip assets before embedding them; no runtime override."""
-    directory = ROOT / 'assets/roms/arcs'
+    layouts = {'arcs': (('ap', 65536, 0), ('cp', 32768, 0x200000)),
+               'venusa': (('ap', 32768, 0),)}
+    layout = layouts[chip]
+    directory = ROOT / 'assets/roms' / chip
     manifest = json.loads((directory / 'manifest.json').read_text())
-    for name, size, address in (('ap', 65536, 0), ('cp', 32768, 0x200000)):
+    for name, size, address in layout:
         entry = manifest[name]
         path = directory / (name + '.bin')
         if (entry['file'] != name + '.bin' or entry['size'] != size or entry['address'] != address
                 or path.stat().st_size != size or sha256(path) != entry['sha256']):
-            raise ValueError('Bundled ARCS %s ROM does not match its fixed manifest' % name.upper())
-    if set(manifest) != {'ap', 'cp'}:
-        raise ValueError('Unexpected ARCS ROM manifest entries')
+            raise ValueError('Bundled %s %s ROM does not match its fixed manifest' %
+                             (chip, name.upper()))
+    if set(manifest) != {name for name, _, _ in layout}:
+        raise ValueError('Unexpected %s ROM manifest entries' % chip)
     return manifest
+
+
+def chip_rom_manifests():
+    """Identify every chip ROM embedded in the common runtime."""
+    return {chip: chip_roms(chip) for chip in ('arcs', 'venusa')}
 
 
 def luna_backend():
@@ -122,7 +131,7 @@ def prepare():
     state = source_state()
     if (SOURCE / 'VERSION').read_text().strip() != VERSION:
         raise ValueError('QEMU submodule version does not match the supported baseline')
-    chip_roms()
+    chip_rom_manifests()
     luna_backend()
     return state
 
@@ -153,8 +162,9 @@ def main():
                      '--disable-capstone', '--disable-plugins', '--disable-tools',
                      '--disable-guest-agent', '--disable-user', '--disable-hvf',
                      '--disable-containers', '--without-default-devices',
-                     '--with-devices-riscv32=arcs',
+                     '--with-devices-riscv32=listenai',
                      '-Dlisem_rom_dir=' + str(ROOT / 'assets/roms/arcs'),
+                     '-Dlisem_venusa_rom_dir=' + str(ROOT / 'assets/roms/venusa'),
                      '-Dlisem_luna_dir=' + str(ROOT / 'assets/luna' / luna_backend()['target']),
                      '--enable-lto' if args.lto else '--disable-lto']
     configure_stamp = {'arguments': configuration, 'host_cflags': cflags,
@@ -178,7 +188,7 @@ def main():
                 'host_cflags': host_cflags(), 'lto': args.lto,
                 'binary_sha256': sha256(binary), 'inputs_sha256': build_inputs()}
     (BUILD / 'arcs-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
-    print('Built QEMU ARCS:', binary)
+    print('Built QEMU ListenAI runtime:', binary)
 
 
 if __name__ == '__main__':

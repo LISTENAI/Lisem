@@ -12,8 +12,9 @@ Lisem is distributed under component-specific licenses:
   third-party code retain their respective licenses and copyright notices.
 * Native host components: the licenses specified in their source headers.
 * The public LUNA ABI header qemu/include/lisem/luna.h: MIT.
-* Precompiled LUNA archives in assets/luna/ and the AP/CP ROM binaries in
-  assets/roms/arcs/: LICENSES/LISTENAI-Binary.txt. Their manifests are MIT.
+* Precompiled LUNA archives in assets/luna/, ARCS AP/CP ROM binaries in
+  assets/roms/arcs/, and VenusA AP ROM binaries in assets/roms/venusa/:
+  LICENSES/LISTENAI-Binary.txt. Their manifests are MIT.
 
 The binary components are not covered by the MIT source-code license.
 Third-party dependencies retain their own licenses. Included Linger-derived

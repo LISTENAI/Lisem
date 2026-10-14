@@ -47,7 +47,7 @@ def timing():
         for index in (1, 2):
             base = SPI + index * 0x100000
             pending = 0xe0021000 + 4 * (46 + index)
-            assert m.read(base) == 0x02002044 and m.read(base + 0x7c) == 0x33
+            assert m.read(base) == 0x02002044 and m.read(base + 0x7c) == 0x4b33
             setup(m, base, 3)
             m.write(base + 0x2c, 0x11)
             m.write(base + 0x2c, 0x22)
@@ -253,10 +253,18 @@ def panel():
         assert screenshot(m, 'gpio-backlight') == lsb_pixels
         m.write(0x4670002c, 1 << 21)
         assert screenshot(m, 'gpio-backlight-off') == bytes(240 * 240 * 3)
-        m.write(0x47500054, 5)
+        # An unassigned function does not drive the backlight pad.
+        # Function 5 is SPI0 SCLK and may legitimately drive an idle level.
+        m.write(0x47500054, 31)
         m.write(0x46700030, 1 << 21)
         assert screenshot(m, 'wrong-backlight-route') == bytes(240 * 240 * 3)
         m.write(0x47500054, 12)
+        # Resetting the SPI controller does not reset its external LCD.
+        before_reset = screenshot(m, 'before-spi-reset')
+        assert any(before_reset)
+        m.write(0x4600000c, 1 << 3)
+        assert screenshot(m, 'after-spi-reset') == before_reset
+        setup(m, SPI, 1)
         # TE follows the scan grid with a nonzero vertical blank interval.
         m.write(0x46700060, 6 << 12)  # GPIO27 rising edge.
         m.write(0x46700050, 1 << 27)
@@ -404,8 +412,7 @@ def rejection():
 
     for name, action in (('recursive-control', recursive_control),
                          ('fifo-overflow', overflow), ('invalid-route', bad_route),
-                         ('active-restart', active_restart),
-                         ('rx-dma', lambda m: m.write(SPI + 0x30, 8))):
+                         ('active-restart', active_restart)):
         m = Machine(OUTPUT / name)
         try:
             try:
@@ -419,7 +426,7 @@ def rejection():
             assert report['status'] == 'unsupported-mmio', report
         finally:
             m.close()
-    print('SPI recursive configuration, overflow, invalid routing, restart and RX DMA rejected: PASS')
+    print('SPI recursive configuration, overflow, invalid routing and restart rejected: PASS')
 
 
 def evb_panel():

@@ -1,0 +1,8 @@
+{
+  "ap": {
+    "file": "ap.bin",
+    "size": 32768,
+    "address": 0,
+    "sha256": "6b799d7e2c4c42f1e39760d4ba413bc3560ee81350754cd395f205e27209ac1b"
+  }
+}

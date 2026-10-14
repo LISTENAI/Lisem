@@ -1,0 +1,16 @@
+{
+  "id": "venusa",
+  "name": "CSK7004J8U",
+  "family": "venusa",
+  "runtime": {
+    "abi": "lisem-v1",
+    "environment_prefix": "LISEM_QEMU_",
+    "flash": "pflash",
+    "clock_quantum_ns": 10000
+  },
+  "storage": {
+    "otp_bytes": 64,
+    "uid_offset": 0,
+    "uid_bytes": 8
+  }
+}

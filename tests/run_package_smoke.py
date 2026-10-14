@@ -151,8 +151,43 @@ def main():
             assert service.status()['serial'][item['id']]['0'] == port
             assert (device / 'otp.bin').read_bytes() == otp
             assert hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest() == initial_flash
-            result = {'pass': True, 'rom_version': 5,
-                      'scope': 'Relocated native package, headless CLI, persistent UART, original ROM handshake/read and unchanged storage'}
+            uart.close()
+            uart = None
+            venus = service.create_device('venusa-rd-evb')
+            device = Path(venus['path'])
+            otp = (device / 'otp.bin').read_bytes()
+            initial_flash = hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest()
+            port = service.dispatch('serial', {'id': venus['id'], 'channel': 0})
+            uart = NativeUart(port)
+            # Empty Flash enters the fixed ROM's UART loader naturally.
+            service.start(venus['id'], seconds=30, timeout=60)
+            deadline = time.monotonic() + 15
+            while True:
+                state = service.status()['sessions'][venus['id']]
+                assert not state.get('error') and not state['finished'], state
+                if state.get('seconds', 0) >= .1:
+                    break
+                assert time.monotonic() < deadline, 'VenusA ROM did not start'
+                time.sleep(.01)
+            assert exchange(8, bytes.fromhex('07071220') + b'\x55' * 32) == (0, b'\0\0')
+            version = exchange(1)[1]
+            assert version == b'\0\5', version
+            rom = (ROOT / 'assets/roms/venusa/ap.bin').read_bytes()
+            for address in (0, 0x180, 0x7ffc):
+                value, status = exchange(0x0a, struct.pack('<I', address))
+                assert status == b'\0\0'
+                assert value == int.from_bytes(rom[address:address + 4], 'little')
+            workspace = Path(state['output'])
+            assert state['framebuffer'] is None
+            assert not (device / 'runs').exists()
+            assert not [p for p in workspace.rglob('*') if p.is_file()]
+            service.stop()
+            assert not workspace.exists()
+            assert service.status()['serial'][venus['id']]['0'] == port
+            assert (device / 'otp.bin').read_bytes() == otp
+            assert hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest() == initial_flash
+            result = {'pass': True, 'rom_versions': {'arcs': 5, 'venusa': version[1]},
+                      'scope': 'Relocated native package, headless CLI, persistent UART, original ARCS/VenusA ROM handshake/read and unchanged storage'}
             output = ROOT / 'artifacts/ci/package-smoke.json'
             output.parent.mkdir(parents=True, exist_ok=True)
             output.write_text(json.dumps(result, indent=2) + '\n')

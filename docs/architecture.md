@@ -27,14 +27,16 @@ POSIX 上 QEMU 继承同一存储锁的文件描述符，控制进程异常退�
 客户端在 QEMU 尚未退出时覆盖 Flash。Windows 使用禁止共享的文件句柄，
 经 QEMU 的闲置标准输入继承，避免父进程退出释放存储保护。
 
-芯片和板型的启动适配集中在后端 provider，当前注册 LS2684 + Arcs-Mini、
-Arcs-EVB。Arcs-EVB 将 ST7789P3 接到 SPI1、CST328 接到 I2C0，并保留
+芯片和板型的启动适配集中在后端 provider，注册 LS2684 的 Arcs-Mini、
+Arcs-EVB，以及 CSK7004J8U 的 VenusA RD EVB。Arcs-EVB 将 ST7789P3 接到
+SPI1、CST328 接到 I2C0，并保留
 GC0328 的 DVP/SCCB、GPT0 背光和 A27 功放使能连线。EVB 的屏幕和触摸面板
 按顺时针 270° 安装，A0 背光低电平有效；桌面将按下、拖动和松开位置转换为
 触摸器件的原始坐标。
 CST328 单点报告在按下、移动和松开时产生 IRQ 边沿，I2C 读取保留同一份
 报告快照；当前不模拟 IRQ 脉宽。
 B6 上的 ADC 按键梯形网络在空闲时保持 1023，复位保留板上实际按键状态。
+VenusA 的运行与外设边界见 [VenusA RD EVB](venusa.md)。
 增加芯片时复用 QEMU 器件/IP 类型，由 SoC 实现内存映射、时钟和中断连接；
 增加板型时定义器件与总线/引脚连接及外部交互。Rust 前端仅消费描述和能力，
 不能用修改 JSON 代替尚未实现的芯片、器件或连线模型。

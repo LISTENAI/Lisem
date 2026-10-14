@@ -9,6 +9,8 @@ import subprocess
 import sys
 import tempfile
 
+from build_qemu import chip_rom_manifests
+
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = os.name == 'nt'
 SUFFIX = '.exe' if WINDOWS else ''
@@ -140,7 +142,8 @@ def package(bundle, target):
                                   ('.tools/network-source', ['COPYRIGHT', 'LICENSE'])]:
             for name in names:
                 shutil.copy2(ROOT / directory / name, staged / 'LICENSES' / (Path(directory).name + '-' + name))
-        shutil.copy2(ROOT / 'assets/roms/arcs/manifest.json', runtime / 'chip-roms.json')
+        (runtime / 'chip-roms.json').write_text(
+            json.dumps(chip_rom_manifests(), indent=2) + '\n')
         pending = list(copies)
         copied = {}
         binaries = [dst for _, dst in copies]

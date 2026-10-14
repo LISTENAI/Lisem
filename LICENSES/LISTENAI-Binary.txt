@@ -2,8 +2,8 @@ LISTENAI Binary Component License
 
 Copyright (c) 2026 LISTENAI. All rights reserved.
 
-This license applies to the precompiled LUNA libraries and ARCS AP/CP ROM
-binaries distributed with Lisem.
+This license applies to the precompiled LUNA libraries, ARCS AP/CP ROM
+binaries, and VenusA AP ROM binaries distributed with Lisem.
 
 Permission is granted, free of charge, to use, reproduce and redistribute
 these components in binary form, including as part of Lisem, modified
