@@ -181,6 +181,13 @@ def main():
             assert adb['enabled'] is True and adb['listen'].startswith('127.0.0.1:'), adb
             assert 0 < int(adb['listen'].split(':')[1]) <= 65535 and adb['run'] == run
             assert client.tool('lisem_usb_adb', {'id': identifier})['listen'] == adb['listen']
+            deadline = time.monotonic() + 5
+            while True:
+                snapshot = client.tool('lisem_status', {'id': identifier})['runtime']['session'].get('usb_adb', {})
+                if snapshot.get('enabled') and snapshot.get('listen') == adb['listen']:
+                    break
+                assert time.monotonic() < deadline, snapshot
+                time.sleep(0.1)
             client.tool('lisem_usb_adb', {'id': identifier, 'enabled': False}, error=True)
             assert client.tool('lisem_usb_adb', {'id': identifier})['enabled'] is True
             adb = client.tool('lisem_usb_adb', {'id': identifier, 'run': run, 'enabled': False})

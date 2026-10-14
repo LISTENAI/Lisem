@@ -629,6 +629,10 @@ impl Session {
         for (key, value) in fields.as_object().context("Invalid snapshot object")? {
             self.state[key] = value.clone();
         }
+        let usb = self.qmp.call("qom-get", json!({"path":"/machine/soc",
+            "property":"x-lisem-usb-adb"}), &mut self.uart)?;
+        self.state["usb_adb"] = serde_json::from_str::<Value>(
+            usb.as_str().context("Invalid USB ADB status")?)?;
         self.state["continuous_audio"] = json!(self.audio.is_some());
         self.state["microphone"] = json!(self.options.microphone);
         self.state["elapsed_seconds"] = json!(self.started.elapsed().as_secs_f64());

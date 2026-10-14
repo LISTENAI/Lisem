@@ -5,7 +5,7 @@ gpui::assets::icon_assets!(
     PeripheralIcons,
     [
         Camera, CameraOff, Mic, MicOff, Volume2, VolumeOff, Copy, Wifi, WifiOff, Settings, Plus,
-        CardSim
+        CardSim, Usb
     ]
 );
 

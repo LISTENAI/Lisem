@@ -96,6 +96,8 @@ enum Action {
     CopySerialPath(u8),
     SerialToggle(u8),
     SerialInfo,
+    UsbAdb,
+    CopyUsbAddress,
     Folder,
     CopyUid,
 }
@@ -517,6 +519,19 @@ impl Desktop {
             Action::SerialToggle(channel) => {
                 let enabled = self.serial_path(channel).is_none();
                 self.send("serial", json!({"id": self.selected, "channel": channel, "enabled": enabled}));
+            }
+            Action::UsbAdb => {
+                if self.usb_change_enabled() {
+                    let mut params = self.params();
+                    params["enabled"] = json!(!self.usb_enabled());
+                    self.send("usb_adb", params);
+                }
+            }
+            Action::CopyUsbAddress => {
+                if let Some(address) = self.usb_address() {
+                    cx.write_to_clipboard(ClipboardItem::new_string(address.to_owned()));
+                    self.notice = "连接地址已复制".into();
+                }
             }
             Action::SerialInfo => self.show_serial_info(window, cx),
             Action::CopySerialPath(channel) => {
@@ -1197,6 +1212,7 @@ impl Desktop {
                                         cx,
                                     ))
                                     .child(self.peripheral_menu("sd", self.sd_medium(&d)["path"].is_string(), cx))
+                                    .child(self.peripheral_menu("usb", self.usb_configured(), cx))
                                     .child(self.peripheral_menu("serial", false, cx))
                                     .child(self.icon(
                                         "power",

@@ -95,7 +95,9 @@ WPA2 密码需为 8–63 个可打印 ASCII 字符。
 
 ## USB ADB
 
-固件提供 USB ADB 接口时，可开启本机 TCP 桥接，并使用宿主安装的 `adb`：
+固件提供 USB ADB 接口时，可在设备窗口右上角的 USB 菜单或设置的
+「连接与媒体」中开启 ADB 桥接，点击连接地址即可复制。图标亮起表示固件
+USB 已完成配置。也可通过 CLI 开启，再使用宿主安装的 `adb`：
 
 ```sh
 lisem usb-adb INSTANCE_ID --enable

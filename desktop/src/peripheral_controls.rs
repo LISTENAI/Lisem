@@ -149,6 +149,7 @@ impl Desktop {
             "speaker" => "扬声器",
             "network" => "Wi-Fi",
             "sd" => "SD 卡",
+            "usb" => "USB",
             _ => "串口",
         };
         let disabled = self.device().is_some_and(|d| match kind {
@@ -166,6 +167,7 @@ impl Desktop {
             ("speaker", true) => Icon::new(IconName::VolumeOff),
             ("speaker", false) => Icon::new(IconName::Volume2),
             ("sd", _) => Icon::new(IconName::CardSim),
+            ("usb", _) => Icon::new(IconName::Usb),
             ("network", true) => Icon::new(IconName::WifiOff),
             ("network", false) => Icon::new(IconName::Wifi),
             _ => Icon::empty().path(kind),
@@ -243,6 +245,17 @@ impl Desktop {
             return menu;
         };
         match kind {
+            "usb" => {
+                menu = menu.item(self.menu_action(
+                    "ADB 桥接", Action::UsbAdb, self.usb_change_enabled(), self.usb_enabled(), cx,
+                ));
+                if let Some(address) = self.usb_address() {
+                    menu = menu.item(self.menu_action(
+                        address.to_owned(), Action::CopyUsbAddress, true, false, cx,
+                    ));
+                }
+                menu.separator().label(self.usb_notice())
+            }
             "sd" => {
                 menu = menu
                     .label(self.sd_label(&d))
@@ -360,6 +373,41 @@ impl Desktop {
                 menu
             }
             _ => menu,
+        }
+    }
+
+    pub(super) fn usb_enabled(&self) -> bool {
+        self.powered() && self.state.data["session"]["usb_adb"]["enabled"] == true
+    }
+
+    pub(super) fn usb_configured(&self) -> bool {
+        self.usb_enabled() && self.state.data["session"]["usb_adb"]["connected"] == true
+            && self.state.data["session"]["usb_adb"]["status"] == "configured"
+    }
+
+    pub(super) fn usb_change_enabled(&self) -> bool {
+        self.powered() && self.state.data["session"]["usb_adb"].is_object()
+            && !self.control_busy(&["usb_adb"])
+    }
+
+    pub(super) fn usb_address(&self) -> Option<&str> {
+        self.usb_enabled().then(|| self.state.data["session"]["usb_adb"]["listen"].as_str()).flatten()
+    }
+
+    pub(super) fn usb_notice(&self) -> String {
+        if !self.powered() { return "上电后可开启".into(); }
+        if !self.state.data["session"]["usb_adb"].is_object() {
+            return "当前运行不支持 ADB 桥接".into();
+        }
+        if self.control_busy(&["usb_adb"]) { return "正在切换…".into(); }
+        if !self.usb_enabled() { return "已关闭".into(); }
+        let state = &self.state.data["session"]["usb_adb"];
+        if let Some(error) = state["error"].as_str() { return format!("连接异常：{error}"); }
+        if self.usb_configured() { return "已连接".into(); }
+        if state["connected"] != true { return "等待连接".into(); }
+        match state["status"].as_str() {
+            Some("connected") => "等待固件 USB 就绪".into(),
+            _ => "正在枚举…".into(),
         }
     }
 
@@ -536,6 +584,20 @@ impl Desktop {
                     )
                     .child(caption(self.camera_notice(d))),
             ));
+        body = body.child(settings_row(
+            "USB",
+            div().flex().flex_col().items_start().gap_2()
+                .child(Switch::new("settings-usb-adb")
+                    .label("ADB 桥接")
+                    .checked(self.usb_enabled())
+                    .disabled(!self.usb_change_enabled())
+                    .on_change(cx.listener(|v, _, w, cx| v.act(Action::UsbAdb, w, cx))))
+                .when_some(self.usb_address(), |view, address| view.child(
+                    Button::new("settings-usb-copy").ghost().icon(IconName::Copy)
+                        .label(address.to_owned()).tooltip("复制地址")
+                        .on_click(cx.listener(|v, _, w, cx| v.act(Action::CopyUsbAddress, w, cx)))))
+                .child(caption(self.usb_notice())),
+        ));
         body = body.child(settings_row(
             "SD 卡",
             div()
