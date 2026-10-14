@@ -990,6 +990,65 @@ impl Desktop {
                     .child(body),
             )
     }
+    fn device_overview(&self, d: &Device, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let board = d.hardware["board"]["name"].as_str().unwrap_or_default();
+        let chip = d.hardware["chip"]["name"].as_str().unwrap_or_default();
+        let mut rows = div().flex().flex_col().w_full();
+        for channel in d.capabilities.uart_channels.iter().copied() {
+            let path = self.serial_path(channel).map(str::to_owned);
+            let ready = path.is_some();
+            let endpoint = path.unwrap_or_else(|| "未启用".into());
+            let tooltip = endpoint.clone();
+            rows = rows.child(
+                div().flex().items_center().gap_3().py_4()
+                    .border_t_1().border_color(cx.theme().border)
+                    .child(
+                        div().flex_1().min_w_0().flex().flex_col().gap_1()
+                            .child(format!("UART {channel}"))
+                            .child(
+                                div().id(("overview-uart-path", channel as usize))
+                                    .truncate().text_sm().text_color(cx.theme().muted_foreground)
+                                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                                    .child(endpoint),
+                            ),
+                    )
+                    .child(
+                        Button::new(("overview-uart-copy", channel as usize))
+                            .ghost().icon(Icon::empty().path("copy"))
+                            .tooltip("复制连接路径")
+                            .accessibility_label(format!("复制 UART {channel} 连接路径"))
+                            .disabled(!ready)
+                            .on_click(cx.listener(move |v, _, w, cx| {
+                                v.act(Action::CopySerialPath(channel), w, cx)
+                            })),
+                    )
+                    .child(
+                        Switch::new(("overview-uart", channel as usize))
+                            .label("启用").checked(ready)
+                            .disabled(self.serial_busy(channel))
+                            .on_change(cx.listener(move |v, _, w, cx| {
+                                v.act(Action::SerialToggle(channel), w, cx)
+                            })),
+                    ),
+            );
+        }
+        div().id("device-overview").flex_1().min_h_0().w_full().overflow_y_scroll()
+            .p_6().flex().flex_col().items_center()
+            .child(
+                div().w_full().max_w(px(600.)).flex().flex_col().gap_5()
+                    .child(
+                        div().flex().items_center().justify_between().gap_3()
+                            .child(
+                                div().flex_1().min_w_0().flex().flex_col().gap_1()
+                                    .child(div().text_lg().child(board.to_owned()))
+                                    .child(caption(chip.to_owned())),
+                            )
+                            .child(caption(self.lifecycle())),
+                    )
+                    .child(rows),
+            )
+    }
+
     fn device_panel(&self, d: &Device, cx: &mut Context<Self>) -> Div {
         let on = self.powered();
         let idle = !self.control_busy(&[]);
@@ -1266,7 +1325,11 @@ impl Desktop {
                                     .border_1().border_color(cx.theme().border)
                                     .child(screen),
                             ))
-                            .child(keys),
+                            .when(d.hardware["board"]["buttons"].as_array().is_some_and(|buttons| !buttons.is_empty()),
+                                |body| body.child(keys))
+                            .when(!d.capabilities.screen
+                                && d.hardware["board"]["buttons"].as_array().is_none_or(Vec::is_empty),
+                                |body| body.child(self.device_overview(d, cx))),
                     )
                     .when(self.signals_visible, |body| {
                         body.child(
