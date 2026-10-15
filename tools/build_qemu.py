@@ -88,8 +88,9 @@ def source_state():
         return subprocess.check_output(['git', '-C', str(SOURCE), *arguments],
                                        stderr=subprocess.PIPE, timeout=30)
     try:
-        top = Path(os.fsdecode(git('rev-parse', '--show-toplevel')).strip()).resolve()
-        if top != SOURCE.resolve():
+        # Git and native Python may use different path forms under MSYS2.
+        # A nonempty prefix means Git found a parent repository instead.
+        if git('rev-parse', '--show-prefix').strip():
             raise ValueError('QEMU source is not an initialized submodule')
         revision = git('rev-parse', 'HEAD').decode().strip()
     except (subprocess.CalledProcessError, FileNotFoundError) as error:
@@ -149,7 +150,7 @@ def main():
     state = prepare()
     if args.prepare_only:
         return
-    BUILD.mkdir(exist_ok=True)
+    BUILD.mkdir(parents=True, exist_ok=True)
     cflags = host_cflags() + ' -ffile-prefix-map=' + str(Path.home()) + '=/build'
     if sys.platform == 'darwin':
         cflags += ' -mmacosx-version-min=15.0'
