@@ -20,7 +20,11 @@ class Diagnostics(unittest.TestCase):
                  '  File "/private/workspace/Lisem/tests/run_qemu_desktop.py", line 201, in main\n'
                  '    assert secret == "private-value"\n'
                  '  File "C:\\private\\Lisem\\tests\\qemu_test.py", line 37, in command\n'
-                 'AssertionError: private-value\n')
+                 'AssertionError: private-value\n'
+                 "thread 'transport::tests::fixture' (12345) panicked at crates/core/src/transport.rs:1150:13:\n"
+                 'assertion failed: private-value\n'
+                 "thread 'legacy::test' panicked at crates\\core\\src\\storage.rs:42:9:\n"
+                 "thread 'external::test' (42) panicked at /private/dependency/lib.rs:1:2:\n")
         with tempfile.TemporaryDirectory() as directory, patch.object(ci, 'ROOT', Path(directory)):
             output = io.StringIO()
             with redirect_stdout(output), self.assertRaises(subprocess.CalledProcessError):
@@ -31,6 +35,10 @@ class Diagnostics(unittest.TestCase):
                 {'file': 'tests/qemu_test.py', 'line': 37},
             ])
             self.assertEqual(summary['exception_types'], ['AssertionError'])
+            self.assertEqual(summary['rust_panics'], [
+                'crates/core/src/transport.rs:1150:13',
+                'crates/core/src/storage.rs:42:9',
+            ])
             self.assertNotIn('private', output.getvalue())
             self.assertIn('private-value', (Path(directory) / 'artifacts/ci/qemu-tests.log').read_text())
 

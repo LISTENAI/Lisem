@@ -31,7 +31,10 @@ def run(name, command, timeout=1800, env=None):
             'test_failures': re.findall(r'^(?:ERROR|FAIL): ([A-Za-z0-9_.]+) \(([A-Za-z0-9_.]+)\)$', content, re.M)[:20],
             'child_statuses': re.findall(r'returned non-zero exit status ([0-9]+)', content)[-10:],
             'rust_test_failures': re.findall(r'^test ([A-Za-z0-9_:]+) \.\.\. FAILED$', content, re.M)[:20],
-            'rust_panics': re.findall(r"^thread '[A-Za-z0-9_:<> -]+' panicked at ([A-Za-z0-9_./\\:-]+)", content, re.M)[:20],
+            'rust_panics': re.findall(
+                r"^thread '[A-Za-z0-9_:<> -]+'(?: \([0-9]+\))? panicked at "
+                r'((?:crates|desktop)/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+)',
+                content.replace('\\', '/'), re.M)[:20],
             'cargo_errors': re.findall(r'^error(?:\[[A-Z0-9]+\])?: ([^\n]{1,300})', content, re.M)[-10:],
             'rust_errors': sorted(set(re.findall(r'error\[(E[0-9]{4})\]', content))),
             'exception_types': sorted(set(re.findall(r'^([A-Za-z]+(?:Error|Exception)):', content, re.M))),
