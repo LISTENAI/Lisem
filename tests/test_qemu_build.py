@@ -10,6 +10,32 @@ import build_qemu
 
 
 class RuntimePreparation(unittest.TestCase):
+    def test_build_from_a_checkout_without_generated_directories(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / 'qemu'
+            source.mkdir()
+            build = root / '.tools/qemu-build'
+            binary = build / 'qemu-system-riscv32'
+
+            def compile(command, **kwargs):
+                self.assertTrue(build.is_dir())
+                if command[0] == 'ninja':
+                    binary.write_bytes(b'compiled runtime')
+                else:
+                    self.assertEqual(kwargs['cwd'], build)
+
+            with patch.multiple(build_qemu, ROOT=root, SOURCE=source,
+                                BUILD=build, BINARY=binary), \
+                    patch.object(build_qemu, 'prepare', return_value={}), \
+                    patch.object(build_qemu, 'luna_backend', return_value={'target': 'test'}), \
+                    patch.object(build_qemu, 'build_inputs', return_value={}), \
+                    patch.object(build_qemu.subprocess, 'run', side_effect=compile), \
+                    patch.object(sys, 'argv', ['build_qemu.py']):
+                build_qemu.main()
+            self.assertTrue(binary.is_file())
+            self.assertTrue((build / 'arcs-build.json').is_file())
+
     def test_revision_local_edits_and_untracked_sources(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary)
