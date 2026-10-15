@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
                  network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
-                 board='arcs-mini', sd_image=None, sd_slot=False):
+                 board='arcs-mini', sd_image=None, sd_slot=False, radio_capture=True, binary=None):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -58,8 +58,11 @@ class Machine:
             env['ARCS_QEMU_NETWORK_CAPTURE'] = str(directory / 'host-network.pcap')
 
         env['ARCS_QEMU_AUDIO_OUTPUT'] = str(directory / 'audio.wav')
-        env['ARCS_QEMU_WIFI_CAPTURE'] = str(directory / 'wifi-tx.pcap')
-        env['ARCS_QEMU_BLE_CAPTURE'] = str(directory / 'ble-tx.jsonl')
+        for name in ('ARCS_QEMU_WIFI_CAPTURE', 'ARCS_QEMU_BLE_CAPTURE'):
+            env.pop(name, None)
+        if radio_capture:
+            env['ARCS_QEMU_WIFI_CAPTURE'] = str(directory / 'wifi-tx.pcap')
+            env['ARCS_QEMU_BLE_CAPTURE'] = str(directory / 'ble-tx.jsonl')
         if audio is not None:
             pcm, rate, channels = audio
             image = directory / 'input.pcm'
@@ -101,7 +104,7 @@ class Machine:
             else:
                 serial.extend(['-serial', 'null'])
         self.process = subprocess.Popen([
-            str(ROOT / '.tools/qemu-build/qemu-system-riscv32'),
+            str(binary or ROOT / '.tools/qemu-build/qemu-system-riscv32'),
             '-M', board, '-accel', 'qtest',
             '-display', 'none', '-monitor', 'none', '-qtest', 'stdio',
             '-qtest-log', '/dev/null', '-chardev',
