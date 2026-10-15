@@ -96,4 +96,13 @@ fn checkout_manifest_covers_submodule_revision_worktree_and_external_assets() {
             .to_string()
             .contains("revision changed")
     );
+    fs::rename(source.join(".git"), root.join("saved-qemu-git")).unwrap();
+    git(root, &["init", "-q"]);
+    assert!(
+        assets
+            .verify_qemu()
+            .unwrap_err()
+            .to_string()
+            .contains("not an initialized submodule")
+    );
 }

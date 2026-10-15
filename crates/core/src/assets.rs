@@ -120,9 +120,9 @@ impl Assets {
         walk(&self.root, &self.root.join("assets"), &mut paths)?;
         paths.insert("tools/build_qemu.py".into());
         let source = self.root.join("qemu").canonicalize()?;
-        let top = String::from_utf8(source_git(&source, &["rev-parse", "--show-toplevel"])?)?;
+        let prefix = String::from_utf8(source_git(&source, &["rev-parse", "--show-prefix"])?)?;
         ensure!(
-            Path::new(top.trim()).canonicalize()? == source,
+            prefix.trim().is_empty(),
             "QEMU source is not an initialized submodule"
         );
         let revision = String::from_utf8(source_git(&source, &["rev-parse", "HEAD"])?)?;
@@ -267,9 +267,9 @@ fn source_git(source: &Path, arguments: &[&str]) -> Result<Vec<u8>> {
     use std::process::Stdio;
     use std::time::{Duration, Instant};
     const LIMIT: usize = 64 * 1024 * 1024;
+    // The native cwd API accepts Windows verbatim paths; MSYS2 Git's -C does not.
     let mut child = crate::process::command("git")
-        .arg("-C")
-        .arg(source)
+        .current_dir(source)
         .args(arguments)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
