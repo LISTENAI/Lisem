@@ -223,9 +223,12 @@ impl Process {
             // The inherited standard handle retains the share-denying lease
             // even if the controller exits before its child.
             command.stdin(Stdio::from(lease.file.try_clone()?));
-            Ok(Self {
-                child: command.spawn()?,
-            })
+            let child = command.spawn();
+            // Command retains configured stdio for subsequent spawns. Release
+            // its lease copy on both success and failure; the child owns its
+            // inherited handle until it exits.
+            command.stdin(Stdio::null());
+            Ok(Self { child: child? })
         }
     }
 }
@@ -2550,6 +2553,50 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn guest_lease_survives_owner_but_not_child_with_command_retained() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("storage.lock");
+        let lease = Lease::acquire(&path).unwrap();
+        let mut command = crate::process::command(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "runtime::tests::startup_child_fixture",
+                "--nocapture",
+            ])
+            .env("LISEM_TEST_STARTUP_MODE", "timeout")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let process = Process::guest(&mut command, &lease).unwrap();
+        drop(lease);
+        assert!(
+            Lease::acquire(&path).is_err(),
+            "Live guest lost its storage lease"
+        );
+        drop(process);
+        assert!(
+            Lease::acquire(&path).is_ok(),
+            "Command retained the exited guest's lease"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_guest_spawn_releases_command_lease_copy() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("storage.lock");
+        let lease = Lease::acquire(&path).unwrap();
+        let mut command = crate::process::command(temp.path().join("missing-guest.exe"));
+        assert!(Process::guest(&mut command, &lease).is_err());
+        drop(lease);
+        assert!(
+            Lease::acquire(&path).is_ok(),
+            "Failed spawn retained the storage lease"
+        );
+    }
 
     #[test]
     fn startup_child_fixture() {
