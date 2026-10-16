@@ -3,12 +3,14 @@
 #define LISEM_AUDIO_ENDPOINT_H
 #include <stddef.h>
 #include "audio/lisa_stream.h"
+#include "playback.h"
 #define HOST_MAX_FRAMES 1024
 #define HOST_REFERENCE_FRAMES 32768
 #define HOST_PENDING_FRAMES 4096
 
 typedef struct HostAudio {
     LisaAudioStream *stream;
+    HostPlayback playback;
     uint64_t reference[HOST_REFERENCE_FRAMES];
     struct { int16_t sample; int64_t reference; } pending[HOST_PENDING_FRAMES];
     size_t pending_head, pending_count;

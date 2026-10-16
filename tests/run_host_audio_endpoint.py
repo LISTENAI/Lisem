@@ -21,6 +21,10 @@ def main():
         subprocess.run([compiler, *flags, str(ROOT / 'tests/fixtures/host_endpoint.c'), str(obj),
                         '-lm', '-o', str(binary)], check=True, timeout=30)
         subprocess.run([str(binary)], check=True, timeout=5)
+        playback = output / ('playback.exe' if os.name == 'nt' else 'playback')
+        subprocess.run([compiler, *flags, str(ROOT / 'tests/fixtures/host_playback.c'),
+                        '-o', str(playback)], check=True, timeout=30)
+        subprocess.run([str(playback)], check=True, timeout=5)
     print('Native audio endpoint passed')
 
 

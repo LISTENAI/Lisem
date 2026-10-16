@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.tools/audio'
 BINARY = OUT / ('lisa-audio.exe' if os.name == 'nt' else 'lisa-audio')
 SOURCE = ROOT / 'native/audio' / ('coreaudio.m' if sys.platform == 'darwin' else 'endpoint.c')
-INPUTS = [SOURCE, ROOT / 'qemu/include/audio/lisa_stream.h', ROOT / 'qemu/include/qemu/lisa-mapping.h', Path(__file__)]
+INPUTS = [SOURCE, ROOT / 'qemu/include/audio/lisa_stream.h', ROOT / 'qemu/include/qemu/lisa-mapping.h',
+          ROOT / 'native/audio/playback.h', Path(__file__)]
 if sys.platform != 'darwin':
     INPUTS += [ROOT / 'native/audio/endpoint.h',
                ROOT / 'native/audio' / ('wasapi.c' if os.name == 'nt' else 'pulse.c')]

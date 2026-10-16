@@ -16,6 +16,7 @@
 #include <unistd.h>
 #include <mach/mach_time.h>
 #include "audio/lisa_stream.h"
+#include "playback.h"
 #include "qemu/lisa-mapping.h"
 
 #define FRAMES 160
@@ -23,6 +24,7 @@
 #define REFERENCE_FRAMES 32768
 typedef struct HostAudio {
     LisaAudioStream *stream;
+    HostPlayback playback;
     AudioQueueRef input, output;
     AudioQueueBufferRef inbuf[BUFFERS], outbuf[BUFFERS];
     uint64_t input_frames, output_frames, input_nonzero, input_callbacks, output_callbacks;
@@ -136,7 +138,7 @@ static void playback(void *opaque, AudioQueueRef queue, AudioQueueBufferRef buff
     lisa_audio_store(&s->output_callbacks, lisa_audio_load(&s->output_callbacks) + 1);
     if (__atomic_load_n(&s->draining, __ATOMIC_ACQUIRE) ||
         __atomic_load_n(&s->closing, __ATOMIC_ACQUIRE)) { return; }
-    lisa_audio_render(s->stream, buffer->mAudioData, FRAMES);
+    host_playback_render(&s->playback, s->stream, buffer->mAudioData, FRAMES);
     int16_t reference[FRAMES];
     memcpy(reference, buffer->mAudioData, sizeof(reference));
     if (__atomic_load_n(&s->muted, __ATOMIC_ACQUIRE)) {
@@ -392,6 +394,7 @@ static int run(const char *directory, unsigned seconds, bool capture_input)
         @"adc_samples": @(lisa_audio_load(&p->adc_samples)), @"adc_missing": @(lisa_audio_load(&p->adc_missing)),
         @"dac_samples": @(lisa_audio_load(&p->dac_samples)), @"dac_played": @(lisa_audio_load(&p->output_read)),
         @"output_frames": @(lisa_audio_load(&s.output_frames)), @"output_underrun": @(lisa_audio_load(&p->output_underrun)),
+        @"output_rebuffers": @(s.playback.rebuffers),
         @"muted": @(__atomic_load_n(&s.muted, __ATOMIC_ACQUIRE)), @"mute_changes": @(s.mute_changes),
         @"output_cursor_ns": @(lisa_audio_load(&p->output_cursor_ns)), @"watermark_ns": @(lisa_audio_load(&p->watermark_ns)),
         @"input_skipped_frames": @(lisa_audio_load(&p->input_skipped)),

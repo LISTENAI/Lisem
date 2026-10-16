@@ -91,7 +91,7 @@ void host_output(HostAudio *s, int16_t *out, size_t count, double dac_time)
         s->output_live = true;
         s->output_first = dac_time;
     }
-    if (s->output_live && playing) { lisa_audio_render(p, out, count); }
+    if (s->output_live && playing) { host_playback_render(&s->playback, p, out, count); }
     s->output_callbacks++;
     uint64_t first = s->output_frames;
     s->output_frames += count;
@@ -309,7 +309,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
                 "\"guest_error\":%llu,\"input_frames\":%llu,\"input_nonzero\":%llu,"
                 "\"input_callbacks\":%llu,\"output_callbacks\":%llu,\"reference_nonzero\":%llu,"
                 "\"reference_deferred\":%llu,\"max_pending_frames\":%llu,\"reference_missing\":%llu,"
-                "\"reference_clock_errors\":%llu,\"xruns\":%llu,"
+                "\"reference_clock_errors\":%llu,\"xruns\":%llu,\"output_rebuffers\":%llu,"
                 "\"adc_missing\":%llu,\"output_underrun\":%llu,\"max_input_backlog_frames\":%llu,"
                 "\"max_output_backlog_frames\":%llu,\"wall_seconds\":%.6f,",
                 completed ? "true" : "false", lisa_audio_load(&p->capture) ? "true" : "false",
@@ -320,6 +320,7 @@ static int run(const char *directory, unsigned seconds, bool capture)
                 (unsigned long long)s->max_pending,
                 (unsigned long long)s->reference_missing,
                 (unsigned long long)s->clock_errors, (unsigned long long)s->xruns,
+                (unsigned long long)s->playback.rebuffers,
                 (unsigned long long)p->adc_missing, (unsigned long long)p->output_underrun,
                 (unsigned long long)p->max_input_backlog, (unsigned long long)p->max_output_backlog,
                 host_monotonic_seconds() - started);
