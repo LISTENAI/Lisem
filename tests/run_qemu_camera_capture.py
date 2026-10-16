@@ -270,6 +270,51 @@ def rejection():
     print('Active pinmux loss, dynamic MCLK and unverified DMA burst modes rejected: PASS')
 
 
+def subsampling():
+    # Nonuniform 2x2 neighborhoods distinguish sensor averaging from a
+    # center crop, nearest-neighbor resize or averaging packed RGB565 bytes.
+    image_bytes = bytes(c for y in range(480) for x in range(640)
+                        for c in ((x * 23) % 256, (y * 71 + x * 5) % 256,
+                                  (x * 13 + y * 29) % 256))
+    encoded = base64.b64encode(image_bytes).decode()
+    m = Machine(OUTPUT / 'subsample')
+    try:
+        configure(m)
+        transfer(m, [0x50, 1, 0, 2, 0, 4])
+        transfer(m, [0x55, 0, 4, 0, 16])
+        transfer(m, [0x59, 0x22, 0x33])
+        m.qmp_command('qom-set', {'path': '/machine',
+                      'property': 'x-lisa-camera-frame', 'value': encoded})
+        for mirror in (0, 1, 2, 3):
+            transfer(m, [0x17, mirror])
+            expected_pixels = []
+            for y in range(2):
+                for x in range(8):
+                    channels = [0, 0, 0]
+                    for dy in range(2):
+                        for dx in range(2):
+                            sx, sy = 4 + x * 2 + dx, 2 + y * 2 + dy
+                            if mirror & 1: sx = 639 - sx
+                            if mirror & 2: sy = 479 - sy
+                            offset = (sy * 640 + sx) * 3
+                            for channel in range(3):
+                                channels[channel] += image_bytes[offset + channel]
+                    r, g, b = [(value + 2) // 4 for value in channels]
+                    expected_pixels.append((r >> 3) << 11 | (g >> 2) << 5 | b >> 3)
+            expected = [expected_pixels[j] | expected_pixels[j + 1] << 16
+                        for j in range(0, 16, 2)]
+            for j in range(9): m.write(RAM + 4 * j, 0xa5a5a5a5)
+            m.write(DVP + 0x2c, 0x7ff)
+            dma(m, 8); m.write(DMA, 0x5000c283)
+            m.write(DVP + 0x20, 1); m.command('clock_step 3000000')
+            assert [m.read(RAM + 4 * j) for j in range(8)] == expected
+            assert m.read(RAM + 32) == 0xa5a5a5a5
+            assert not m.read(DVP + 0x38) & 12
+            m.write(DVP + 0x20, 0)
+        print('GC0328 2x2 neighbor averaging, crop, mirror/flip, DMA bytes and guard: PASS')
+    finally: m.close()
+
+
 def arrival_order():
     # At 240 MHz HCLK these MCLK divisors make word periods 0.5/1/2 us.
     # A tight two-line crop also exercises a 1 us line gap. At equal time,
@@ -322,3 +367,4 @@ if __name__ == '__main__':
     rejection()
     formats()
     capacity_and_yuv()
+    subsampling()
