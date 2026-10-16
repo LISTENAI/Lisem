@@ -70,6 +70,17 @@ pub fn adapt(source: &image::RgbImage, rotation: u16) -> Result<Vec<u8>> {
         matches!(rotation, 0 | 90 | 180 | 270),
         "Invalid camera mounting rotation"
     );
+    match (rotation, source.dimensions()) {
+        (0, (WIDTH, HEIGHT)) => return Ok(source.as_raw().clone()),
+        (180, (WIDTH, HEIGHT)) => return Ok(image::imageops::rotate180(source).into_raw()),
+        (90, (HEIGHT, WIDTH)) => return Ok(image::imageops::rotate90(source).into_raw()),
+        (270, (HEIGHT, WIDTH)) => return Ok(image::imageops::rotate270(source).into_raw()),
+        _ => {}
+    }
+    Ok(adapt_sampled(source, rotation))
+}
+
+fn adapt_sampled(source: &image::RgbImage, rotation: u16) -> Vec<u8> {
     let (width, height) = if matches!(rotation, 90 | 270) {
         (source.height(), source.width())
     } else {
@@ -91,12 +102,25 @@ pub fn adapt(source: &image::RgbImage, rotation: u16) -> Result<Vec<u8>> {
         };
         sample_bilinear(source, u, v).unwrap()
     });
-    Ok(frame.into_raw())
+    frame.into_raw()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn matching_geometry_keeps_every_pixel_without_resampling() {
+        for rotation in [0, 90, 180, 270] {
+            let (width, height) = if rotation == 90 || rotation == 270 {
+                (HEIGHT, WIDTH)
+            } else { (WIDTH, HEIGHT) };
+            let source = image::RgbImage::from_fn(width, height, |x, y| {
+                image::Rgb([(x * 137 + y * 97) as u8, (x * 47 + y * 53) as u8,
+                            (x * 17 + y * 191) as u8])
+            });
+            assert_eq!(adapt(&source, rotation).unwrap(), adapt_sampled(&source, rotation));
+        }
+    }
     #[test]
     fn input_decodes_and_fills_sensor_frame() {
         let dir = tempfile::tempdir().unwrap();
