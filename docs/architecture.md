@@ -117,7 +117,7 @@ LED、功放和信号探针从接线派生观测元数据，界面读取驱动�
 | 通道 | macOS | Windows | Linux |
 | --- | --- | --- | --- |
 | 音频 | AudioQueue | WASAPI | PulseAudio 协议 |
-| 摄像头 | AVFoundation | 图片输入 | 图片输入 |
+| 摄像头 | AVFoundation | Media Foundation | 图片输入 |
 | 共享内存 | `shm_open` / `mmap` | `CreateFileMapping` | `shm_open` / `mmap` |
 | UART | PTY | 回环 Raw TCP | PTY |
 

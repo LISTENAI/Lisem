@@ -30,6 +30,10 @@ def verify_icon(bundle):
         import ctypes
         from ctypes import wintypes
         shell = ctypes.WinDLL('shell32', use_last_error=True)
+        runtime = bundle / 'runtime'
+        manifest = json.loads((runtime / 'manifest.json').read_text())
+        camera = runtime / 'bin/lisa-camera.exe'
+        assert hashlib.sha256(camera.read_bytes()).hexdigest() == manifest['files']['bin/lisa-camera.exe']
         extract = shell.ExtractIconExW
         extract.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
                             ctypes.POINTER(wintypes.HICON), ctypes.POINTER(wintypes.HICON), wintypes.UINT]
@@ -81,6 +85,11 @@ def main():
                 [str(camera), '--list'], env=env, cwd=directory, timeout=5))
             assert listing['supported'] is True
             assert listing['authorization'] in ('authorized', 'not-determined', 'denied', 'restricted')
+        elif os.name == 'nt':
+            camera = bundle / 'runtime/bin/lisa-camera.exe'
+            listing = json.loads(subprocess.check_output(
+                [str(camera), '--list'], env=env, cwd=directory, timeout=5))
+            assert listing['supported'] is True and isinstance(listing['devices'], list)
         subprocess.run([str(binary), '--help'], env=env, cwd=directory,
                        check=True, timeout=15, stdout=subprocess.DEVNULL)
         if os.name != 'nt':

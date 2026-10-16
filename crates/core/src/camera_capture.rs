@@ -21,7 +21,7 @@ const ERROR_DRAIN_GRACE: Duration = Duration::from_millis(100);
 pub const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub fn devices(assets: &Assets) -> Result<Value> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", windows)) {
         return Ok(json!({"supported":false,"authorization":"unsupported","devices":[]}));
     }
     assets.verify_camera()?;
@@ -168,7 +168,7 @@ pub struct Capture {
 impl Capture {
     pub fn start(assets: &Assets, device_id: &str, rotation: u16) -> Result<Self> {
         ensure!(
-            cfg!(target_os = "macos"),
+            cfg!(any(target_os = "macos", windows)),
             "Host camera capture is unsupported on this platform"
         );
         ensure!(

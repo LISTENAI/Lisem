@@ -21,10 +21,12 @@ import ci
 class CameraBuild(unittest.TestCase):
     def test_component_platform_boundary(self):
         for platform in ('darwin', 'linux', 'win32'):
-            with self.subTest(platform=platform), patch.object(sys, 'platform', platform):
+            with self.subTest(platform=platform), patch.object(sys, 'platform', platform), \
+                    patch.object(os, 'name', 'nt' if platform == 'win32' else 'posix'):
                 paths = ci.component_paths('native')
-                self.assertEqual('.tools/camera/lisa-camera' in paths, platform == 'darwin')
-                self.assertEqual('.tools/camera/build.json' in paths, platform == 'darwin')
+                camera = '.tools/camera/lisa-camera' + ('.exe' if platform == 'win32' else '')
+                self.assertEqual(camera in paths, platform != 'linux')
+                self.assertEqual('.tools/camera/build.json' in paths, platform != 'linux')
 
     def test_stamp_rejects_changed_source_and_binary(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(sys, 'platform', 'darwin'):
@@ -47,7 +49,7 @@ class CameraBuild(unittest.TestCase):
                 self.assertFalse(build_camera.current_build())
 
     def test_unsupported_backend_does_not_require_camera_build(self):
-        with patch.object(sys, 'platform', 'linux'):
+        with patch.object(sys, 'platform', 'linux'), patch.object(os, 'name', 'posix'):
             self.assertTrue(build_camera.current_build())
             with self.assertRaisesRegex(RuntimeError, 'only supported on macOS'):
                 build_camera.build()
@@ -117,6 +119,23 @@ class CameraTransport(unittest.TestCase):
         else:
             os.kill(pid, 9)
             self.fail('Camera helper survived parent exit')
+
+
+@unittest.skipUnless(sys.platform == 'win32', 'Requires Windows Media Foundation')
+class WindowsCameraTransport(unittest.TestCase):
+    def test_rgb_stride_latest_frame_and_device_text(self):
+        toolchain = os.environ['VCToolsInstallDir']
+        arch, host = os.environ['VSCMD_ARG_TGT_ARCH'], os.environ['VSCMD_ARG_HOST_ARCH']
+        compiler = Path(toolchain) / 'bin' / ('Host' + host) / arch / 'cl.exe'
+        with tempfile.TemporaryDirectory(prefix='lisem-camera-test-') as directory:
+            output = Path(directory)
+            binary = output / 'camera-test.exe'
+            subprocess.run([str(compiler), '/nologo', '/O2', '/W4', '/WX', '/std:c++17', '/EHsc', '/MD',
+                str(ROOT / 'tests/fixtures/host_camera_windows.cpp'),
+                '/Fo' + str(output / 'camera.obj'), '/Fe' + str(binary),
+                '/link', 'mf.lib', 'mfplat.lib', 'mfreadwrite.lib', 'mfuuid.lib', 'ole32.lib'],
+                check=True, timeout=60)
+            subprocess.run([str(binary)], check=True, timeout=5)
 
 
 if __name__ == '__main__':

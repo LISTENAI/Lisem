@@ -152,7 +152,7 @@ def main():
             cameras = client.tool('lisem_camera_devices', {})
             assert isinstance(cameras['supported'], bool)
             assert isinstance(cameras['devices'], list)
-            assert cameras['authorization'] in {'authorized', 'not-determined', 'denied', 'restricted', 'unsupported'}
+            assert cameras['authorization'] in {'authorized', 'not-determined', 'denied', 'restricted', 'unsupported', 'unknown'}
             client.tool('lisem_camera_input', {'id': identifier, 'path': None, 'device_id': 'camera'}, error=True)
             client.tool('lisem_camera_input', {'id': identifier, 'device_id': ''}, error=True)
             camera_image = Path(temporary) / 'camera.ppm'

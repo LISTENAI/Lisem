@@ -48,11 +48,11 @@ impl Assets {
     pub fn camera(&self) -> PathBuf {
         self.root
             .join(if self.bundled { "bin" } else { ".tools/camera" })
-            .join("lisa-camera")
+            .join(if cfg!(windows) { "lisa-camera.exe" } else { "lisa-camera" })
     }
     pub fn verify_camera(&self) -> Result<()> {
         ensure!(
-            cfg!(target_os = "macos"),
+            cfg!(any(target_os = "macos", windows)),
             "Host camera capture is unsupported on this platform"
         );
         if self.bundled {
@@ -207,7 +207,7 @@ impl Assets {
             .as_object()
             .context("Runtime files missing")?;
         let mut assets = vec![self.qemu(), self.audio(), self.network()];
-        if cfg!(target_os = "macos") {
+        if cfg!(any(target_os = "macos", windows)) {
             assets.push(self.camera());
         }
         for asset in assets {

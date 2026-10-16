@@ -1004,7 +1004,7 @@ impl CameraSource {
                 .filter(|id| !id.is_empty() && id.len() <= 4096)
                 .context("Invalid host camera device ID")?;
             ensure!(
-                cfg!(target_os = "macos"),
+                cfg!(any(target_os = "macos", windows)),
                 "Host camera capture is unsupported on this platform"
             );
             return Ok(Self {

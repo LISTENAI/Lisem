@@ -116,6 +116,8 @@ def package(bundle, target):
             (ROOT / '.tools/audio' / ('lisa-audio' + SUFFIX), runtime / 'bin' / ('lisa-audio' + SUFFIX)),
             (ROOT / '.tools/network' / ('arcs_slirp.dll' if WINDOWS else 'libarcs_slirp.so'), runtime / 'lib' / ('arcs_slirp.dll' if WINDOWS else 'libarcs_slirp.so')),
         ]
+        if WINDOWS:
+            copies.append((ROOT / '.tools/camera/lisa-camera.exe', runtime / 'bin/lisa-camera.exe'))
         for source, destination in copies:
             shutil.copy2(source, destination)
         for directory in ('boards', 'chips'):
