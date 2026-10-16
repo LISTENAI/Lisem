@@ -174,6 +174,8 @@ impl Desktop {
         };
         let view = cx.entity().downgrade();
         Button::new(kind)
+            .w(px(32.))
+            .h(px(32.))
             .ghost()
             .icon(icon)
             .accessibility_label(label)
@@ -235,7 +237,7 @@ impl Desktop {
         });
     }
 
-    fn populate_peripheral_menu(
+    pub(super) fn populate_peripheral_menu(
         &self,
         kind: &str,
         mut menu: PopupMenu,

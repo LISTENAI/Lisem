@@ -2,7 +2,56 @@
 use crate::*;
 use gpui::component::menu::ContextMenuExt;
 
+#[derive(Clone, PartialEq)]
+pub(super) struct BoardOption {
+    id: String,
+    label: SharedString,
+}
+
+impl SelectItem for BoardOption {
+    type Value = String;
+    fn title(&self) -> SharedString {
+        self.label.clone()
+    }
+    fn value(&self) -> &String {
+        &self.id
+    }
+}
+
 impl Desktop {
+    pub(super) fn sync_board_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let options: Vec<_> = self.state.data["boards"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|board| board["runtime"]["available"] != false)
+            .filter_map(|board| {
+                Some(BoardOption {
+                    id: board["id"].as_str()?.to_owned(),
+                    label: format!(
+                        "{} · {}",
+                        board["name"].as_str()?,
+                        board["chip"].as_str()?.to_uppercase()
+                    )
+                    .into(),
+                })
+            })
+            .collect();
+        if self.board_options != options {
+            self.board_select.update(cx, |select, cx| {
+                select.set_items(options.clone(), window, cx)
+            });
+            self.board_options = options;
+        }
+        if self.board_select.read(cx).selected_value() != self.new_board.as_ref() {
+            self.board_select
+                .update(cx, |select, cx| match &self.new_board {
+                    Some(id) => select.set_selected_value(id, window, cx),
+                    None => select.set_selected_index(None, window, cx),
+                });
+        }
+    }
+
     fn select_instance(&mut self, id: &str) {
         self.selected = Some(id.to_owned());
         self.state.data["session"] = self.state.data["sessions"][id].clone();
@@ -59,7 +108,7 @@ impl Desktop {
 
     pub(super) fn library_panel(&self, cx: &mut Context<Self>) -> Div {
         let devices = self.devices();
-        let mut list = div().id("instances").flex_1().min_h_0().overflow_y_scroll();
+        let mut list = div().id("instances").flex_1().min_h_0();
         if devices.is_empty() {
             list = list.flex().items_center().justify_center().child(caption(
                 if self.state.data["devices"].is_array() {
@@ -167,31 +216,11 @@ impl Desktop {
                 });
             list = list.child(row);
         }
-        div().flex_1().min_w_0().flex().flex_col().child(list)
+        div().flex_1().min_w_0().flex().flex_col().child(list.overflow_y_scrollbar())
     }
 
-    pub(super) fn wifi_panel(&self, device: &Device, cx: &mut Context<Self>) -> Div {
-        div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .flex_col()
-            .p_6()
-            .gap_4()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex_1()
-                            .text_lg()
-                            .child(format!("{} · Wi-Fi", device.name)),
-                    )
-                    .child(caption(self.lifecycle()))
-                    .child(self.control("返回设备", "wifi-back", Action::Cancel, true, false, cx)),
-            )
+    pub(super) fn wifi_panel(&self) -> Div {
+        div().flex_1().min_w_0().min_h_0().flex().flex_col().p_6()
             .child(self.wifi.as_ref().unwrap().clone())
     }
 }

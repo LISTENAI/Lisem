@@ -8,6 +8,8 @@ mod display;
 mod icons;
 mod library;
 mod peripheral_controls;
+mod platform;
+mod toolbar;
 mod signals;
 mod theme;
 mod touch;
@@ -16,7 +18,8 @@ mod wifi_environment;
 use backend::{Backend, Device, Snapshot};
 use camera_selector::{CameraChoice, CameraOption};
 use gpui::component::{
-    ActiveTheme, Disableable, Icon, TitleBar,
+    ActiveTheme, Disableable, Icon,
+    scroll::ScrollableElement,
     button::{Button, ButtonVariants},
     input::{Input, InputState},
     menu::{DropdownMenu, PopupMenu, PopupMenuItem},
@@ -31,6 +34,8 @@ use gpui::{
     WindowBounds, WindowOptions, actions, div, img, prelude::*, px, rgb, size,
 };
 use peripheral_controls::settings_row;
+use platform::TitleBar;
+use library::BoardOption;
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
@@ -121,6 +126,8 @@ struct Desktop {
     held: HashSet<String>,
     touch: Option<Value>,
     new_board: Option<String>,
+    board_select: Entity<SelectState<Vec<BoardOption>>>,
+    board_options: Vec<BoardOption>,
     package: Option<PathBuf>,
     name: Entity<InputState>,
     title: String,
@@ -218,6 +225,12 @@ impl Desktop {
             Mode::Device(id) => Some(id.clone()),
             Mode::Library => None,
         };
+        let board_select = cx.new(|cx| SelectState::new(Vec::<BoardOption>::new(), None, window, cx));
+        cx.subscribe_in(&board_select, window, |view, _, event, _, cx| {
+            let SelectEvent::Confirm(choice) = event;
+            view.new_board = choice.clone();
+            cx.notify();
+        }).detach();
         let camera_select =
             cx.new(|cx| SelectState::new(Vec::<CameraOption>::new(), None, window, cx));
         cx.subscribe_in(&camera_select, window, |view, _, event, window, cx| {
@@ -251,6 +264,8 @@ impl Desktop {
             held: HashSet::new(),
             touch: None,
             new_board: None,
+            board_select,
+            board_options: Vec::new(),
             package: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("实例名称")),
             title: String::new(),
@@ -430,7 +445,6 @@ impl Desktop {
                 self.creating = false;
                 self.settings = false;
                 self.wifi_visible = false;
-                self.signals_visible = false;
             }
             Action::Details => {}
             Action::Settings if matches!(self.mode, Mode::Library) => {
@@ -496,7 +510,12 @@ impl Desktop {
             Action::Create => self.send("create", json!({
                 "name": self.name.read(cx).value(), "board": self.new_board, "package": self.package
             })),
-            Action::Start => self.send("start", json!({"id": self.selected, "online":self.device().is_some_and(|d| d.capabilities.wifi)})),
+            Action::Start => self.send("start", json!({
+                "id": self.selected,
+                "online": self.device().is_some_and(|d| d.capabilities.wifi),
+                "seconds": 86400,
+                "timeout": 172800,
+            })),
             Action::Reset | Action::ResetDownload | Action::Stop => {
                 self.release_buttons();
                 let method = match action {
@@ -673,6 +692,8 @@ impl Desktop {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let button = Button::new(id)
+            .w(px(32.))
+            .h(px(32.))
             .ghost()
             .icon(Icon::empty().path(id))
             .accessibility_label(label)
@@ -735,46 +756,21 @@ impl Desktop {
             .when(primary, |b| b.primary())
             .on_click(cx.listener(move |v, _, w, cx| v.act(action, w, cx)))
     }
-    fn new_panel(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    fn new_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut form = div()
             .flex()
             .flex_col()
             .gap_5()
             .max_w(px(520.))
             .w_full()
-            .child(div().text_xl().child("新建实例"))
             .child(field("名称", self.name.clone()));
-        for board in self.state.data["boards"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-        {
-            if board["runtime"]["available"] == false { continue; }
-            let id = board["id"].as_str().unwrap_or_default().to_owned();
-            let selected = self.new_board.as_deref() == Some(&id);
-            let name = board["name"].as_str().unwrap_or_default().to_owned();
-            form = form.child(
-                div()
-                    .id(SharedString::from(format!("board-{id}")))
-                    .p_4()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(rgb(if selected { 0x65d4b4 } else { 0x38404b }))
-                    .bg(cx.theme().secondary)
-                    .cursor_pointer()
-                    .child(name)
-                    .child(caption(
-                        board["chip"].as_str().unwrap_or_default().to_uppercase(),
-                    ))
-                    .on_click(cx.listener(move |v, _, _, cx| {
-                        v.new_board = Some(id.clone());
-                        cx.notify();
-                    })),
-            );
-        }
-        form = form
-            .child(self.control("导入板型…", "import-board", Action::ImportBoard,
-                !self.state.busy, false, cx))
+        form = form.child(div().flex().flex_col().gap_2()
+            .child(caption("板型"))
+            .child(div().flex().items_center().gap_3()
+                .child(div().flex_1().min_w_0().child(
+                    Select::new(&self.board_select).accessibility_label("板型").w_full().disabled(self.state.busy)))
+                .child(self.control("导入板型…", "import-board", Action::ImportBoard,
+                    !self.state.busy, false, cx))))
             .child(
                 div()
                     .flex()
@@ -805,31 +801,49 @@ impl Desktop {
                             cx,
                         ))
                     }),
+            );
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .id("new-instance-form")
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .p_6()
+                    .child(form.flex_shrink_0())
+                    .overflow_y_scrollbar(),
             )
             .child(
                 div()
+                    .flex_shrink_0()
                     .flex()
-                    .gap_3()
-                    .child(self.control(
-                        "创建实例",
-                        "create",
-                        Action::Create,
-                        !self.state.busy && self.new_board.is_some(),
-                        true,
-                        cx,
-                    ))
-                    .child(self.control("取消", "cancel", Action::Cancel, true, false, cx)),
-            );
-        div()
-            .id("new-instance-form")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .items_center()
-            .p_8()
-            .child(form.flex_shrink_0())
+                    .justify_center()
+                    .px_6()
+                    .py_4()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .w_full()
+                            .max_w(px(520.))
+                            .flex()
+                            .justify_end()
+                            .child(self.control(
+                                "创建实例",
+                                "create",
+                                Action::Create,
+                                !self.state.busy && self.new_board.is_some(),
+                                true,
+                                cx,
+                            )),
+                    ),
+            )
     }
     fn settings_panel(&mut self, d: &Device, _window: &mut Window, cx: &mut Context<Self>) -> Div {
         let idle = !self.control_busy(&[]);
@@ -923,7 +937,7 @@ impl Desktop {
                             .flex()
                             .items_center()
                             .gap_3()
-                            .child(Input::new(&self.name).w(px(300.)))
+                            .child(div().flex_1().min_w_0().child(Input::new(&self.name)))
                             .child(self.control(
                                 "保存",
                                 "save-name",
@@ -958,7 +972,8 @@ impl Desktop {
                             .flex_col()
                             .items_start()
                             .gap_3()
-                            .child(div().text_sm().child(d.path.clone()))
+                            .child(div().id("instance-path").text_sm().truncate().child(d.path.clone())
+                                .tooltip({ let path = d.path.clone(); move |w, cx| Tooltip::new(path.clone()).build(w, cx) }))
                             .child(self.control(
                                 "打开所在文件夹",
                                 "settings-folder",
@@ -977,22 +992,14 @@ impl Desktop {
             .flex_col()
             .p_6()
             .gap_5()
-            .child(
-                div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .child(div().text_xl().child(format!("{} · 设置", d.name)))
-                    .child(self.control("返回设备", "done", Action::Cancel, true, false, cx)),
-            )
             .child(tabs)
             .child(
                 div()
                     .id("settings-body")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .child(body),
+                    .child(body)
+                    .overflow_y_scrollbar(),
             )
     }
     fn device_overview(&self, d: &Device, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -1054,9 +1061,8 @@ impl Desktop {
             )
     }
 
-    fn device_panel(&self, d: &Device, cx: &mut Context<Self>) -> Div {
+    fn device_panel(&self, d: &Device, window: &Window, cx: &mut Context<Self>) -> Div {
         let on = self.powered();
-        let idle = !self.control_busy(&[]);
         let indicators = d.hardware["board"]["indicators"]
             .as_array()
             .cloned()
@@ -1072,7 +1078,10 @@ impl Desktop {
         let height = d.hardware["board"]["screen"]["height"]
             .as_f64()
             .unwrap_or(240.);
-        let scale = 336. / width.max(height);
+        let insets = gpui::component::window_paddings(window);
+        let available = f32::from(window.viewport_size().width - insets.left - insets.right)
+            - if self.signals_visible { 300. } else { 0. };
+        let scale = (available - 64.).clamp(120., 336.) as f64 / width.max(height);
         let mut screen = div()
             .w(px((width * scale) as f32))
             .h(px((height * scale) as f32))
@@ -1134,7 +1143,7 @@ impl Desktop {
                     cx.listener(|v, _, _, _| v.release_touch()),
                 );
         }
-        let mut keys = div().flex().items_center().gap_3();
+        let mut keys = div().flex().flex_wrap().justify_center().items_center().gap_3();
         for key in d.hardware["board"]["buttons"]
             .as_array()
             .cloned()
@@ -1151,16 +1160,16 @@ impl Desktop {
                     .py_3()
                     .rounded_lg()
                     .border_1()
-                    .border_color(rgb(if self.held.contains(&id) {
-                        0x65d4b4
+                    .border_color(if self.held.contains(&id) {
+                        cx.theme().primary
                     } else {
-                        0x38404b
-                    }))
-                    .bg(rgb(if self.held.contains(&id) {
-                        0x254c41
+                        cx.theme().border
+                    })
+                    .bg(if self.held.contains(&id) {
+                        cx.theme().accent
                     } else {
-                        0x242a33
-                    }))
+                        cx.theme().secondary
+                    })
                     .when(!on, |e| e.opacity(0.3))
                     .when(on, |e| e.cursor_pointer())
                     .child(key["label"].as_str().unwrap_or_default().to_owned())
@@ -1189,144 +1198,21 @@ impl Desktop {
                     ),
             );
         }
-        let mut status_lights = div().flex().items_center().gap_1();
-        for indicator in indicators
-            .iter()
-            .filter(|item| item["kind"] == "led" || item["kind"] == "signal")
-        {
-            let id = indicator["id"].as_str().unwrap_or_default();
-            let label = indicator["label"].as_str().unwrap_or(id);
-            let lit = indicator_on(id);
-            let status = if !on {
-                "已下电"
-            } else {
-                match self.state.data["session"]["indicators"][id].as_bool() {
-                    Some(true) => "有效",
-                    Some(false) => "无效",
-                    None => "未驱动",
-                }
-            };
-            let tooltip = format!("{label} · {status}");
-            let color = indicator["color"]
-                .as_str()
-                .and_then(|color| u32::from_str_radix(color.trim_start_matches('#'), 16).ok())
-                .unwrap_or(0x4cc3a2);
-            status_lights = status_lights.child(
-                div()
-                    .id(SharedString::from(format!("indicator-{id}")))
-                    .size(px(32.))
-                    .flex_shrink_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
-                    .child(
-                        div()
-                            .size(px(10.))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(rgb(if lit { color } else { 0x48515e }))
-                            .bg(rgb(if lit { color } else { 0x202630 })),
-                    ),
-            );
-        }
         let content = div()
             .relative()
             .flex_1()
+            .min_w_0()
             .flex()
             .flex_col()
             .gap_4()
-            .child(
-                TitleBar::new()
-                    .h(px(52.))
-                    .bg(cx.theme().background)
-                    .when(!cfg!(target_os = "macos"), |bar| {
-                        bar.child(application_menu())
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .pl_4()
-                            .pr_4()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_3()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_lg()
-                                    .child(d.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    // Controls must not inherit the title bar's native drag hitbox.
-                                    .occlude()
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .gap_1()
-                                    .child(status_lights)
-                                    .when(d.capabilities.camera, |bar| {
-                                        let active = on && self.state.data["session"]["camera_input"]["receiver_enabled"] == true;
-                                        bar.child(self.peripheral_menu("camera", active, cx))
-                                    })
-                                    .when(d.capabilities.audio, |bar| bar.child(self.peripheral_menu(
-                                        "microphone",
-                                        on && self.state.data["session"]["audio_input_enabled"]
-                                            == true,
-                                        cx,
-                                    )))
-                                    .when(d.capabilities.audio, |bar| bar.child(self.peripheral_menu("speaker", pa_enabled, cx)))
-                                    .when(d.capabilities.wifi, |bar| bar.child(self.peripheral_menu(
-                                        "network",
-                                        self.access_point_present(&d),
-                                        cx,
-                                    )))
-                                    .when(d.capabilities.sd, |bar| bar.child(self.peripheral_menu("sd", self.sd_medium(&d)["path"].is_string(), cx)))
-                                    .when(d.capabilities.usb_adb, |bar| bar.child(self.peripheral_menu("usb", self.usb_configured(), cx)))
-                                    .when(!d.capabilities.uart_channels.is_empty(), |bar| bar.child(self.peripheral_menu("serial", false, cx)))
-                                    .child(self.icon(
-                                        "power",
-                                        match self.lifecycle() {
-                                            "已上电" => "下电",
-                                            "已下电" => "上电",
-                                            state => state,
-                                        },
-                                        if on { Action::Stop } else { Action::Start },
-                                        idle && (!self.running() || on),
-                                        on,
-                                        cx,
-                                    ))
-                                    .child(self.icon(
-                                        "reset",
-                                        "复位",
-                                        Action::Reset,
-                                        idle && on,
-                                        false,
-                                        cx,
-                                    ))
-                                    .child(self.icon(
-                                        "more",
-                                        "实例",
-                                        Action::Details,
-                                        true,
-                                        false,
-                                        cx,
-                                    )),
-                            ),
-                    ),
-            )
+            .child(self.device_toolbar(d, &indicators, pa_enabled, window, cx))
             .child(
                 div().flex_1().min_h_0().flex()
                     .child(
-                        div().flex_1().min_w_0().flex().flex_col()
-                            .items_center().justify_center().gap_5()
+                        div().id("device-view").flex_1().min_w_0().flex().flex_col()
+                            .overflow_y_scrollbar().items_center().justify_center().gap_5()
                             .when(d.capabilities.screen, |body| body.child(
-                                div().p_4().rounded_2xl().bg(rgb(0x10141a))
+                                div().p_4().rounded_2xl().bg(cx.theme().muted)
                                     .border_1().border_color(cx.theme().border)
                                     .child(screen),
                             ))
@@ -1359,17 +1245,30 @@ impl Desktop {
 
 fn application_menu() -> impl IntoElement {
     Button::new("application-menu")
-        .label("Lisem")
+        .icon(gpui::assets::IconName::Menu)
         .ghost()
-        .dropdown_menu_with_anchor(gpui::Anchor::TopLeft, |menu, _, _| {
+        .w(px(32.))
+        .h(px(32.))
+        .accessibility_label("应用菜单")
+        .tooltip("应用菜单")
+        .dropdown_menu_with_anchor(gpui::Anchor::TopRight, |menu, _, _| {
             menu.item(PopupMenuItem::new("关于 Lisem").action(Box::new(ShowAbout)))
                 .item(PopupMenuItem::new("安装命令行工具").action(Box::new(InstallCli)))
                 .item(PopupMenuItem::new("退出 Lisem").action(Box::new(Quit)))
         })
 }
 
-fn caption(text: impl Into<SharedString>) -> Div {
-    div().text_xs().text_color(rgb(0x949eaf)).child(text.into())
+#[derive(gpui::IntoElement)]
+struct Caption(SharedString);
+
+impl gpui::RenderOnce for Caption {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div().text_xs().text_color(cx.theme().muted_foreground).child(self.0)
+    }
+}
+
+fn caption(text: impl Into<SharedString>) -> Caption {
+    Caption(text.into())
 }
 fn field(label: &str, input: Entity<InputState>) -> Div {
     div()
@@ -1380,16 +1279,11 @@ fn field(label: &str, input: Entity<InputState>) -> Div {
         .child(caption(label.to_owned()))
         .child(Input::new(&input).aria_label(label.to_owned()))
 }
-fn info(label: &str, value: &str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .child(caption(label.to_owned()))
-        .child(div().text_sm().child(value.to_owned()))
-}
 impl Render for Desktop {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.creating {
+            self.sync_board_options(window, cx);
+        }
         if let Some(d) = self.device() {
             self.sync_camera_options(&d, window, cx);
         }
@@ -1446,9 +1340,9 @@ impl Render for Desktop {
             if self.settings {
                 layout = layout.child(self.settings_panel(&d, window, cx));
             } else if self.wifi_visible {
-                layout = layout.child(self.wifi_panel(&d, cx));
+                layout = layout.child(self.wifi_panel());
             } else {
-                layout = layout.child(self.device_panel(&d, cx));
+                layout = layout.child(self.device_panel(&d, window, cx));
             }
         } else {
             layout = layout.child(
@@ -1493,10 +1387,38 @@ impl Render for Desktop {
                 |e| {
                     e.child(
                         TitleBar::new()
+                            .on_close_window(cx.listener(|view, _, window, _| {
+                                view.release_buttons();
+                                window.remove_window();
+                            }))
                             .h(px(52.))
                             .bg(cx.theme().background)
-                            .when(!cfg!(target_os = "macos"), |bar| {
-                                bar.child(application_menu())
+                            .when(
+                                !cfg!(target_os = "macos")
+                                    && matches!(self.mode, Mode::Library)
+                                    && !self.creating,
+                                |bar| {
+                                    bar.child(
+                                        div()
+                                            .flex()
+                                            .items_center()
+                                            .gap_2()
+                                            .pl_2()
+                                            .flex_shrink_0()
+                                            .child(img("app-icon").size(px(24.)))
+                                            .child(div().text_base().child("Lisem")),
+                                    )
+                                },
+                            )
+                            .when(self.creating || self.settings || self.wifi_visible, |bar| {
+                                let heading = if self.creating { "新建实例".to_owned() }
+                                    else if self.wifi_visible { format!("{} · 热点", self.device().map(|d| d.name).unwrap_or_default()) }
+                                    else { format!("{} · 设置", self.device().map(|d| d.name).unwrap_or_default()) };
+                                bar.child(div().flex_1().min_w_0().px_4().flex().items_center().gap_3()
+                                    .child(div().flex_1().min_w_0().truncate().text_lg().child(heading))
+                                    .child(div().occlude().child(self.control(
+                                        if self.creating { "取消" } else { "返回设备" },
+                                        "page-back", Action::Cancel, true, false, cx))))
                             })
                             .when(
                                 matches!(self.mode, Mode::Library) && !self.creating,
@@ -1506,8 +1428,13 @@ impl Render for Desktop {
                                             .flex_1()
                                             .flex()
                                             .justify_end()
+                                            .items_center()
+                                            .gap_1()
                                             .pr_6()
-                                            .child(self.library_add_button(cx)),
+                                            .child(div().occlude().child(self.library_add_button(cx)))
+                                            .when(!cfg!(target_os = "macos"), |row| {
+                                                row.pr_4().child(div().occlude().child(application_menu()))
+                                            }),
                                     )
                                 },
                             ),
@@ -1524,7 +1451,7 @@ impl Render for Desktop {
                         .border_t_1()
                         .border_color(cx.theme().border)
                         .text_xs()
-                        .text_color(rgb(if error.is_some() { 0xffa495 } else { 0xa5b2c3 }))
+                        .text_color(if error.is_some() { cx.theme().danger } else { cx.theme().muted_foreground })
                         .child(message),
                 )
             })
@@ -1544,7 +1471,7 @@ fn open_window(
         size(px(800.), px(720.))
     };
     let (handle, view) = gpui::open_window(
-        WindowOptions {
+        platform::window_options(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None, dimensions, cx,
             ))),
@@ -1560,7 +1487,7 @@ fn open_window(
             app_id: Some("com.listenai.emulator".into()),
             app_owns_titlebar_drag: true,
             ..Default::default()
-        },
+        }),
         cx,
         |window, cx| {
             let view = cx.new(|cx| Desktop::new(backend, windows, mode, window, cx));

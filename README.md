@@ -30,10 +30,9 @@ brew install --cask listenai/tap/lisem
 
 ### 创建第一台设备
 
-1. 打开 Lisem，点击右上角的添加按钮，选择「新建实例…」，
-   选择 **Arcs-Mini** 或 **Arcs-EVB**。
+1. 打开 Lisem，点击右上角的添加按钮，选择「新建实例…」和对应板型。
 2. 导入对应板型的 LPK 固件包，创建实例。
-3. 双击实例，在右上角上电。Arcs-Mini 固件若需要长按开机，按住下方的功能键。
+3. 双击实例，在右上角上电。固件若需要长按开机，按住对应的功能键。
 
 固件包需要自行准备。每台设备的固件、设置和设备身份独立保存，重新打开即可
 继续使用。点击列表中的齿轮按钮可打开设备设置。
@@ -54,7 +53,7 @@ brew install --cask listenai/tap/lisem
   picocom 等串口工具，Windows 使用 PuTTY 的 Raw TCP 连接。
 - **SD 卡**：在 SD 卡菜单插入 raw 镜像或弹出，支持运行中更换；分区和文件
   系统由固件读取，镜像内容会保留设备写入。
-- **信号输入**：从设备窗口的「实例」菜单展开面板，可随时修改板型提供的
+- **信号输入**：从设备窗口的「更多」菜单展开面板，可随时修改板型提供的
   数字电平和模拟电压。
 - **网络**：默认提供开放热点 `Lisem`。在 Wi-Fi 菜单的「热点设置…」中，
   可随时添加、修改或移除热点，设置名称、信号强度、信道及 WPA2 密码，查看
@@ -66,10 +65,10 @@ brew install --cask listenai/tap/lisem
 
 ## 命令行
 
-桌面与 CLI 共用实例库。从 Lisem 菜单选择「安装命令行工具」，按提示设置
-终端命令。也可直接运行包内 CLI：macOS 位于 `Lisem.app/Contents/MacOS/lisem`，
-Windows/Linux 位于解压目录中的 `lisem.exe` / `lisem`。以下用 `lisem` 表示
-该命令：
+桌面与 CLI 共用实例库。从应用菜单选择「安装命令行工具」，按提示设置
+终端命令。也可直接运行包内 CLI：macOS 位于
+`Lisem.app/Contents/MacOS/lisem`，Windows/Linux 位于解压目录中的
+`lisem.exe` / `lisem`。以下用 `lisem` 表示该命令：
 
 ```sh
 # 创建实例；INSTANCE_ID 使用创建结果中的 ID

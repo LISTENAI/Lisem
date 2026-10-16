@@ -1,7 +1,7 @@
 //! Per-instance logical Wi-Fi environment editor.
 use crate::backend::{Backend, Device};
 use gpui::component::{
-    ActiveTheme, Disableable,
+    ActiveTheme, Disableable, scroll::ScrollableElement,
     button::{Button, ButtonVariants},
     input::{Input, InputEvent, InputState},
     menu::{DropdownMenu, PopupMenuItem},
@@ -431,7 +431,7 @@ impl Render for WifiEnvironment {
             .id("wifi-environment")
             .size_full()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .flex()
             .flex_col()
             .gap_3()

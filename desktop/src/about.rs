@@ -1,12 +1,14 @@
 use gpui::component::{
-    ActiveTheme, Disableable, TitleBar,
+    ActiveTheme, Disableable,
     button::{Button, ButtonVariants},
+    scroll::ScrollableElement,
 };
 use gpui::{
     AnyWindowHandle, App, Bounds, Context, Render, Task, TitlebarOptions, Window, WindowBounds,
     WindowOptions, div, img, prelude::*, px, size,
 };
 
+use crate::platform::TitleBar;
 use crate::updates::{self, CheckError, ReleaseStatus};
 
 #[derive(Default)]
@@ -39,17 +41,25 @@ impl About {
 }
 
 impl Render for About {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let native_frame = cfg!(target_os = "linux")
+            && matches!(window.window_decorations(), gpui::Decorations::Server);
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(TitleBar::new().h(px(52.)).bg(cx.theme().background))
+            .when(!native_frame, |view| {
+                view.child(TitleBar::new().h(px(52.)).bg(cx.theme().background))
+            })
+            .when(native_frame, |view| view.pt_6())
             .child(
                 div()
+                    .id("about-content")
                     .flex_1()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
                     .flex()
                     .flex_col()
                     .items_center()
@@ -80,45 +90,54 @@ impl Render for About {
                             .disabled(self.checking)
                             .on_click(cx.listener(|view, _, _, cx| view.check_updates(cx))),
                     )
-                    .child(
-                        div()
-                            .h(px(64.))
-                            .w_full()
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(match &self.result {
-                                        Some(Ok(ReleaseStatus::Current)) => "已是最新版本".into(),
-                                        Some(Ok(ReleaseStatus::Available { version, .. })) => {
-                                            format!("发现新版本 {version}")
+                    .when(self.result.is_some(), |body| {
+                        body.child(
+                            div()
+                                .flex_shrink_0()
+                                .min_h(px(48.))
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(match &self.result {
+                                            Some(Ok(ReleaseStatus::Current)) => {
+                                                "已是最新版本".into()
+                                            }
+                                            Some(Ok(ReleaseStatus::Available {
+                                                version, ..
+                                            })) => {
+                                                format!("发现新版本 {version}")
+                                            }
+                                            Some(Ok(ReleaseStatus::Unpublished)) => {
+                                                "暂无已发布版本".into()
+                                            }
+                                            Some(Err(error)) => error.message(),
+                                            None => String::new(),
+                                        }),
+                                )
+                                .when_some(
+                                    self.result.as_ref().and_then(|result| match result {
+                                        Ok(ReleaseStatus::Available { url, .. }) => {
+                                            Some(url.clone())
                                         }
-                                        Some(Ok(ReleaseStatus::Unpublished)) => {
-                                            "暂无已发布版本".into()
-                                        }
-                                        Some(Err(error)) => error.message(),
-                                        None => String::new(),
+                                        _ => None,
                                     }),
-                            )
-                            .when_some(
-                                self.result.as_ref().and_then(|result| match result {
-                                    Ok(ReleaseStatus::Available { url, .. }) => Some(url.clone()),
-                                    _ => None,
-                                }),
-                                |view, url| {
-                                    view.child(
-                                        Button::new("view-release")
-                                            .label("查看新版本")
-                                            .ghost()
-                                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                                    )
-                                },
-                            ),
-                    )
+                                    |view, url| {
+                                        view.child(
+                                            Button::new("view-release")
+                                                .label("查看新版本")
+                                                .ghost()
+                                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                                        )
+                                    },
+                                ),
+                        )
+                    })
                     .child(
                         div()
                             .flex()
@@ -146,7 +165,7 @@ impl Render for About {
 
 pub fn open(cx: &mut App) -> AnyWindowHandle {
     let (handle, _) = gpui::open_window(
-        WindowOptions {
+        crate::platform::window_options(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                 None,
                 size(px(400.), px(480.)),
@@ -162,7 +181,7 @@ pub fn open(cx: &mut App) -> AnyWindowHandle {
             app_id: Some("com.listenai.emulator".into()),
             app_owns_titlebar_drag: true,
             ..Default::default()
-        },
+        }),
         cx,
         |_, cx| cx.new(|_| About::default()),
     )
