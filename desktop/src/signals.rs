@@ -408,16 +408,15 @@ impl Render for Signals {
             if digital {
                 let target = id.clone();
                 let pin = row["pin"].as_u64().unwrap_or(0);
+                let endpoint = row["endpoint"].as_str()
+                    .map(|text| text.strip_prefix("chip.").unwrap_or(text).to_owned())
+                    .unwrap_or_else(|| format!("P{}{}", if pin < 32 { "A" } else { "B" }, pin % 32));
                 content = content.child(
                     div()
                         .flex()
                         .items_center()
                         .justify_between()
-                        .child(caption(format!(
-                            "P{}{}",
-                            if pin < 32 { "A" } else { "B" },
-                            pin % 32
-                        )))
+                        .child(caption(endpoint))
                         .child(
                             Switch::new(("signal", index))
                                 .checked(value == true)

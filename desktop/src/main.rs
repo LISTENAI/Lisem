@@ -83,6 +83,7 @@ enum Action {
     Create,
     Attach,
     Import,
+    ImportBoard,
     Erase,
     Start,
     Stop,
@@ -377,6 +378,7 @@ impl Desktop {
                     Action::Attach => "打开实例目录",
                     Action::Camera => "选择摄像头图片（PNG / JPEG / PNM）",
                     Action::MountSd => "选择 SD 卡镜像",
+                    Action::ImportBoard => "选择板型 JSON",
                     _ => "选择要写入 Flash 的 LPK",
                 }
                 .into(),
@@ -389,6 +391,7 @@ impl Desktop {
                         match action {
                             Action::ChoosePackage => v.package = Some(path.clone()),
                             Action::Attach => v.send("attach", json!({"path":path})),
+                            Action::ImportBoard => v.send("board_import", json!({"path":path})),
                             Action::Camera => {
                                 v.send("camera", json!({"id":selected,"run":run,"path":path}))
                             }
@@ -475,7 +478,7 @@ impl Desktop {
                     show_device(&d, self.backend.clone(), self.windows.clone(), cx);
                 }
             }
-            Action::ChoosePackage | Action::Attach | Action::Import | Action::Camera | Action::MountSd => {
+            Action::ChoosePackage | Action::Attach | Action::Import | Action::ImportBoard | Action::Camera | Action::MountSd => {
                 self.choose_file(action, cx);
             }
             Action::RefreshCameras => self.refresh_cameras(),
@@ -770,6 +773,8 @@ impl Desktop {
             );
         }
         form = form
+            .child(self.control("导入板型…", "import-board", Action::ImportBoard,
+                !self.state.busy, false, cx))
             .child(
                 div()
                     .flex()

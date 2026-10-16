@@ -147,7 +147,7 @@ impl Backend {
                         let _ = reply.send(bridge.call(method, params));
                     }
                     Ok(Request::Call(method, params)) => {
-                        let owner = if matches!(method, "create" | "attach" | "detach") {
+                        let owner = if matches!(method, "create" | "attach" | "detach" | "board_import") {
                             Some(LIBRARY_NOTICE.to_owned())
                         } else { params["id"].as_str().map(str::to_owned) };
                         {
@@ -178,6 +178,7 @@ impl Backend {
                                     "detach" => "已从实例库移除，文件保留".into(),
                                     "create" => "实例已创建".into(),
                                     "attach" => "实例已打开".into(),
+                                    "board_import" => "板型已导入".into(),
                                     "import" => "LPK 已写入".into(),
                                     "erase" => "Flash 已清空".into(),
                                     "regenerate_uid" => "UID 已重新生成".into(),
