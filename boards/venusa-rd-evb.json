@@ -1,29 +1,74 @@
 {
+  "schema_version": 1,
   "id": "venusa-rd-evb",
   "name": "VenusA RD EVB",
   "chip": "venusa",
-  "version": 1,
-  "flash_bytes": 16777216,
-  "uart_channels": [
-    0,
-    1,
-    2
-  ],
-  "audio": true,
-  "buttons": [],
-  "runtime": {
-    "machine": "venusa-rd-evb",
-    "available": true,
-    "capabilities": {
-      "snapshot": true,
-      "wifi": false,
-      "sd": true,
-      "usb_adb": false,
-      "download": false,
-      "signals": false,
-      "events": false,
-      "button_sequence": false,
-      "audio": false
+  "storage": {
+    "flash_bytes": 16777216
+  },
+  "devices": {
+    "pa": {
+      "model": "audio-amplifier",
+      "label": "功放",
+      "parameters": {
+        "active_level": 1
+      }
+    },
+    "sd": {
+      "model": "sd-card-slot",
+      "parameters": {}
     }
-  }
+  },
+  "nets": {
+    "PA_EN": {
+      "endpoints": [
+        "chip.PA0",
+        "pa.IN"
+      ]
+    },
+    "UART_BOOT": {
+      "endpoints": [
+        "chip.PB5"
+      ],
+      "pull": "up"
+    },
+    "SD_CLK": {
+      "endpoints": [
+        "chip.PB10",
+        "sd.CLK"
+      ]
+    },
+    "SD_CMD": {
+      "endpoints": [
+        "chip.PB11",
+        "sd.CMD"
+      ]
+    },
+    "SD_DAT0": {
+      "endpoints": [
+        "chip.PB12",
+        "sd.DAT0"
+      ]
+    },
+    "SD_DAT1": {
+      "endpoints": [
+        "chip.PB13",
+        "sd.DAT1"
+      ]
+    },
+    "SD_DAT2": {
+      "endpoints": [
+        "chip.PB14",
+        "sd.DAT2"
+      ]
+    },
+    "SD_DAT3": {
+      "endpoints": [
+        "chip.PB15",
+        "sd.DAT3"
+      ]
+    }
+  },
+  "links": [],
+  "inputs": {}
 }

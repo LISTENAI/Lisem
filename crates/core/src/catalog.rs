@@ -25,23 +25,7 @@ impl Catalog {
             boards: BTreeMap::new(),
             chips: BTreeMap::new(),
         };
-        for (directory, collection) in [("boards", &mut this.boards), ("chips", &mut this.chips)] {
-            for path in fs::read_dir(this.root.join(directory))? {
-                let path = path?.path();
-                if path.extension().is_some_and(|s| s == "json") {
-                    let value = storage::read_json(&path)?;
-                    let id = value["id"]
-                        .as_str()
-                        .context("Hardware descriptor has no ID")?
-                        .to_owned();
-                    ensure!(
-                        collection.insert(id, value).is_none(),
-                        "Duplicate hardware descriptor"
-                    );
-                }
-            }
-        }
-        for board in this.boards.values() { crate::signals::definitions(board)?; }
+        this.reload_hardware()?;
         // Older libraries kept display metadata in their index. Upgrade only
         // that metadata; Flash, OTP and the storage manifest stay untouched.
         for entry in this.entries()? {
@@ -53,6 +37,74 @@ impl Catalog {
         Ok(this)
     }
 
+    pub fn reload_hardware(&mut self) -> Result<()> {
+        let mut boards = BTreeMap::new();
+        let mut chips = BTreeMap::new();
+        for (directory, collection) in [("boards", &mut boards), ("chips", &mut chips)] {
+            for path in fs::read_dir(self.root.join(directory))? {
+                let path = path?.path();
+                if path.extension().is_some_and(|s| s == "json") {
+                    let mut value = storage::read_json(&path)?;
+                    if directory == "boards" && value.get("schema_version").is_some() {
+                        value = crate::board::compile(&value)
+                            .with_context(|| format!("Invalid board descriptor: {}", path.display()))?;
+                    }
+                    let id = value["id"]
+                        .as_str()
+                        .context("Hardware descriptor has no ID")?
+                        .to_owned();
+                    ensure!(
+                        collection.insert(id, value).is_none(),
+                        "Duplicate hardware descriptor"
+                    );
+                }
+            }
+        }
+        let custom = self.data.join("boards");
+        if custom.is_dir() {
+            for path in fs::read_dir(custom)? {
+                let path = path?.path();
+                if path.extension().is_some_and(|s| s == "json") {
+                    let value = crate::board::compile(&storage::read_json(&path)?)?;
+                    let id = value["id"].as_str().context("Board ID missing")?.to_owned();
+                    ensure!(boards.insert(id, value).is_none(), "Custom board shadows an installed board");
+                }
+            }
+        }
+        for board in boards.values() { crate::signals::definitions(board)?; }
+        self.boards = boards;
+        self.chips = chips;
+        Ok(())
+    }
+
+    pub fn import_board(&mut self, path: &Path) -> Result<Value> {
+        let raw = storage::read_json(path)?;
+        let board = crate::board::compile(&raw)?;
+        let id = board["id"].as_str().unwrap();
+        ensure!(!self.root.join("boards").join(format!("{id}.json")).exists(),
+            "Installed board IDs cannot be replaced; choose a custom board ID");
+        ensure!(self.chips.contains_key(board["chip"].as_str().unwrap()), "Unknown chip");
+        let _index = Lease::acquire(&self.data.join("library.lock"))?;
+        self.reload_hardware()?;
+        let mut leases = Vec::new();
+        for entry in self.entries()? {
+            let instance = Path::new(entry["path"].as_str().context("Instance path missing")?);
+            let metadata = self.metadata(instance)?;
+            if metadata["hardware"]["board"]["id"] == id {
+                let old = self.layout(id)?;
+                ensure!(old.flash_bytes as u64 == board["flash_bytes"]
+                    && metadata["hardware"]["chip"]["id"] == board["chip"],
+                    "Board update changes chip or persistent storage geometry");
+                leases.push(storage::locked(instance, &old)?);
+            }
+        }
+        let directory = self.data.join("boards");
+        fs::create_dir_all(&directory)?;
+        storage::write_json(&directory.join(format!("{id}.json")), &raw)?;
+        self.boards.insert(id.to_owned(), board.clone());
+        Ok(board)
+    }
+
     pub fn layout(&self, board: &str) -> Result<Layout> {
         let board = self.boards.get(board).context("Unknown board")?;
         let chip = self
@@ -60,9 +112,9 @@ impl Catalog {
             .get(board["chip"].as_str().context("Board chip missing")?)
             .context("Unknown chip")?;
         // Storage geometry belongs to the chip provider, not the UI/CLI.
-        // Older LS2684 descriptors omit the OTP fields; preserve their bytes.
-        let defaults = match chip["id"].as_str() {
-            Some("ls2684") => (512, 8, 8),
+        // All LS26 variants share the same OTP geometry and UID layout.
+        let defaults = match chip["family"].as_str() {
+            Some("arcs") => (512, 8, 8),
             _ => (0, 0, 0),
         };
         let layout = Layout {
@@ -201,7 +253,7 @@ impl Catalog {
         let name = valid_name(name.unwrap_or(&format!("{label} {count}")))?;
         storage::create(&path, &layout, package)?;
         let metadata = json!({"version":1,"id":id,"name":name,
-            "hardware":{"board":self.boards[board],"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
+            "hardware":{"board":crate::board::source(&self.boards[board]),"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
             "host":{"online":true,"sound":true,"microphone":false,"uart":[]}});
         storage::write_json(&path.join("device.json"), &metadata)?;
         entries.push(json!({"id":id,"path":path}));
@@ -236,7 +288,7 @@ impl Catalog {
             storage::write_json(
                 &path.join("device.json"),
                 &json!({"version":1,"id":id,"name":valid_name(&name)?,
-                "hardware":{"board":self.boards[board],"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
+                "hardware":{"board":crate::board::source(&self.boards[board]),"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
                 "host":{"online":true,"sound":true}}),
             )?;
         }
@@ -398,10 +450,30 @@ impl Catalog {
             .chips
             .get(board["chip"].as_str().context("Missing chip")?)
             .context("Chip not supported")?;
+        if board.get("definition").is_some() {
+            let previous = crate::board::source(&saved["board"]);
+            let previous_flash = previous["storage"]["flash_bytes"].as_u64()
+                .or_else(|| previous["flash_bytes"].as_u64());
+            ensure!(previous["chip"] == board["chip"] && saved["board"]["chip"] == board["chip"]
+                && saved["chip"]["id"] == chip["id"] && saved["chip"]["family"] == chip["family"]
+                && previous_flash == board["flash_bytes"].as_u64()
+                && (saved["board"]["flash_bytes"].is_null() || saved["board"]["flash_bytes"] == board["flash_bytes"]),
+                "Board chip or persistent storage geometry changed");
+            for (field, default) in [("otp_bytes",512), ("uid_offset",8), ("uid_bytes",8)] {
+                let fallback = if chip["family"] == "arcs" { Some(default) } else { None };
+                ensure!(saved["chip"]["storage"][field].as_u64().or(fallback)
+                    == chip["storage"][field].as_u64().or(fallback),
+                    "Chip persistent storage geometry changed");
+            }
+            return Ok(json!({"board":board,"chip":chip}));
+        }
         saved["chip"]
             .as_object_mut()
             .context("Invalid chip")?
             .remove("backend");
+        if saved["chip"]["id"] == "ls2684" && saved["chip"]["memory"].is_null() {
+            saved["chip"]["memory"] = chip["memory"].clone();
+        }
         if saved["platform_sha256"]
             == "ffd254848b5d290ea549c9dfb665137a89ea87a4d8fd8bc621d614b93c0a8ca5"
             && saved["board"]["platform"] == "platforms/arcs-mini.repl"

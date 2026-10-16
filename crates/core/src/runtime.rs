@@ -425,6 +425,7 @@ pub struct Session {
     framebuffer: PathBuf,
     _regions: Regions,
     _workspace: Option<tempfile::TempDir>,
+    _board_plan: Option<tempfile::NamedTempFile>,
     _lease: Lease,
     pub output: PathBuf,
     pub state: Value,
@@ -504,6 +505,20 @@ impl Session {
             options.download,
             options.capture.is_some(),
         )?;
+        let board_plan = if let Some(plan) = item["hardware"]["board"].get("assembly") {
+            if options.capture.is_some() {
+                let path = output.join("board.json");
+                storage::write_json(&path, plan)?;
+                command.env(backend.env("BOARD"), &path);
+                None
+            } else {
+                let mut file = tempfile::NamedTempFile::new()?;
+                serde_json::to_writer(&mut file, plan)?;
+                file.flush()?;
+                command.env(backend.env("BOARD"), file.path());
+                Some(file)
+            }
+        } else { None };
         if backend.capabilities.wifi {
             command.env(
                 backend.env("WIFI_ENVIRONMENT"),
@@ -663,6 +678,7 @@ impl Session {
             framebuffer,
             _regions: regions,
             _workspace: workspace,
+            _board_plan: board_plan,
             _lease: lease,
             output,
             state: json!({"qemu":qemu_identity,"sd_card":sd_card,"signal_overrides":inputs,
@@ -1467,12 +1483,15 @@ impl Runtime {
                         .context("Indicator bank missing")?;
                     let pin = indicator["pin"].as_u64().context("Indicator pin missing")?;
                     ensure!(pin < 32, "Invalid indicator pin");
+                    let pads = if let Some(device) = indicator["device"].as_str() {
+                        &state["devices"][device]["pads"]
+                    } else { &state["pads"] };
                     indicators[name] = if self.session.is_none() {
                         json!(false)
-                    } else if state["pads"][bank]["driven"].as_u64().unwrap_or(0) & (1 << pin) != 0
+                    } else if pads[bank]["driven"].as_u64().unwrap_or(0) & (1 << pin) != 0
                     {
                         json!(
-                            (state["pads"][bank]["levels"].as_u64().unwrap_or(0) & (1 << pin) != 0)
+                            (pads[bank]["levels"].as_u64().unwrap_or(0) & (1 << pin) != 0)
                                 != indicator["active_low"].as_bool().unwrap_or(false)
                         )
                     } else {
@@ -1494,6 +1513,12 @@ impl Runtime {
         Ok(json!({"session":state,"serial":ports,"uart_captures":captures,"worker":self.identity}))
     }
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
+        let _board_change = if method == "start" {
+            Some(crate::storage::Lease::acquire(&self.catalog.data.join("library.lock"))?)
+        } else { None };
+        if method == "start" && self.session.is_none() {
+            self.catalog.reload_hardware()?;
+        }
         if let Some(run) = params.get("run").filter(|v| !v.is_null()) {
             ensure!(
                 self.session

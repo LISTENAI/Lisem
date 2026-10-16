@@ -23,6 +23,12 @@ use std::{
 struct Empty {}
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct BoardFile {
+    /// Board JSON path on the machine running Lisem.
+    path: PathBuf,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Instance {
     id: String,
 }
@@ -380,9 +386,13 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Empty>(
             "lisem_catalog",
-            "List supported boards, chips and available buttons and indicators.",
+            "List supported boards, chips, device models, ports and parameter examples for physical board JSON files.",
             true,
         ),
+        definition::<BoardFile>("lisem_board_validate",
+            "Validate a physical board JSON and return resolved devices, controls and wiring without importing it.", true),
+        definition::<BoardFile>("lisem_board_import",
+            "Import or replace a custom board JSON. Its ID must differ from installed boards. Existing instances retain Flash and OTP; all affected instances must be powered off. The board applies on next power-on.", false),
         definition::<Empty>(
             "lisem_list",
             "List instances with their IDs, paths and UIDs.",
@@ -523,14 +533,18 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         )?,
         "lisem_catalog" => {
             let _: Empty = arguments(value)?;
-            json!({"boards":manager.catalog.boards.values().collect::<Vec<_>>(),"chips":manager.catalog.chips.values().collect::<Vec<_>>()})
+            manager.catalog.reload_hardware()?;
+            json!({"boards":manager.catalog.boards.values().collect::<Vec<_>>(),"chips":manager.catalog.chips.values().collect::<Vec<_>>(),"models":lisem_core::board::models()})
         }
         "lisem_list" => {
             let _: Empty = arguments(value)?;
+            manager.catalog.reload_hardware()?;
             json!({"instances":manager.catalog.devices()?})
         }
         "lisem_status" => call(manager, "inspect", arguments::<Instance>(value)?)?,
         "lisem_create" => call(manager, "create", arguments::<Create>(value)?)?,
+        "lisem_board_validate" => call(manager, "board_validate", arguments::<BoardFile>(value)?)?,
+        "lisem_board_import" => call(manager, "board_import", arguments::<BoardFile>(value)?)?,
         "lisem_import" => call(manager, "import", arguments::<Import>(value)?)?,
         "lisem_flash_write" => call(manager, "write_flash", arguments::<Flash>(value)?)?,
         "lisem_flash_erase" => call(manager, "erase", arguments::<Confirm>(value)?)?,

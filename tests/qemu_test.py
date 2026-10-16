@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
                  network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
-                 board='arcs-mini', sd_image=None, sd_slot=False):
+                 board='arcs-mini', sd_image=None, sd_slot=False, assembly=None):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -23,6 +23,15 @@ class Machine:
         self.qmp, peer = socket.socketpair()
         self.qmp.settimeout(5)
         env = os.environ.copy()
+        prefix = 'LISEM_QEMU_' if board.startswith('venusa') else 'ARCS_QEMU_'
+        for key in list(env):
+            if key.startswith(('ARCS_QEMU_', 'LISEM_QEMU_')):
+                env.pop(key)
+        env.pop('ARCS_QEMU_BOARD', None)
+        if assembly is not None:
+            plan = directory / 'board.json'
+            plan.write_text(json.dumps(assembly))
+            env[prefix + 'BOARD'] = str(plan)
         env.pop('ARCS_QEMU_LUNA_SAFE_READS', None)
         env.pop('ARCS_QEMU_CPU_CLOCKS', None)
         env.pop('ARCS_QEMU_SOC_CLOCK', None)
@@ -39,13 +48,13 @@ class Machine:
         env.pop('ARCS_QEMU_HOST_AUDIO', None)
         env.pop('ARCS_QEMU_CAMERA_SHM', None)
         if camera_input is not None:
-            env['ARCS_QEMU_CAMERA_SHM'] = camera_input
+            env[prefix + 'CAMERA_SHM'] = camera_input
         if host_audio is not None:
             env['ARCS_QEMU_HOST_AUDIO'] = str(host_audio)
         env.pop('ARCS_QEMU_DESKTOP', None)
         if desktop:
             (directory / 'live').mkdir()
-            env['ARCS_QEMU_DESKTOP'] = str(directory / 'live')
+            env[prefix + 'DESKTOP'] = str(directory / 'live')
         env.pop('ARCS_QEMU_WIFI_AP', None)
         for name in ('ARCS_QEMU_NETWORK_LIBRARY', 'ARCS_QEMU_NETWORK_LOOPBACK', 'ARCS_QEMU_NETWORK_CAPTURE'):
             env.pop(name, None)
@@ -71,15 +80,20 @@ class Machine:
         firmware = []
         if sd_slot or sd_image is not None:
             firmware += ['-drive', 'if=none,id=sdcard' + (',format=raw,file=' + str(sd_image) if sd_image else '')]
-        if flash is not None:
+        if flash is not None and not board.startswith('venusa'):
             image = directory / 'flash.bin'
             image.write_bytes(flash)
             firmware += ['-bios', str(image)]
             env['ARCS_QEMU_FLASH_PERSIST'] = '1'
+        if board.startswith('venusa'):
+            image = directory / 'flash.bin'
+            image.write_bytes(flash if flash is not None else bytes(16 << 20))
+            firmware += ['-drive', 'if=pflash,format=raw,file=' + str(image)]
+            if otp is None: otp = bytes(64)
         if otp is not None:
             image = directory / 'otp.bin'
             image.write_bytes(otp)
-            env['ARCS_QEMU_OTP_IMAGE'] = str(image)
+            env[prefix + 'OTP_IMAGE'] = str(image)
         env.update(ARCS_QEMU_BOOT_HART=str(hart), ARCS_QEMU_BUDGET_NS=str(budget_ns),
                    ARCS_QEMU_REPORT=str(directory / 'report.json'))
         self.uart = []

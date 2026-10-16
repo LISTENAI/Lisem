@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
     Digital {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
         id: String,
         label: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -16,6 +18,8 @@ pub enum Input {
         default: bool,
     },
     Voltage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device: Option<String>,
         id: String,
         label: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -76,7 +80,7 @@ pub fn definitions(board: &Value) -> Result<Vec<Input>> {
         match input {
             Input::Digital { pin, .. } => {
                 ensure!(
-                    *pin < 64 && targets.insert((0, *pin)),
+                    *pin < 96 && targets.insert((String::new(), *pin)),
                     "Invalid or duplicate input pad"
                 );
                 ensure!(
@@ -84,15 +88,16 @@ pub fn definitions(board: &Value) -> Result<Vec<Input>> {
                         .as_array()
                         .into_iter()
                         .flatten()
-                        .any(|b| b["pin"].as_u64().map(|p| p + if b["bank"] == "B" {
+                        .any(|b| b["endpoint"].as_u64().or_else(|| b["pin"].as_u64().map(|p| p + if b["bank"] == "B" {
                             32
                         } else {
                             0
-                        }) == Some(*pin as u64)),
+                        })) == Some(*pin as u64)),
                     "Input pad is owned by a board button"
                 );
             }
             Input::Voltage {
+                device,
                 channel,
                 max,
                 divider_numerator,
@@ -100,7 +105,10 @@ pub fn definitions(board: &Value) -> Result<Vec<Input>> {
                 ..
             } => {
                 ensure!(
-                    (4..10).contains(channel) && targets.insert((1, *channel)),
+                    (if let Some(device) = device {
+                        board["assembly"]["extio"]["id"] == *device && *channel < 8
+                    } else { (4..10).contains(channel) }) &&
+                    targets.insert((device.clone().unwrap_or_else(|| "chip-adc".into()), *channel)),
                     "Invalid or duplicate VIN channel"
                 );
                 ensure!(
@@ -113,7 +121,7 @@ pub fn definitions(board: &Value) -> Result<Vec<Input>> {
                 );
                 ensure!(
                     *max as u64 * 1000 * *divider_numerator as u64 / *divider_denominator as u64
-                        <= 3_600_000,
+                        <= if device.is_some() {3_300_000} else {3_600_000},
                     "Voltage exceeds the ADC pad range"
                 );
             }
@@ -139,8 +147,21 @@ pub fn overrides(board: &Value, value: &Value) -> Result<BTreeMap<String, Value>
     Ok(values)
 }
 
+fn saved_overrides(board: &Value, saved: &Value) -> Result<BTreeMap<String, Value>> {
+    let mut values: BTreeMap<String, Value> = if saved.is_null() {
+        BTreeMap::new()
+    } else {
+        serde_json::from_value(saved.clone())?
+    };
+    let inputs = definitions(board)?;
+    // A board edit can remove an input while its instance retains an old
+    // override. Only current inputs drive the assembled hardware.
+    values.retain(|id, _| inputs.iter().any(|input| input.id() == id));
+    overrides(board, &serde_json::to_value(values)?)
+}
+
 pub fn change(board: &Value, saved: &Value, changes: &Value) -> Result<Value> {
-    let mut values = overrides(board, saved)?;
+    let mut values = saved_overrides(board, saved)?;
     let inputs = definitions(board)?;
     let changes = changes
         .as_object()
@@ -162,7 +183,7 @@ pub fn change(board: &Value, saved: &Value, changes: &Value) -> Result<Value> {
 }
 
 pub fn state(board: &Value, saved: &Value) -> Result<Value> {
-    let values = overrides(board, saved)?;
+    let values = saved_overrides(board, saved)?;
     let rows = definitions(board)?
         .iter()
         .map(|input| {
@@ -182,9 +203,10 @@ pub fn state(board: &Value, saved: &Value) -> Result<Value> {
 }
 
 pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
-    let values = overrides(board, saved)?;
+    let values = saved_overrides(board, saved)?;
     let mut pads = BTreeMap::new();
     let mut adc_uv = BTreeMap::new();
+    let mut device_adc_uv = BTreeMap::<String,BTreeMap<String,u64>>::new();
     for input in definitions(board)? {
         let value = values
             .get(input.id())
@@ -195,6 +217,7 @@ pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
                 pads.insert(pin.to_string(), value);
             }
             Input::Voltage {
+                device,
                 channel,
                 divider_numerator,
                 divider_denominator,
@@ -202,11 +225,15 @@ pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
             } => {
                 let uv = value.as_u64().unwrap() * 1000 * divider_numerator as u64
                     / divider_denominator as u64;
-                adc_uv.insert(channel.to_string(), uv);
+                if let Some(device) = device {
+                    device_adc_uv.entry(device).or_default().insert(channel.to_string(), uv);
+                } else { adc_uv.insert(channel.to_string(), uv); }
             }
         }
     }
-    Ok(json!({"pads":pads,"adc_uv":adc_uv}))
+    let mut result = json!({"pads":pads,"adc_uv":adc_uv});
+    if !device_adc_uv.is_empty() { result["device_adc_uv"] = json!(device_adc_uv); }
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -215,7 +242,7 @@ mod tests {
     #[test]
     fn typed_values_release_and_board_divider() {
         let board: Value =
-            serde_json::from_str(include_str!("../../../boards/arcs-mini.json")).unwrap();
+            crate::board::compile(&serde_json::from_str(include_str!("../../../boards/arcs-mini.json")).unwrap()).unwrap();
         let value = change(
             &board,
             &Value::Null,
@@ -230,5 +257,12 @@ mod tests {
         let restored = change(&board, &value, &json!({"usb_det":null})).unwrap();
         assert_eq!(physical(&board, &restored).unwrap()["pads"]["32"], true);
         assert_eq!(restored["battery_voltage"], 3800);
+        let obsolete = json!({"usb_det":false,"removed_voltage":1000});
+        assert_eq!(state(&board, &obsolete).unwrap().as_array().unwrap().len(), 2);
+        assert_eq!(physical(&board, &obsolete).unwrap()["pads"]["32"], false);
+        assert!(overrides(&board, &obsolete).is_err());
+        assert!(change(&board, &obsolete, &json!({"removed_voltage":1})).is_err());
+        assert_eq!(change(&board, &obsolete, &json!({"usb_det":true})).unwrap(),
+                   json!({"usb_det":true}));
     }
 }

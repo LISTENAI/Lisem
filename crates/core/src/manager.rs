@@ -226,6 +226,9 @@ impl Manager {
         }
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
+        if matches!(method, "status" | "create" | "start" | "board_import") {
+            self.catalog.reload_hardware()?;
+        }
         if method == "status" {
             return self.status();
         }
@@ -241,6 +244,14 @@ impl Manager {
                 package,
                 params["name"].as_str(),
             );
+        }
+        if method == "board_import" {
+            return self.catalog.import_board(Path::new(
+                params["path"].as_str().context("Board path is required")?));
+        }
+        if method == "board_validate" {
+            return crate::board::compile(&crate::storage::read_json(Path::new(
+                params["path"].as_str().context("Board path is required")?))?);
         }
         if method == "attach" {
             return self.catalog.attach(Path::new(

@@ -1,81 +1,308 @@
 {
+  "schema_version": 1,
   "id": "arcs-evb",
   "name": "Arcs-EVB",
   "chip": "ls2684",
-  "screen": {
-    "width": 320,
-    "height": 240,
-    "label": "ST7789P3 · 320 × 240"
+  "storage": {
+    "flash_bytes": 16777216
   },
-  "buttons": [
+  "devices": {
+    "lcd": {
+      "model": "st7789",
+      "parameters": {
+        "panel_inverted": true
+      }
+    },
+    "screen": {
+      "model": "display-panel",
+      "parameters": {
+        "viewport": {
+          "x": 0,
+          "y": 0,
+          "width": 240,
+          "height": 320
+        },
+        "rotation_clockwise": 270
+      },
+      "label": "屏幕"
+    },
+    "backlight": {
+      "model": "backlight",
+      "parameters": {
+        "active_level": 0
+      }
+    },
+    "camera": {
+      "model": "gc0328",
+      "parameters": {
+        "rotation_clockwise": 90
+      },
+      "label": "摄像头"
+    },
+    "user-led": {
+      "model": "led",
+      "parameters": {
+        "active_level": 1,
+        "color": "#4cc3a2"
+      },
+      "label": "用户 LED"
+    },
+    "pa": {
+      "model": "audio-amplifier",
+      "parameters": {
+        "active_level": 1
+      },
+      "label": "功放"
+    },
+    "sd": {
+      "model": "sd-card-slot",
+      "parameters": {},
+      "label": "SD 卡"
+    },
+    "keys": {
+      "model": "resistor-keypad",
+      "parameters": {
+        "supply_mv": 3300,
+        "pull_up_ohms": 10000,
+        "keys": [
+          {
+            "id": "k1",
+            "label": "K1",
+            "resistance_ohms": 0
+          },
+          {
+            "id": "k2",
+            "label": "K2",
+            "resistance_ohms": 5100
+          },
+          {
+            "id": "k3",
+            "label": "K3",
+            "resistance_ohms": 10000
+          }
+        ]
+      }
+    },
+    "touch": {
+      "model": "cst328",
+      "parameters": {
+        "rotation_clockwise": 270
+      }
+    }
+  },
+  "nets": {
+    "LCD_SCK": {
+      "endpoints": [
+        "chip.PB3",
+        "lcd.SCK"
+      ]
+    },
+    "LCD_MOSI": {
+      "endpoints": [
+        "chip.PB1",
+        "lcd.SDI"
+      ]
+    },
+    "LCD_CS": {
+      "endpoints": [
+        "chip.PB5",
+        "lcd.CS"
+      ]
+    },
+    "LCD_DC": {
+      "endpoints": [
+        "chip.PB0",
+        "lcd.DC"
+      ]
+    },
+    "LCD_RST": {
+      "endpoints": [
+        "chip.PA1",
+        "lcd.RESET"
+      ]
+    },
+    "LCD_TE": {
+      "endpoints": [
+        "chip.PB8",
+        "lcd.TE"
+      ]
+    },
+    "LCD_BL": {
+      "endpoints": [
+        "chip.PA0",
+        "backlight.EN"
+      ]
+    },
+    "I2C0_SCL": {
+      "endpoints": [
+        "chip.PA23",
+        "camera.SCL",
+        "touch.SCL"
+      ],
+      "pull": "up"
+    },
+    "I2C0_SDA": {
+      "endpoints": [
+        "chip.PA22",
+        "camera.SDA",
+        "touch.SDA"
+      ],
+      "pull": "up"
+    },
+    "DVP_MCLK": {
+      "endpoints": [
+        "chip.PA26",
+        "camera.MCLK"
+      ]
+    },
+    "DVP_PCLK": {
+      "endpoints": [
+        "chip.PA12",
+        "camera.PCLK"
+      ]
+    },
+    "DVP_HSYNC": {
+      "endpoints": [
+        "chip.PA10",
+        "camera.HSYNC"
+      ]
+    },
+    "DVP_VSYNC": {
+      "endpoints": [
+        "chip.PA11",
+        "camera.VSYNC"
+      ]
+    },
+    "DVP_D0": {
+      "endpoints": [
+        "chip.PA13",
+        "camera.D0"
+      ]
+    },
+    "DVP_D1": {
+      "endpoints": [
+        "chip.PA14",
+        "camera.D1"
+      ]
+    },
+    "DVP_D2": {
+      "endpoints": [
+        "chip.PA15",
+        "camera.D2"
+      ]
+    },
+    "DVP_D3": {
+      "endpoints": [
+        "chip.PA16",
+        "camera.D3"
+      ]
+    },
+    "DVP_D4": {
+      "endpoints": [
+        "chip.PA17",
+        "camera.D4"
+      ]
+    },
+    "DVP_D5": {
+      "endpoints": [
+        "chip.PA18",
+        "camera.D5"
+      ]
+    },
+    "DVP_D6": {
+      "endpoints": [
+        "chip.PA19",
+        "camera.D6"
+      ]
+    },
+    "DVP_D7": {
+      "endpoints": [
+        "chip.PA20",
+        "camera.D7"
+      ]
+    },
+    "USER_LED": {
+      "endpoints": [
+        "chip.PB9",
+        "user-led.IN"
+      ]
+    },
+    "PA_EN": {
+      "endpoints": [
+        "chip.PA27",
+        "pa.IN"
+      ]
+    },
+    "SD_CLK": {
+      "endpoints": [
+        "chip.PA6",
+        "sd.CLK"
+      ]
+    },
+    "SD_CMD": {
+      "endpoints": [
+        "chip.PA7",
+        "sd.CMD"
+      ]
+    },
+    "SD_DAT0": {
+      "endpoints": [
+        "chip.PA5",
+        "sd.DAT0"
+      ]
+    },
+    "SD_DAT1": {
+      "endpoints": [
+        "chip.PA4",
+        "sd.DAT1"
+      ]
+    },
+    "SD_DAT2": {
+      "endpoints": [
+        "chip.PA9",
+        "sd.DAT2"
+      ]
+    },
+    "SD_DAT3": {
+      "endpoints": [
+        "chip.PA8",
+        "sd.DAT3"
+      ]
+    },
+    "KEY_ADC": {
+      "endpoints": [
+        "chip.PB6",
+        "keys.OUT"
+      ]
+    },
+    "TOUCH_INT": {
+      "endpoints": [
+        "chip.PA24",
+        "touch.INT"
+      ]
+    },
+    "SD_CD": {
+      "endpoints": [
+        "sd.CD",
+        "chip.SD_CD"
+      ]
+    },
+    "CAMERA_PWDN": {
+      "endpoints": [
+        "chip.PB7",
+        "camera.PWDN"
+      ]
+    }
+  },
+  "links": [
     {
-      "id": "k1",
-      "label": "K1",
-      "pin": 6,
-      "active_low": true,
-      "bank": "B",
-      "kind": "adc",
-      "channel": 4
+      "from": "lcd.pixels",
+      "to": "screen.pixels"
     },
     {
-      "id": "k2",
-      "label": "K2",
-      "pin": 6,
-      "active_low": true,
-      "bank": "B",
-      "kind": "adc",
-      "channel": 4
-    },
-    {
-      "id": "k3",
-      "label": "K3",
-      "pin": 6,
-      "active_low": true,
-      "bank": "B",
-      "kind": "adc",
-      "channel": 4
+      "from": "backlight.brightness",
+      "to": "screen.brightness"
     }
   ],
-  "flash_bytes": 16777216,
-  "uart_channels": [
-    0,
-    1,
-    2
-  ],
-  "audio": true,
-  "indicators": [
-    {
-      "id": "pa",
-      "kind": "audio-amplifier",
-      "label": "功放",
-      "bank": "A",
-      "pin": 27,
-      "active_low": false
-    },
-    {
-      "id": "user-led",
-      "kind": "led",
-      "label": "用户 LED",
-      "bank": "B",
-      "pin": 9,
-      "active_low": true,
-      "color": "#4cc3a2"
-    }
-  ],
-  "version": 1,
-  "camera": {
-    "model": "gc0328",
-    "rotation_clockwise": 90,
-    "width": 640,
-    "height": 480,
-    "label": "GC0328 · 640 × 480"
-  },
-  "touch": {
-    "model": "cst328",
-    "rotation_clockwise": 270,
-    "address": "0x1d",
-    "width": 240,
-    "height": 320,
-    "label": "CST328 · 240 × 320"
-  }
+  "inputs": {}
 }

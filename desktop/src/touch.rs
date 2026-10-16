@@ -50,6 +50,7 @@ mod tests {
     fn evb_touch_matches_panel_mount_at_scaled_window_positions() {
         let board: Value =
             serde_json::from_str(include_str!("../../boards/arcs-evb.json")).unwrap();
+        let board = lisem_core::board::compile(&board).unwrap();
         let mapping = Mapping::from_descriptor(&board["touch"]).unwrap();
         let bounds = Bounds::new(point(px(100.), px(200.)), size(px(640.), px(480.)));
         assert_eq!(

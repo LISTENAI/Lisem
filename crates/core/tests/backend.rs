@@ -86,7 +86,7 @@ fn controls_follow_declared_buttons_and_sensor_geometry() {
 }
 
 #[test]
-fn existing_arcs_control_abi_is_preserved() {
+fn builtin_boards_keep_frontend_controls_with_derived_runtime_routes() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root, temp.path()).unwrap();
@@ -103,12 +103,12 @@ fn existing_arcs_control_abi_is_preserved() {
         if board == "arcs-mini" {
             assert_eq!(
                 backend.button("function").unwrap(),
-                "x-lisa-function-pressed"
+                "x-lisa-button-0"
             );
-            assert_eq!(backend.sequence_id("function").unwrap(), None);
+            assert_eq!(backend.sequence_id("function").unwrap(), Some(0));
             assert!(backend.capabilities.download);
         } else {
-            assert_eq!(backend.button("k3").unwrap(), "x-lisa-evb-k3-pressed");
+            assert_eq!(backend.button("k3").unwrap(), "x-lisa-button-2");
             assert_eq!(backend.sequence_id("k3").unwrap(), Some(2));
             assert_eq!(backend.touch_size, Some((240, 320)));
         }

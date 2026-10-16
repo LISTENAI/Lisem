@@ -3,9 +3,12 @@
 ## 产品边界
 
 - Lisem 是聆思多芯片 emulator，命令为 `lisem`，应用标识为
-  `com.listenai.emulator`；支持 LS2684（ARCS）的 Arcs-Mini / Arcs-EVB，
-  以及 CSK7004J8U（VenusA）的 VenusA RD EVB。
-  用户管理设备实例；板型描述芯片、外设和连线。QEMU 是唯一运行后端。
+  `com.listenai.emulator`；支持 LS2684（ARCS）的 Arcs-Mini / Arcs-EVB、
+  LS2663（ARCS）的 Arcs-Mini3，以及 CSK7004J8U（VenusA）的 VenusA RD EVB。
+  用户管理设备实例；板型以 JSON 的 `devices`、`nets` 和类型化 `links`
+  描述器件、连线与数据接口。内置板型和导入板型共用装配路径。
+  QEMU 是唯一运行后端。LS26 变体共用 ARCS die、ROM 和 OTP 规则；
+  LS2663 / LS2684 的 PSRAM 分别为 8 / 16 MiB。
 - 本仓库包含产品源码、构建入口与文档，QEMU 通过固定提交的 submodule 引入。
   LUNA 使用仓库随附的二进制组件，维护边界见 `docs/luna.md`。
 - 原始真机固件与上层业务保持不变。适配、理想校准和宿主桥接在模拟器侧
@@ -27,7 +30,10 @@
 - `assets/`：随产品交付的固定 ROM 和 LUNA 二进制及校验清单。
 - `native/`：宿主音频和网络；`tools/`：Python 3.10+ 构建与芯片验证工具。
   产品 GUI/CLI 运行路径不得依赖 Python 或窗口系统之外的隐式服务。
-- `boards/`、`chips/`：板型与芯片描述；`tests/`：当前功能的回归测试。
+- `boards/`、`chips/`：板型与芯片描述；`crates/core/src/board.rs` 校验并派生
+  前端元数据及后端装配计划，实例只保存原始描述。导入板型存于设备库的
+  `boards/`；同 ID 更新须持有库锁和受影响实例的存储锁，保留实例的
+  Flash、OTP 和 UID。`tests/` 保留当前功能的回归测试。
 - `docs/`：使用、架构和维护说明，仅保留当前设计、行为、必要理由和维护
   要求。临时测量放在忽略的 `artifacts/`，不将讨论过程、开发沿革、阶段
   报告或本机私人路径写入项目文档。
@@ -35,6 +41,9 @@
 ## 实现约束
 
 - 芯片寄存器、控制器和 PinMux 与板级器件、引脚、宿主接口分层。
+  器件模型和公共装配层不依赖 SoC 类型；芯片适配层只提供总线及引脚路由。
+  JSON 不编程 PinMux。未知器件、端口、参数或未支持的接线必须拒绝，不能
+  静默忽略。EXTIO 的固定协议版本属于模型身份，不能作为运行参数替换。
 - 外部信号由板型声明类型、范围、默认值及接线；实例保存覆盖值，运行中
   修改须确认当前运行后保存。数字量驱动 GPIO，电压经过板级分压与 ADC
   采样；固件负责解释，不能直接注入电量百分比或供电业务状态。

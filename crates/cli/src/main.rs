@@ -38,6 +38,12 @@ enum Action {
     Mcp,
     /// List device instances.
     List,
+    /// List built-in device models, ports and parameter examples.
+    BoardModels,
+    /// Validate a board JSON and show its resolved hardware description.
+    BoardValidate { path: PathBuf },
+    /// Import or replace a custom board; affected instances must be powered off.
+    BoardImport { path: PathBuf },
     /// Create an independent instance with a new OTP identity.
     Create {
         #[arg(long)]
@@ -313,6 +319,9 @@ fn run() -> Result<i32> {
     let mut foreground = None;
     let value = match args.command {
         Action::List => json!(manager.catalog.devices()?),
+        Action::BoardModels => lisem_core::board::models(),
+        Action::BoardValidate { path } => manager.call("board_validate", json!({"path":absolute(&path)?}))?,
+        Action::BoardImport { path } => manager.call("board_import", json!({"path":absolute(&path)?}))?,
         Action::Create { board, name, lpk } => manager.call(
             "create",
             json!({"board": board, "name": name, "package": lpk.as_deref().map(absolute).transpose()?}),

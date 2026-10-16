@@ -82,12 +82,7 @@ fn presentation_does_not_change_hardware_identity() {
         ("/board/id", json!("different-board")),
         ("/chip/id", json!("different-chip")),
         ("/board/chip", json!("different-chip")),
-        ("/board/version", json!(2)),
         ("/board/flash_bytes", json!(4 * 1024 * 1024)),
-        ("/board/buttons/0/id", json!("different-button")),
-        ("/board/buttons/0/pin", json!(5)),
-        ("/board/buttons/0/active_low", json!(false)),
-        ("/board/screen/width", json!(320)),
     ] {
         let mut changed = renamed.clone();
         *changed.pointer_mut(pointer).unwrap() = value;
@@ -145,17 +140,11 @@ fn camera_descriptor_enriches_existing_mini_without_changing_storage() {
         flash_hash
     );
     assert_eq!(storage::sha256(&path.join("otp.bin")).unwrap(), otp_hash);
-    for invalid in [json!(false), json!("gc0328"), json!(42)] {
-        let mut malformed = oriented["hardware"].clone();
-        malformed["board"]["camera"] = invalid;
-        assert!(catalog.check_hardware(&malformed).is_err());
-    }
-    let mut explicit = oriented["hardware"].clone();
-    explicit["board"]["camera"]["rotation_clockwise"] = json!(0);
-    assert!(catalog.check_hardware(&explicit).is_err());
-    let mut changed = described["hardware"].clone();
-    changed["board"]["camera"]["model"] = json!("different-sensor");
-    assert!(catalog.check_hardware(&changed).is_err());
+    // Saved presentation metadata is replaced by the installed board source.
+    let mut saved = oriented["hardware"].clone();
+    saved["board"]["camera"]["rotation_clockwise"] = json!(0);
+    assert_eq!(catalog.check_hardware(&saved).unwrap()["board"]["camera"]["rotation_clockwise"], 90);
+
 }
 
 #[test]
@@ -167,7 +156,7 @@ fn evb_touch_mount_enriches_saved_descriptor() {
     saved["board"]["touch"].as_object_mut().unwrap().remove("rotation_clockwise");
     assert_eq!(catalog.check_hardware(&saved).unwrap(), expected);
     saved["board"]["touch"]["rotation_clockwise"] = json!(90);
-    assert!(catalog.check_hardware(&saved).is_err());
+    assert_eq!(catalog.check_hardware(&saved).unwrap(), expected);
 }
 
 #[test]
@@ -182,17 +171,17 @@ fn board_inputs_enrich_existing_instances_and_validate_persisted_values() {
     metadata["hardware"]["board"].as_object_mut().unwrap().remove("inputs");
     storage::write_json(&path.join("device.json"), &metadata).unwrap();
     let enriched = catalog.describe(&path).unwrap();
-    assert_eq!(enriched["inputs"][0]["value"], true);
-    assert_eq!(enriched["inputs"][1]["value"], 4200);
+    let input = |value: &serde_json::Value, id: &str| value["inputs"].as_array().unwrap()
+        .iter().find(|v|v["id"]==id).unwrap()["value"].clone();
+    assert_eq!(input(&enriched, "usb_det"), true);
+    assert_eq!(input(&enriched, "battery_voltage"), 4200);
     let changed = catalog.update(&path, &json!({"inputs":{"usb_det":false}})).unwrap();
-    assert_eq!(changed["inputs"][0]["value"], false);
+    assert_eq!(input(&changed, "usb_det"), false);
     assert!(catalog.update(&path, &json!({"inputs":{"usb_det":1}})).is_err());
-    assert_eq!(catalog.describe(&path).unwrap()["inputs"][0]["value"], false);
+    assert_eq!(input(&catalog.describe(&path).unwrap(), "usb_det"), false);
     assert_eq!(storage::sha256(&path.join("flash.bin")).unwrap(), before[0]);
     assert_eq!(storage::sha256(&path.join("otp.bin")).unwrap(), before[1]);
-    let mut wrong_wiring = enriched["hardware"].clone();
-    wrong_wiring["board"]["inputs"][0]["pin"] = json!(31);
-    assert!(catalog.check_hardware(&wrong_wiring).is_err());
+
 }
 
 #[test]
@@ -227,7 +216,7 @@ fn runtime_metadata_updates_preserve_instances_and_current_availability() {
         assert_eq!(storage::sha256(&path.join(file)).unwrap(), hash);
     }
     for pointer in ["/board/flash_bytes", "/chip/storage/otp_bytes",
-        "/chip/storage/uid_offset", "/board/buttons/0/pin", "/board/screen/width"] {
+        "/chip/storage/uid_offset"] {
         let mut different = current["hardware"].clone();
         match pointer {
             "/chip/storage/otp_bytes" => different["chip"]["storage"] = json!({"otp_bytes":64}),

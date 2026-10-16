@@ -1,0 +1,13 @@
+{
+  "id": "ls2663",
+  "name": "LS2663",
+  "family": "arcs",
+  "memory": {
+    "psram_bytes": 8388608
+  },
+  "runtime": {
+    "abi": "lisem-v1",
+    "environment_prefix": "ARCS_QEMU_",
+    "clock_quantum_ns": 10000
+  }
+}

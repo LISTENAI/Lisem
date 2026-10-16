@@ -1,0 +1,385 @@
+{
+  "schema_version": 1,
+  "id": "arcs-mini3",
+  "name": "Arcs-Mini3",
+  "chip": "ls2663",
+  "storage": {
+    "flash_bytes": 16777216
+  },
+  "devices": {
+    "lcd": {
+      "model": "st7789",
+      "parameters": {
+        "panel_inverted": true
+      }
+    },
+    "screen": {
+      "model": "display-panel",
+      "parameters": {
+        "viewport": {
+          "x": 0,
+          "y": 0,
+          "width": 240,
+          "height": 240
+        },
+        "rotation_clockwise": 180
+      },
+      "label": "屏幕"
+    },
+    "backlight": {
+      "model": "backlight",
+      "parameters": {
+        "active_level": 1
+      }
+    },
+    "camera": {
+      "model": "gc0328",
+      "parameters": {
+        "rotation_clockwise": 0
+      },
+      "label": "摄像头"
+    },
+    "function": {
+      "model": "button",
+      "parameters": {
+        "pressed_level": 0,
+        "released_level": 1
+      },
+      "label": "功能键"
+    },
+    "pa": {
+      "model": "audio-amplifier",
+      "parameters": {
+        "active_level": 1
+      },
+      "label": "功放"
+    },
+    "power-hold": {
+      "model": "signal-probe",
+      "parameters": {
+        "active_level": 1
+      },
+      "label": "电源保持"
+    },
+    "sd": {
+      "model": "sd-card-slot",
+      "parameters": {},
+      "label": "SD 卡"
+    },
+    "battery_divider": {
+      "model": "voltage-divider",
+      "parameters": {
+        "numerator": 2,
+        "denominator": 5
+      }
+    },
+    "extio": {
+      "model": "listenai-extio-ch32v003-v1.3",
+      "label": "EXTIO",
+      "parameters": {
+        "address": 108
+      }
+    },
+    "led-pa2": {
+      "model": "led",
+      "label": "PA2",
+      "parameters": {
+        "active_level": 0
+      }
+    },
+    "led-pc0": {
+      "model": "led",
+      "label": "PC0",
+      "parameters": {
+        "active_level": 0
+      }
+    },
+    "led-pc3": {
+      "model": "led",
+      "label": "PC3",
+      "parameters": {
+        "active_level": 0
+      }
+    },
+    "typec": {
+      "model": "husb320-ba",
+      "parameters": {
+        "address": 49
+      }
+    }
+  },
+  "nets": {
+    "LCD_SCK": {
+      "endpoints": [
+        "chip.PA25",
+        "lcd.SCK"
+      ]
+    },
+    "LCD_MOSI": {
+      "endpoints": [
+        "chip.PA24",
+        "lcd.SDI"
+      ]
+    },
+    "LCD_CS": {
+      "endpoints": [
+        "chip.PA22",
+        "lcd.CS"
+      ]
+    },
+    "LCD_DC": {
+      "endpoints": [
+        "chip.PA23",
+        "lcd.DC"
+      ]
+    },
+    "LCD_RST": {
+      "endpoints": [
+        "chip.PB9",
+        "lcd.RESET"
+      ]
+    },
+    "LCD_TE": {
+      "endpoints": [
+        "chip.PA27",
+        "lcd.TE"
+      ]
+    },
+    "LCD_BL": {
+      "endpoints": [
+        "chip.PA21",
+        "backlight.EN"
+      ]
+    },
+    "I2C0_SCL": {
+      "endpoints": [
+        "chip.PB1",
+        "camera.SCL",
+        "extio.SCL",
+        "typec.SCL"
+      ],
+      "pull": "up"
+    },
+    "I2C0_SDA": {
+      "endpoints": [
+        "chip.PB0",
+        "camera.SDA",
+        "extio.SDA",
+        "typec.SDA"
+      ],
+      "pull": "up"
+    },
+    "DVP_MCLK": {
+      "endpoints": [
+        "chip.PA26",
+        "camera.MCLK"
+      ]
+    },
+    "DVP_PCLK": {
+      "endpoints": [
+        "chip.PA12",
+        "camera.PCLK"
+      ]
+    },
+    "DVP_HSYNC": {
+      "endpoints": [
+        "chip.PA10",
+        "camera.HSYNC"
+      ]
+    },
+    "DVP_VSYNC": {
+      "endpoints": [
+        "chip.PA11",
+        "camera.VSYNC"
+      ]
+    },
+    "DVP_D0": {
+      "endpoints": [
+        "chip.PA13",
+        "camera.D0"
+      ]
+    },
+    "DVP_D1": {
+      "endpoints": [
+        "chip.PA14",
+        "camera.D1"
+      ]
+    },
+    "DVP_D2": {
+      "endpoints": [
+        "chip.PA15",
+        "camera.D2"
+      ]
+    },
+    "DVP_D3": {
+      "endpoints": [
+        "chip.PA16",
+        "camera.D3"
+      ]
+    },
+    "DVP_D4": {
+      "endpoints": [
+        "chip.PA17",
+        "camera.D4"
+      ]
+    },
+    "DVP_D5": {
+      "endpoints": [
+        "chip.PA18",
+        "camera.D5"
+      ]
+    },
+    "DVP_D6": {
+      "endpoints": [
+        "chip.PA19",
+        "camera.D6"
+      ]
+    },
+    "DVP_D7": {
+      "endpoints": [
+        "chip.PA20",
+        "camera.D7"
+      ]
+    },
+    "POWER_KEY": {
+      "endpoints": [
+        "chip.PB4",
+        "function.OUT"
+      ]
+    },
+    "PA_EN": {
+      "endpoints": [
+        "extio.PC2",
+        "pa.IN"
+      ]
+    },
+    "PWR_HOLD": {
+      "endpoints": [
+        "chip.PB3",
+        "power-hold.IN"
+      ]
+    },
+    "SD_CLK": {
+      "endpoints": [
+        "chip.PA6",
+        "sd.CLK"
+      ]
+    },
+    "SD_CMD": {
+      "endpoints": [
+        "chip.PA7",
+        "sd.CMD"
+      ]
+    },
+    "SD_DAT0": {
+      "endpoints": [
+        "chip.PA5",
+        "sd.DAT0"
+      ]
+    },
+    "SD_DAT1": {
+      "endpoints": [
+        "chip.PA4",
+        "sd.DAT1"
+      ]
+    },
+    "SD_DAT2": {
+      "endpoints": [
+        "chip.PA9",
+        "sd.DAT2"
+      ]
+    },
+    "SD_DAT3": {
+      "endpoints": [
+        "chip.PA8",
+        "sd.DAT3"
+      ]
+    },
+    "USB_DET": {
+      "endpoints": [
+        "chip.PB8"
+      ]
+    },
+    "BAT_VCC": {
+      "endpoints": [
+        "battery_divider.IN"
+      ]
+    },
+    "BAT_VCC_DET": {
+      "endpoints": [
+        "battery_divider.OUT",
+        "chip.PB5"
+      ]
+    },
+    "LED_PA2": {
+      "endpoints": [
+        "extio.PA2",
+        "led-pa2.IN"
+      ]
+    },
+    "LED_PC0": {
+      "endpoints": [
+        "extio.PC0",
+        "led-pc0.IN"
+      ]
+    },
+    "LED_PC3": {
+      "endpoints": [
+        "extio.PC3",
+        "led-pc3.IN"
+      ]
+    },
+    "CAMERA_PWDN": {
+      "endpoints": [
+        "extio.PD6",
+        "camera.PWDN"
+      ]
+    },
+    "SD_CD": {
+      "endpoints": [
+        "sd.CD",
+        "extio.PD3"
+      ]
+    },
+    "SOURCE_SINK": {
+      "endpoints": [
+        "typec.ID",
+        "extio.PC1"
+      ],
+      "pull": "up"
+    }
+  },
+  "links": [
+    {
+      "from": "lcd.pixels",
+      "to": "screen.pixels"
+    },
+    {
+      "from": "backlight.brightness",
+      "to": "screen.brightness"
+    },
+    {
+      "from": "chip.usb0.host",
+      "to": "typec.partner"
+    }
+  ],
+  "inputs": {
+    "usb_det": {
+      "type": "digital",
+      "net": "USB_DET",
+      "description": "USB 检测",
+      "default": true
+    },
+    "battery_voltage": {
+      "type": "voltage",
+      "net": "BAT_VCC",
+      "description": "电池端电压",
+      "unit": "mV",
+      "range": {
+        "min": 0,
+        "max": 4500
+      },
+      "default": 4200
+    }
+  }
+}

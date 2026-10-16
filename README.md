@@ -11,7 +11,9 @@ Lisem 是聆思芯片平台的设备模拟器。导入真机固件，就能在�
 `lisem` 命令管理和运行设备，把固件测试放进脚本或 CI。
 
 可在 macOS、Windows 和 Linux 上使用，支持 **LS2684（ARCS）** 的
-**Arcs-Mini / Arcs-EVB** 和 **CSK7004J8U（VenusA）** 的 **VenusA RD EVB**。
+**Arcs-Mini / Arcs-EVB**、**LS2663（ARCS）** 的 **Arcs-Mini3**，以及
+**CSK7004J8U（VenusA）** 的 **VenusA RD EVB**。
+可导入 JSON 配置内置器件、连线和信号输入，见[自定义板型](docs/boards.md)。
 
 ## 开始使用
 
