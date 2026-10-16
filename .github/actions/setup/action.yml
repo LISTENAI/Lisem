@@ -104,7 +104,7 @@ runs:
       shell: msys2 {0}
       env:
         PACKAGES: >-
-          git patch tar
+          git patch tar diffutils
           ${{ inputs.phase != 'tests' && format('{0}-ccache {0}-clang {0}-glib2 {0}-pixman {0}-libjpeg-turbo {0}-portaudio {0}-python {0}-meson {0}-ninja {0}-pkgconf', inputs.prefix) || '' }}
       run: |
         read -r -a packages <<< "$PACKAGES"

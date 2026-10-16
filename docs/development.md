@@ -90,7 +90,7 @@ Linux 使用 Clang/GCC、GLib、Pixman、PulseAudio 开发包、patchelf，以�
 
 Windows 使用原生 MSVC Rust 工具链和对应架构的 Visual Studio C++ Build Tools、
 Windows SDK；QEMU、音频和网络组件使用 MSYS2 的 Clang、GLib、Pixman、libjpeg-turbo、
-PortAudio、Python、Meson、Ninja、pkgconf、Git、patch 和 GNU tar。
+PortAudio、Python、Meson、Ninja、pkgconf、Git、patch、diffutils 和 GNU tar。
 ARM64 使用 CLANGARM64 环境，x64 使用 UCRT64 环境。先进入对应架构的
 Visual Studio Developer Command Prompt，再将 MSYS2 工具目录加入 PATH，
 设置 `CC=clang`，执行 `python tools/desktop.py --build-only`。
