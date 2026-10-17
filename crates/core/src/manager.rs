@@ -50,14 +50,19 @@ impl Manager {
         })
     }
     pub fn restore_ports(&mut self) -> Result<()> {
+        let mut errors = Vec::new();
         for item in self.catalog.devices()? {
             if item["host"]["uart"]
                 .as_array()
                 .is_some_and(|v| !v.is_empty())
             {
-                self.worker(item["id"].as_str().context("Missing ID")?)?;
+                let id = item["id"].as_str().context("Missing ID")?;
+                if let Err(error) = self.worker(id) {
+                    errors.push(format!("{id}: {error:#}"));
+                }
             }
         }
+        ensure!(errors.is_empty(), "Cannot restore UART endpoints: {}", errors.join("; "));
         Ok(())
     }
     fn worker(&mut self, id: &str) -> Result<Client> {
@@ -67,7 +72,11 @@ impl Manager {
             Ok(client) => return Ok(client),
             Err(error) if error.chain().any(|cause| cause.downcast_ref::<std::io::Error>()
                 .is_some_and(|io| matches!(io.kind(), std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock))) => {
-                return Err(error.context("Instance runtime is not responding"));
+                // A stale endpoint can time out after its port is reused. Only
+                // the runtime lease proves that a worker still owns this instance.
+                if storage::Lease::acquire(&path.join("runtime.lock")).is_err() {
+                    return Err(error.context("Instance runtime is not responding"));
+                }
             }
             Err(_) => {}
         }
@@ -493,7 +502,11 @@ pub fn bridge(mut manager: Manager) -> Result<()> {
 }
 
 fn serve_bridge(manager: &mut Manager) -> Result<()> {
-    manager.restore_ports()?;
+    if let Err(error) = manager.restore_ports() {
+        // A device failure must not prevent the library or other devices from
+        // receiving controls. Per-instance observation reports worker errors.
+        eprintln!("{error:#}");
+    }
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
     for line in stdin.lock().lines() {

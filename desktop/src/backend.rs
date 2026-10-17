@@ -3,7 +3,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Child, ChildStdin, ChildStdout, Stdio},
     sync::{
@@ -278,6 +278,7 @@ struct Bridge {
     input: Option<ChildStdin>,
     output: BufReader<ChildStdout>,
     next: u64,
+    errors: Arc<Mutex<Vec<u8>>>,
 }
 
 impl Bridge {
@@ -291,31 +292,63 @@ impl Bridge {
             .current_dir(root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("无法启动控制服务：{e}"))?;
         let input = child.stdin.take();
         let output = BufReader::new(child.stdout.take().unwrap());
+        // GUI launchers need not provide a console or valid standard handles.
+        // Drain diagnostics independently so a full stderr pipe cannot stall RPC.
+        let mut stderr = child.stderr.take().unwrap();
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        let tail = errors.clone();
+        thread::spawn(move || {
+            let mut bytes = [0; 4096];
+            loop {
+                match stderr.read(&mut bytes) {
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Ok(0) | Err(_) => break,
+                    Ok(count) => {
+                        let mut tail = tail.lock().unwrap();
+                        tail.extend_from_slice(&bytes[..count]);
+                        let discard = tail.len().saturating_sub(8192);
+                        tail.drain(..discard);
+                    }
+                }
+            }
+        });
         Ok(Self {
             child,
             input,
             output,
             next: 0,
+            errors,
         })
+    }
+
+    fn failure(&mut self, reason: &str) -> String {
+        let status = self.child.try_wait().ok().flatten();
+        let errors = self.errors.lock().unwrap();
+        let detail = String::from_utf8_lossy(&errors);
+        let mut message = format!("控制服务连接失败：{reason}");
+        if let Some(status) = status { message.push_str(&format!(" ({status})")); }
+        if !detail.trim().is_empty() { message.push_str(&format!("：{}", detail.trim())); }
+        message
     }
 
     fn call(&mut self, method: &str, params: Value) -> Result<Value, String> {
         self.next += 1;
         let request = json!({"id":self.next,"method":method,"params":params});
-        writeln!(self.input.as_mut().unwrap(), "{request}").map_err(|e| e.to_string())?;
+        writeln!(self.input.as_mut().unwrap(), "{request}")
+            .map_err(|e| self.failure(&e.to_string()))?;
         let mut line = String::new();
         if self
             .output
             .read_line(&mut line)
-            .map_err(|e| e.to_string())?
+            .map_err(|e| self.failure(&e.to_string()))?
             == 0
         {
-            return Err("控制服务已退出。请检查运行环境或设备库是否已被另一个窗口打开。".into());
+            return Err(self.failure("控制服务已退出"));
         }
         let reply: Value =
             serde_json::from_str(&line).map_err(|e| format!("控制服务响应异常：{e}"))?;

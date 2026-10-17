@@ -13,6 +13,7 @@ use std::{
 };
 
 struct Worker {
+    lease: Option<storage::Lease>,
     paused: Arc<AtomicBool>,
     requests: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
@@ -20,6 +21,7 @@ struct Worker {
 }
 impl Worker {
     fn start(path: &Path, id: &str) -> Self {
+        let lease = storage::Lease::acquire(&path.join("runtime.lock")).unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         storage::write_json(
@@ -69,6 +71,7 @@ impl Worker {
             }
         });
         Self {
+            lease: Some(lease),
             paused,
             requests,
             stop,
@@ -84,6 +87,43 @@ impl Drop for Worker {
             result.unwrap();
         }
     }
+}
+
+#[test]
+fn stale_timed_out_endpoint_allows_worker_restart_after_lease_is_released() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let temp = tempfile::tempdir().unwrap();
+    let mut manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
+    let item = manager.catalog.create("arcs-mini", None, Some("stale")).unwrap();
+    let path = Path::new(item["path"].as_str().unwrap());
+    let mut listener = Worker::start(path, item["id"].as_str().unwrap());
+    listener.paused.store(true, Ordering::Release);
+    drop(listener.lease.take());
+    let error = manager.call("start", json!({"id":item["id"]})).unwrap_err();
+    assert!(error.chain().any(|cause| cause.downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)),
+        "An unowned stale port must allow a new worker spawn: {error:#}");
+}
+
+#[test]
+fn uart_restoration_attempts_other_devices_after_a_busy_worker_times_out() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let temp = tempfile::tempdir().unwrap();
+    let mut manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
+    let a = manager.catalog.create("arcs-mini", None, Some("busy")).unwrap();
+    let b = manager.catalog.create("arcs-mini", None, Some("healthy")).unwrap();
+    let first = Worker::start(Path::new(a["path"].as_str().unwrap()), a["id"].as_str().unwrap());
+    let second = Worker::start(Path::new(b["path"].as_str().unwrap()), b["id"].as_str().unwrap());
+    first.paused.store(true, Ordering::Release);
+    for item in [&a, &b] {
+        manager.catalog.update(Path::new(item["path"].as_str().unwrap()), &json!({"uart":[0]})).unwrap();
+    }
+    let error = manager.restore_ports().unwrap_err();
+    assert!(error.to_string().contains("not responding"));
+    assert_eq!(second.requests.load(Ordering::Acquire), 1);
+    let status = manager.status().unwrap();
+    assert!(status["runtime_errors"][a["id"].as_str().unwrap()].is_string());
+    assert_eq!(status["sessions"][b["id"].as_str().unwrap()]["sample"], 2);
 }
 
 #[test]
