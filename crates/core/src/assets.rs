@@ -52,7 +52,7 @@ impl Assets {
     }
     pub fn verify_camera(&self) -> Result<()> {
         ensure!(
-            cfg!(any(target_os = "macos", windows)),
+            crate::camera_capture::SUPPORTED,
             "Host camera capture is unsupported on this platform"
         );
         if self.bundled {
@@ -207,7 +207,7 @@ impl Assets {
             .as_object()
             .context("Runtime files missing")?;
         let mut assets = vec![self.qemu(), self.audio(), self.network()];
-        if cfg!(any(target_os = "macos", windows)) {
+        if crate::camera_capture::SUPPORTED {
             assets.push(self.camera());
         }
         for asset in assets {

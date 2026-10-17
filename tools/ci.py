@@ -62,8 +62,7 @@ def component_paths(component):
             f'.tools/network/{library}',
             'qemu/COPYING', 'qemu/COPYING.LIB',
             '.tools/network-source/COPYRIGHT', '.tools/network-source/LICENSE']
-    if sys.platform in ('darwin', 'win32'):
-        paths += [f'.tools/camera/lisa-camera{suffix}', '.tools/camera/build.json']
+    paths += [f'.tools/camera/lisa-camera{suffix}', '.tools/camera/build.json']
     return paths
 
 
@@ -123,8 +122,7 @@ def native_build(python, system, arch):
         env['CC'] = 'ccache ' + env.get('CC', 'clang')
     run('qemu-build', [python, 'tools/build_qemu.py'], timeout=2400, env=env)
     run('audio-build', [python, 'tools/build_audio.py'])
-    if system in ('darwin', 'windows'):
-        run('camera-build', [python, 'tools/build_camera.py'])
+    run('camera-build', [python, 'tools/build_camera.py'])
     run('network-build', [python, 'tools/build_network.py'])
     if system == 'linux' and arch == 'x86_64':
         run('qemu-tests', ['make', 'check-qemu', 'PYTHON=' + python])

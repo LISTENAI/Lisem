@@ -12,7 +12,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.tools/camera'
 BINARY = OUT / ('lisa-camera.exe' if os.name == 'nt' else 'lisa-camera')
-INPUTS = [ROOT / 'native/camera' / ('mediafoundation.cpp' if os.name == 'nt' else 'avfoundation.m'),
+INPUTS = [ROOT / 'native/camera' / ('mediafoundation.cpp' if os.name == 'nt' else
+                                    'v4l2.cpp' if sys.platform == 'linux' else 'avfoundation.m'),
           Path(__file__)]
 
 
@@ -22,7 +23,7 @@ def hashes():
 
 
 def current_build():
-    if sys.platform not in ('darwin', 'win32'):
+    if sys.platform not in ('darwin', 'win32', 'linux'):
         return True
     stamp = OUT / 'build.json'
     if not stamp.is_file() or not BINARY.is_file():
@@ -54,8 +55,17 @@ def build():
         temporary.replace(BINARY)
         save_manifest()
         return BINARY
+    if sys.platform == 'linux':
+        OUT.mkdir(parents=True, exist_ok=True)
+        temporary = OUT / 'lisa-camera.build'
+        subprocess.run([*shlex.split(os.environ.get('CXX', 'c++')), '-std=c++17', '-O2',
+            '-Wall', '-Wextra', '-Werror', '-ffile-prefix-map=' + str(Path.home()) + '=/build',
+            str(INPUTS[0]), '-o', str(temporary)], check=True, timeout=60)
+        temporary.replace(BINARY)
+        save_manifest()
+        return BINARY
     if sys.platform != 'darwin':
-        raise RuntimeError('Host camera capture is only supported on macOS and Windows')
+        raise RuntimeError('Host camera capture is only supported on macOS, Windows and Linux')
     OUT.mkdir(parents=True, exist_ok=True)
     info = OUT / 'camera-info.plist'
     info.write_bytes(plistlib.dumps({

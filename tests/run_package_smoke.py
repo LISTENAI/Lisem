@@ -54,6 +54,10 @@ def verify_icon(bundle):
             if small.value:
                 destroy(small)
     else:
+        runtime = bundle / 'runtime'
+        manifest = json.loads((runtime / 'manifest.json').read_text())
+        camera = runtime / 'bin/lisa-camera'
+        assert hashlib.sha256(camera.read_bytes()).hexdigest() == manifest['files']['bin/lisa-camera']
         import configparser
         entry = configparser.ConfigParser(interpolation=None)
         entry.read(bundle / 'share/applications/com.listenai.emulator.desktop')
@@ -85,8 +89,8 @@ def main():
                 [str(camera), '--list'], env=env, cwd=directory, timeout=5))
             assert listing['supported'] is True
             assert listing['authorization'] in ('authorized', 'not-determined', 'denied', 'restricted')
-        elif os.name == 'nt':
-            camera = bundle / 'runtime/bin/lisa-camera.exe'
+        else:
+            camera = bundle / 'runtime/bin' / ('lisa-camera.exe' if os.name == 'nt' else 'lisa-camera')
             listing = json.loads(subprocess.check_output(
                 [str(camera), '--list'], env=env, cwd=directory, timeout=5))
             assert listing['supported'] is True and isinstance(listing['devices'], list)

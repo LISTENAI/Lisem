@@ -19,9 +19,10 @@ const MAX_HEIGHT: u32 = 1080;
 const MAX_ERROR: usize = 4096;
 const ERROR_DRAIN_GRACE: Duration = Duration::from_millis(100);
 pub const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(120);
+pub(crate) const SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "linux", windows));
 
 pub fn devices(assets: &Assets) -> Result<Value> {
-    if !cfg!(any(target_os = "macos", windows)) {
+    if !SUPPORTED {
         return Ok(json!({"supported":false,"authorization":"unsupported","devices":[]}));
     }
     assets.verify_camera()?;
@@ -168,7 +169,7 @@ pub struct Capture {
 impl Capture {
     pub fn start(assets: &Assets, device_id: &str, rotation: u16) -> Result<Self> {
         ensure!(
-            cfg!(any(target_os = "macos", windows)),
+            SUPPORTED,
             "Host camera capture is unsupported on this platform"
         );
         ensure!(

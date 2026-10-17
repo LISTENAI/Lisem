@@ -25,8 +25,8 @@ class CameraBuild(unittest.TestCase):
                     patch.object(os, 'name', 'nt' if platform == 'win32' else 'posix'):
                 paths = ci.component_paths('native')
                 camera = '.tools/camera/lisa-camera' + ('.exe' if platform == 'win32' else '')
-                self.assertEqual(camera in paths, platform != 'linux')
-                self.assertEqual('.tools/camera/build.json' in paths, platform != 'linux')
+                self.assertIn(camera, paths)
+                self.assertIn('.tools/camera/build.json', paths)
 
     def test_stamp_rejects_changed_source_and_binary(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(sys, 'platform', 'darwin'):
@@ -49,7 +49,7 @@ class CameraBuild(unittest.TestCase):
                 self.assertFalse(build_camera.current_build())
 
     def test_unsupported_backend_does_not_require_camera_build(self):
-        with patch.object(sys, 'platform', 'linux'), patch.object(os, 'name', 'posix'):
+        with patch.object(sys, 'platform', 'freebsd'), patch.object(os, 'name', 'posix'):
             self.assertTrue(build_camera.current_build())
             with self.assertRaisesRegex(RuntimeError, 'only supported on macOS'):
                 build_camera.build()
@@ -136,6 +136,28 @@ class WindowsCameraTransport(unittest.TestCase):
                 '/link', 'mf.lib', 'mfplat.lib', 'mfreadwrite.lib', 'mfuuid.lib', 'ole32.lib'],
                 check=True, timeout=60)
             subprocess.run([str(binary)], check=True, timeout=5)
+
+
+
+@unittest.skipUnless(sys.platform == 'linux', 'Requires Linux V4L2 headers')
+class LinuxCameraTransport(unittest.TestCase):
+    def test_formats_short_writes_and_latest_frame(self):
+        with tempfile.TemporaryDirectory(prefix='lisem-camera-test-') as directory:
+            binary = Path(directory) / 'camera-test'
+            subprocess.run(['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
+                str(ROOT / 'tests/fixtures/host_camera_linux.cpp'), '-o', str(binary)],
+                check=True, timeout=60)
+            subprocess.run([str(binary)], check=True, timeout=5)
+
+    def test_native_device_argument_reports_device_error(self):
+        with tempfile.TemporaryDirectory(prefix='lisem-camera-device-test-') as directory:
+            binary = Path(directory) / 'lisa-camera'
+            subprocess.run(['c++', '-std=c++17', '-O2', '-Wall', '-Wextra', '-Werror',
+                str(ROOT / 'native/camera/v4l2.cpp'), '-o', str(binary)], check=True, timeout=60)
+            result = subprocess.run([str(binary), '--device', 'not-a-camera'],
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('Invalid camera device ID', result.stderr)
 
 
 if __name__ == '__main__':

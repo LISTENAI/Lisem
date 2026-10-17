@@ -41,7 +41,7 @@ SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC
 原 ROM 实例注入 QEMU 暂停，验证图片输入待确认后的恢复、松键、序列取消、
 过期序列拒绝、待确认时下电和产品共享映射清理。`--root` 可指定运行资源目录；测试不联网。
 
-`python3 tests/run_host_camera_runtime.py --binary /path/to/lisem` 在 macOS 上复制
+`python3 tests/run_host_camera_runtime.py --binary /path/to/lisem` 在 macOS/Linux 上复制
 自包含包，仅替换临时副本的采集生产者，用生成帧验证真实运行控制与 QEMU 的
 来源确认、失败隔离、等待首帧时取消、断开、重启和进程清理，不打开摄像头。
 真实宿主摄像头仍需显式选择设备，使用原 LPK 验证取景方向、连续帧、切换来源、
@@ -83,7 +83,7 @@ Flash；测试只写新建实例，不改输入镜像。固件应在开机后启
 Git 和 libjpeg-turbo。Python 仅参与构建与验证，不随运行产品启动。
 
 macOS 使用 Xcode Command Line Tools，以及 GLib、Pixman 和 libslirp 的构建依赖。
-Linux 使用 Clang/GCC、GLib、Pixman、PulseAudio 开发包、patchelf，以及 GPUI
+Linux 使用 Clang/GCC（含 C++17）、GLib、Pixman、PulseAudio 开发包、patchelf，以及 GPUI
 需要的 Vulkan、Wayland/X11、xkbcommon、fontconfig、OpenSSL、DBus 和 libsecret
 开发包。Ubuntu 24.04 的桌面音频可通过 PipeWire 的 PulseAudio 兼容服务连接。
 纯文本 Linux 的 CLI 不需要显示服务器；未开启宿主音频时也不需要音频服务。
@@ -105,8 +105,8 @@ Windows VC 运行库随应用本地部署，不依赖开发机安装目录。
 
 修改 Windows/Linux 音频端点时运行
 `python tests/run_host_audio_endpoint.py`，并验证原固件连续音频、显示及网络。
-当前虚拟机验证覆盖 Windows 11 ARM64 和 Ubuntu 24.04 ARM64；其它架构和
-发行版必须使用对应系统原生构建并验证，不能以交叉编译成功替代运行验收。
+每个声明支持的平台与架构须完成原生构建和运行验证。虚拟机未暴露麦克风或
+摄像头时，记录该项限制，并在具有相应设备的系统补充物理采集验证。
 
 ## 持续集成与产物
 
@@ -117,8 +117,9 @@ Rust/Python 测试、适用的平台端点测试，并在移出的应用包中�
 这些检查不需要应用固件、平台凭据、图形会话或真实音频设备。
 
 每个平台的原生组件、Rust release 构建和 debug 测试在独立 job 中并行运行。
-debug job 运行共享核心和 CLI 的测试；桌面入口没有单元测试，使用 release
-构建和打包后的生命周期集成测试验证，不重复编译 GPUI 的 debug 依赖。
+debug job 运行共享核心和 CLI 的测试，桌面行为由 release 构建和打包后的
+生命周期集成测试验证。桌面单元测试可用
+`cargo +1.95.0 test --locked -p lisem-desktop` 单独运行。
 打包只等待本平台的两份构建产物，校验提交、平台和文件哈希后执行包集成测试，
 上传候选产品包、SHA-256 与构建提交信息。Rust 依赖按工具链、平台和 profile
 缓存；原生代码使用 ccache，仍执行构建与全部回归。Windows 复用已安装的

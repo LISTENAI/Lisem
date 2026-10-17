@@ -212,7 +212,7 @@ impl Manager {
             "sessions":sessions,"session":session,"serial":serial,"data_dir":self.catalog.data,
             "client_build":client_build,"runtimes":runtimes,"runtime_errors":errors,
             "available_qemu_sha256":self.available_qemu_sha256,
-            "capabilities":{"host_camera":cfg!(any(target_os = "macos", windows)),"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
+            "capabilities":{"host_camera":crate::camera_capture::SUPPORTED,"backend":"qemu","host_network":true,"audio_input":true,"audio_output":true,"microphone":true,"uart_rx":true,"serial_pty":cfg!(unix),"serial_tcp":cfg!(windows)}}),
         )
     }
     fn qemu_comparison(&self, runtime: &Value) -> &'static str {

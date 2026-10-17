@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise live-source control in a copied macOS package without a camera.
+"""Exercise live-source control in a copied POSIX package without a camera.
 
 Only this test bundle replaces the native producer with a generated-frame fixture.
 The production CLI, runtime, shared channel and original ROM remain unchanged.
@@ -63,15 +63,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
     args = parser.parse_args()
-    if sys.platform != 'darwin':
-        parser.error('Live camera capture currently requires macOS')
-    source = args.binary.resolve().parents[2]
+    if os.name != 'posix':
+        parser.error('This fixture requires POSIX process controls')
+    macos = sys.platform == 'darwin'
+    source = args.binary.resolve().parents[2] if macos else args.binary.resolve().parent
     with tempfile.TemporaryDirectory(prefix='lisem-host-camera-test-') as temporary:
         root = Path(temporary)
-        bundle = root / 'Lisem.app'
+        bundle = root / ('Lisem.app' if macos else 'Lisem')
         shutil.copytree(source, bundle)
         binary = bundle / args.binary.resolve().relative_to(source)
-        runtime = bundle / 'Contents/Resources/runtime'
+        runtime = bundle / ('Contents/Resources/runtime' if macos else 'runtime')
         helper = runtime / 'bin/lisa-camera'
         fixture = root / 'producer.py'
         fixture.write_text(FIXTURE)
