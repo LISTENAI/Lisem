@@ -910,6 +910,7 @@ mod tests {
         for rejected in [false, true] {
             let listener = listener().unwrap();
             let address = listener.local_addr().unwrap();
+            let (release_reply, reply_released) = std::sync::mpsc::channel();
             let server = std::thread::spawn(move || {
                 let mut peer = TcpStream::connect(address).unwrap();
                 peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
@@ -928,7 +929,7 @@ mod tests {
                     if command == 1 {
                         writeln!(peer, "{{\"event\":\"RESET\"}}").unwrap();
                         peer.write_all(&reply.as_bytes()[..5]).unwrap();
-                        std::thread::sleep(Duration::from_millis(100));
+                        reply_released.recv_timeout(Duration::from_secs(5)).unwrap();
                         peer.write_all(&reply.as_bytes()[5..]).unwrap();
                     } else {
                         peer.write_all(reply.as_bytes()).unwrap();
@@ -944,7 +945,10 @@ mod tests {
                     Instant::now() + Duration::from_millis(30),
                 )
                 .unwrap_err();
-            assert!(error.is::<ControlPending>());
+            assert!(
+                error.is::<ControlPending>(),
+                "Unexpected control error: {error:#}"
+            );
             let id = qmp.pending_id().unwrap();
             assert!(
                 qmp.call("must-not-send", json!({}), &mut [])
@@ -952,6 +956,7 @@ mod tests {
                     .to_string()
                     .contains("not sent")
             );
+            release_reply.send(()).unwrap();
             let completed = loop {
                 if let Some(completed) = qmp.recover(&mut []).unwrap() {
                     break completed;
