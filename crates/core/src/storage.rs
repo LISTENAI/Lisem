@@ -50,6 +50,26 @@ impl Lease {
     }
 }
 
+pub(crate) struct MetadataLease {
+    _lease: Lease,
+}
+
+impl MetadataLease {
+    pub(crate) fn acquire(path: &Path) -> Result<Self> {
+        Lease::acquire(path).map(|lease| Self { _lease: lease })
+    }
+}
+
+impl Drop for MetadataLease {
+    fn drop(&mut self) {
+        // A concurrent fork can retain the open-file description until exec,
+        // even with CLOEXEC set. Metadata ownership ends with this scope.
+        // Storage leases instead survive in the guest until its final close.
+        #[cfg(unix)]
+        let _ = self._lease.file.unlock();
+    }
+}
+
 pub fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path.parent().context("Missing parent directory")?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
@@ -325,6 +345,72 @@ pub fn regenerate_uid(path: &Path, layout: &Layout) -> Result<String> {
     }
     atomic_write(&path.join("otp.bin"), &otp)?;
     uid(path, layout)
+}
+
+#[cfg(all(test, unix))]
+mod unix_tests {
+    use super::*;
+    use std::{
+        os::{
+            fd::AsRawFd,
+            unix::{net::UnixStream, process::CommandExt},
+        },
+        process::Command,
+        thread,
+        time::Duration,
+    };
+
+    fn retained_by_unrelated_fork(lease: impl Sized, path: &Path) -> bool {
+        let (mut ready, child_ready) = UnixStream::pair().unwrap();
+        let (child_resume, mut resume) = UnixStream::pair().unwrap();
+        ready
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        child_resume
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let ready_fd = child_ready.as_raw_fd();
+        let resume_fd = child_resume.as_raw_fd();
+        let spawning = thread::spawn(move || {
+            let mut command = Command::new("/usr/bin/true");
+            unsafe {
+                command.pre_exec(move || {
+                    let mut byte = 1u8;
+                    if libc::write(ready_fd, (&byte as *const u8).cast(), 1) != 1
+                        || libc::read(resume_fd, (&mut byte as *mut u8).cast(), 1) != 1
+                    {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            command.spawn().unwrap().wait().unwrap()
+        });
+        ready.read_exact(&mut [0]).unwrap();
+        drop(lease);
+        let retained = Lease::acquire(path).is_err();
+        resume.write_all(&[1]).unwrap();
+        assert!(spawning.join().unwrap().success());
+        assert!(Lease::acquire(path).is_ok());
+        retained
+    }
+
+    #[test]
+    fn metadata_lease_releases_while_unrelated_child_waits_to_exec() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("device.lock");
+        let lease = MetadataLease::acquire(&path).unwrap();
+        assert!(Lease::acquire(&path).is_err());
+        assert!(!retained_by_unrelated_fork(lease, &path));
+    }
+
+    #[test]
+    fn storage_lease_survives_its_original_owner_until_child_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("instance.lock");
+        let lease = Lease::acquire(&path).unwrap();
+        assert!(retained_by_unrelated_fork(lease, &path));
+    }
 }
 
 #[cfg(all(test, windows))]

@@ -1,5 +1,5 @@
 //! Hardware descriptions and the portable instance library.
-use crate::storage::{self, Layout, Lease};
+use crate::storage::{self, Layout, MetadataLease};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
@@ -84,7 +84,7 @@ impl Catalog {
         ensure!(!self.root.join("boards").join(format!("{id}.json")).exists(),
             "Installed board IDs cannot be replaced; choose a custom board ID");
         ensure!(self.chips.contains_key(board["chip"].as_str().unwrap()), "Unknown chip");
-        let _index = Lease::acquire(&self.data.join("library.lock"))?;
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         self.reload_hardware()?;
         let mut leases = Vec::new();
         for entry in self.entries()? {
@@ -232,7 +232,7 @@ impl Catalog {
     }
 
     pub fn create(&self, board: &str, package: Option<&Path>, name: Option<&str>) -> Result<Value> {
-        let _index = Lease::acquire(&self.data.join("library.lock"))?;
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let mut entries = self.entries()?;
         let descriptor = self.boards.get(board).context("Unknown board")?;
         ensure!(descriptor["runtime"]["available"] != false, "{}",
@@ -262,11 +262,11 @@ impl Catalog {
     }
 
     pub fn attach(&self, path: &Path) -> Result<Value> {
-        let _index = Lease::acquire(&self.data.join("library.lock"))?;
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let path = path.canonicalize()?;
         let mut entries = self.entries()?;
         if !path.join("device.json").exists() {
-            let _meta = Lease::acquire(&path.join("device.lock"))?;
+            let _meta = MetadataLease::acquire(&path.join("device.lock"))?;
             let manifest = storage::read_json(&path.join("instance.json"))?;
             let board = manifest["board"].as_str().context("Board missing")?;
             let _storage = storage::locked(&path, &self.layout(board)?)?;
@@ -319,7 +319,7 @@ impl Catalog {
     }
 
     pub fn detach(&self, id: &str) -> Result<()> {
-        let _index = Lease::acquire(&self.data.join("library.lock"))?;
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let item = self.device(id)?;
         let _storage = storage::locked(
             Path::new(item["path"].as_str().unwrap()),
@@ -381,7 +381,7 @@ impl Catalog {
     }
 
     pub fn update(&self, path: &Path, changes: &Value) -> Result<Value> {
-        let _lease = Lease::acquire(&path.join("device.lock"))?;
+        let _lease = MetadataLease::acquire(&path.join("device.lock"))?;
         let mut value = self.metadata(path)?;
         value.as_object_mut().unwrap().remove("firmware");
         if let Some(name) = changes.get("name") {

@@ -1514,7 +1514,7 @@ impl Runtime {
     }
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
         let _board_change = if method == "start" {
-            Some(crate::storage::Lease::acquire(&self.catalog.data.join("library.lock"))?)
+            Some(crate::storage::MetadataLease::acquire(&self.catalog.data.join("library.lock"))?)
         } else { None };
         if method == "start" && self.session.is_none() {
             self.catalog.reload_hardware()?;
@@ -2909,7 +2909,10 @@ mod tests {
             catalog.device(id).unwrap()["host"]["camera_image"],
             "old.png"
         );
-        assert!(catalog.device(id).unwrap()["host"]["camera_device"].is_null());
+        assert!(
+            catalog.device(id).unwrap()["host"]["camera_device"].is_null(),
+            "{state}"
+        );
         assert_eq!(state["camera_capture"]["state"], "error");
         finish_camera_change(&catalog, id, &mut state, source, Ok(Value::Null));
         let saved = catalog.device(id).unwrap();
@@ -2927,7 +2930,10 @@ mod tests {
             CameraSource::default(),
             Ok(Value::Null),
         );
-        assert!(catalog.device(id).unwrap()["host"]["camera_device"].is_null());
+        assert!(
+            catalog.device(id).unwrap()["host"]["camera_device"].is_null(),
+            "{state}"
+        );
         assert!(CameraSource::from_params(&json!({"path":null,"device_id":"camera-a"})).is_err());
         assert!(CameraSource::from_params(&json!({"device_id":""})).is_err());
         assert!(CameraSource::from_params(&json!({"path":42})).is_err());
