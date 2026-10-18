@@ -99,17 +99,35 @@ def screen_and_buttons():
 
 
 def chip_variants():
-    for chip, size in [('ls2684', 16 << 20), ('ls2663', 8 << 20)]:
+    variants = [('ls2684', 16 << 20, 0xdd), ('ls2663', 8 << 20, 0x93)]
+    for chip, size, identity in variants:
         p = {'version': 1, 'chip': chip, 'buttons': [], 'indicators': []}
         m = Machine(OUTPUT / chip, board='arcs-board', assembly=p)
         try:
+            base = 0x47b00000
+            mr2 = m.read(base + 0x808)
+            assert mr2 == identity, (chip, hex(mr2), hex(identity))
+            assert {3: 8 << 20, 5: 16 << 20}[mr2 & 7] == size
+            assert (mr2 >> 3) & 3 == (2 if size == 8 << 20 else 3)
+            good_die = (mr2 >> 7) & 1 if size == 8 << 20 else mr2 >> 5
+            assert good_die == (1 if size == 8 << 20 else 6)
+            m.write(base + 0x808, 0)
+            assert m.read(base + 0x808) == identity
             m.write(0x28000000 + size - 4, 0x11223344)
             assert m.read(0x28000000 + size - 4) == 0x11223344
             tree = m.qmp_command('human-monitor-command', {'command-line': 'info mtree'})
             assert '%016x-%016x' % (0x28000000, 0x28000000 + size - 1) in tree
+            m.write(base + 0x100, 0x1ff)
+            m.write(base + 0xc00, 0)
+            assert m.read(base + 0x808) == identity
+            m.write(0x4600000c, 0x4000)
+            assert m.read(base + 0x808) == identity
+            m.qmp_command('system_reset')
+            assert m.read(base + 0x808) == identity
+            assert m.read(0x28000000 + size - 4) == 0x11223344
         finally:
             m.close()
-    print('LS26 shared die with 8/16 MiB PSRAM capacity: PASS')
+    print('LS26 8/16 MiB PSRAM identity, read-only modes, resets and retained RAM: PASS')
 
 
 def venusa_screen():
