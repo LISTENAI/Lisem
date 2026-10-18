@@ -210,7 +210,7 @@ fn camera_input_selection_is_validated_persisted_and_explicitly_cleared() {
             .is_err()
     );
     assert!(runtime.call("camera", &json!({"device_id":""})).is_err());
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         let selected = runtime
             .call("camera", &json!({"device_id":"test-device"}))
             .unwrap();

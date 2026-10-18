@@ -16,7 +16,7 @@ fn relocated_bundle_checks_native_assets_and_library_integrity() {
     let assets = Assets::new(&root).unwrap();
     let mut files = serde_json::Map::new();
     let mut required = vec![assets.qemu(), assets.audio(), assets.network()];
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         required.push(assets.camera());
     }
     for path in required {
@@ -45,7 +45,7 @@ fn relocated_bundle_checks_native_assets_and_library_integrity() {
         "frameworks":{"dependency.dylib":storage::sha256(&library).unwrap()}});
     storage::write_json(&root.join("manifest.json"), &manifest).unwrap();
     assets.verify_qemu().unwrap();
-    if cfg!(target_os = "macos") {
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
         assets.verify_camera().unwrap();
     }
     let moved = temp.path().join("Moved.app");
@@ -53,6 +53,13 @@ fn relocated_bundle_checks_native_assets_and_library_integrity() {
     let root = moved.join("Contents/Resources/runtime");
     let assets = Assets::new(&root).unwrap();
     assets.verify_qemu().unwrap();
+    if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
+        assets.verify_camera().unwrap();
+        fs::remove_file(assets.camera()).unwrap();
+        assert!(assets.verify_qemu().is_err());
+        fs::write(assets.camera(), b"native asset").unwrap();
+        assets.verify_qemu().unwrap();
+    }
     let library = if cfg!(target_os = "macos") {
         moved.join("Contents/Frameworks/dependency.dylib")
     } else {
