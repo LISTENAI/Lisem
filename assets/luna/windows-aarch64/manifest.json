@@ -1,8 +1,8 @@
 {
-  "version": "0.2.0",
+  "version": "0.3.0",
   "abi": 1,
   "target": "windows-aarch64",
   "file": "liblisem-luna.a",
-  "sha256": "689d961b652b4a61c73163df9233448893836b8d8a7e860eba9c530f10960a1e",
+  "sha256": "0eff9b98e925519890334e28d375148f7e357399bfd9854f00ac5fb8108d903c",
   "api_sha256": "1ea08406a70e2906fa3da7c7a07bc8594c22b840176ad30a329dcaedb2522cea"
 }
