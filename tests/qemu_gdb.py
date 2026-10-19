@@ -1,5 +1,6 @@
 """Bounded local GDB regression helper with raw protocol evidence."""
 import json
+import os
 from pathlib import Path
 import socket
 import subprocess
@@ -17,7 +18,7 @@ def debugger(elf, reference, directory, compiler, runner_flags=()):
     with tempfile.TemporaryDirectory(prefix='arcs-gdb-') as temporary, (directory / 'runner.log').open('wb') as log:
         path = Path(temporary) / 'gdb.sock'
         wrapper = directory / 'qemu-gdb.py'
-        binary = str(ROOT / '.tools/qemu-build/qemu-system-riscv32')
+        binary = os.environ.get('ARCS_QEMU_BINARY', str(ROOT / '.tools/qemu-build/qemu-system-riscv32'))
         wrapper.write_text('#!' + sys.executable + '\nimport os,sys\n' +
                            'os.execv(%r, [%r, "-S", "-gdb", %r] + sys.argv[1:])\n' %
                            (binary, binary, 'unix:' + str(path) + ',server=on,wait=off'))
