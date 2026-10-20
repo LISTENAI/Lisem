@@ -135,8 +135,9 @@ worker 的 `id` 区分进程生命周期，`pid` 便于定位进程；
 
 ## Lisem skill
 
-[Lisem skill](../skills/lisem/SKILL.md) 提供安装、实例操作和场景指导，
-其中的固件自动回归场景涵盖夹具准备、时序操作及证据判定。安装命令：
+[Lisem skill](../skills/lisem/SKILL.md) 提供安装、实例操作和场景指导。
+原理图板型配置场景通过运行工具查询模型和接线能力；固件自动回归场景涵盖
+夹具准备、时序操作及证据判定。安装命令：
 
 ```sh
 npx skills add LISTENAI/Lisem
