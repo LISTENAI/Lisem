@@ -412,8 +412,8 @@ mod tests {
     fn error_drain_grace_is_bounded_when_stderr_stays_open() {
         let mut command = std::process::Command::new("/bin/sh");
         command.args(["-c", "exec 1>&-; exec sleep 30"]);
-        let mut capture = Capture::spawn(command, "test", 0).unwrap();
         let start = Instant::now();
+        let mut capture = Capture::spawn(command, "test", 0).unwrap();
         while !capture.ended() && start.elapsed() < Duration::from_secs(2) {
             assert!(capture.take().is_none());
             thread::sleep(Duration::from_millis(1));
