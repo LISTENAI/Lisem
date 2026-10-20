@@ -1,8 +1,8 @@
 {
-  "version": "0.3.0",
+  "version": "0.4.0",
   "abi": 1,
   "target": "linux-x86_64",
   "file": "liblisem-luna.a",
-  "sha256": "6ebabf0c401a4ef38c24385c9d88f221ca3b0805bad4cd63e38ef6a6f40978c0",
+  "sha256": "efa85f7353abc88cfe9bde45e330319fb4341b831a7ff1b586dcfa4659959d71",
   "api_sha256": "1ea08406a70e2906fa3da7c7a07bc8594c22b840176ad30a329dcaedb2522cea"
 }
