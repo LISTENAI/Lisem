@@ -166,17 +166,17 @@ def main():
             assert hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest() == initial_flash
             uart.close()
             uart = None
-            venus = service.create_device('venusa-rd-evb')
-            device = Path(venus['path'])
+            venusa = service.create_device('venusa-rd-evb')
+            device = Path(venusa['path'])
             otp = (device / 'otp.bin').read_bytes()
             initial_flash = hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest()
-            port = service.dispatch('serial', {'id': venus['id'], 'channel': 0})
+            port = service.dispatch('serial', {'id': venusa['id'], 'channel': 0})
             uart = NativeUart(port)
             # Empty Flash enters the fixed ROM's UART loader naturally.
-            service.start(venus['id'], seconds=30, timeout=60)
+            service.start(venusa['id'], seconds=30, timeout=60)
             deadline = time.monotonic() + 15
             while True:
-                state = service.status()['sessions'][venus['id']]
+                state = service.status()['sessions'][venusa['id']]
                 assert not state.get('error') and not state['finished'], state
                 if state.get('seconds', 0) >= .1:
                     break
@@ -196,7 +196,7 @@ def main():
             assert not [p for p in workspace.rglob('*') if p.is_file()]
             service.stop()
             assert not workspace.exists()
-            assert service.status()['serial'][venus['id']]['0'] == port
+            assert service.status()['serial'][venusa['id']]['0'] == port
             assert (device / 'otp.bin').read_bytes() == otp
             assert hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest() == initial_flash
             result = {'pass': True, 'rom_versions': {'arcs': 5, 'venusa': version[1]},

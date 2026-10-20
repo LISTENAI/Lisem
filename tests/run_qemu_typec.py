@@ -7,17 +7,17 @@ OUTPUT = ROOT / 'artifacts/qemu' / ('typec-' + time.strftime('%Y%m%d-%H%M%S'))
 
 
 def run(chip):
-    venus = chip == 'venusa'
-    scl, sda = (34, 33) if venus else (33, 32)
+    venusa = chip == 'venusa'
+    scl, sda = (34, 33) if venusa else (33, 32)
     plan = {'version': 1, 'chip': chip, 'buttons': [], 'indicators': [],
-            'typec': {'SCL': scl, 'SDA': sda, 'address': 49, 'usb_host': not venus,
+            'typec': {'SCL': scl, 'SDA': sda, 'address': 49, 'usb_host': not venusa,
                       'INT_N': 40, 'ID': 41}}
-    m = Machine(OUTPUT / chip, board='venusa-board' if venus else 'arcs-board', assembly=plan)
-    bus = 0x43c00000 if venus else 0x46e00000
-    gpio = 0x43700000 if venus else 0x46800000
+    m = Machine(OUTPUT / chip, board='venusa-board' if venusa else 'arcs-board', assembly=plan)
+    bus = 0x43c00000 if venusa else 0x46e00000
+    gpio = 0x43700000 if venusa else 0x46800000
     try:
-        m.write(0x43100034 if venus else 0x45800008, 0x802 if venus else 0x208000)
-        for pin in (scl, sda): m.write((0x44100000 if venus else 0x47500000) + 4 * pin, 8)
+        m.write(0x43100034 if venusa else 0x45800008, 0x802 if venusa else 0x208000)
+        for pin in (scl, sda): m.write((0x44100000 if venusa else 0x47500000) + 4 * pin, 8)
         m.write(bus + 0x2c, 5 | (200 << 4))
 
         def transfer(data=None, reading=False, stop=True, reset=True):
@@ -45,7 +45,7 @@ def run(chip):
         write(5, 0x2b)
 
         def cable(connected):
-            if venus:
+            if venusa:
                 m.command('set_irq_in /machine/typec host-connected 0 %d' % connected)
             else:
                 m.qmp_command('qom-set', {'path': '/machine/soc', 'property': 'x-lisem-usb-lab',

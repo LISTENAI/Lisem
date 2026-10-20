@@ -8,21 +8,21 @@ OUTPUT = ROOT / 'artifacts/qemu' / ('extio-' + time.strftime('%Y%m%d-%H%M%S'))
 
 
 def run(chip):
-    venus = chip == 'venusa'
-    scl, sda = (34, 33) if venus else (33, 32)
+    venusa = chip == 'venusa'
+    scl, sda = (34, 33) if venusa else (33, 32)
     p = {'version': 1, 'chip': chip, 'buttons': [], 'indicators': [],
          'extio': {'id': 'extio', 'SCL': scl, 'SDA': sda, 'address': 108},
          'amplifier': {'pad': 82, 'active_level': 1},
          'sd': {'pads': dict(zip(['CLK','CMD','DAT0','DAT1','DAT2','DAT3'],
-                                 [42,43,44,45,46,47] if venus else [6,7,5,4,9,8])),
+                                 [42,43,44,45,46,47] if venusa else [6,7,5,4,9,8])),
                 'card_detect': False, 'detect_endpoint': 91, 'detect_active_level': 0}}
-    m = Machine(OUTPUT / chip, board='venusa-board' if venus else 'arcs-board',
+    m = Machine(OUTPUT / chip, board='venusa-board' if venusa else 'arcs-board',
                 assembly=p, desktop=True, sd_slot=True)
-    bus = 0x43c00000 if venus else 0x46e00000
+    bus = 0x43c00000 if venusa else 0x46e00000
     try:
-        if venus: m.write(0x43100034, 0x802)
+        if venusa: m.write(0x43100034, 0x802)
         else: m.write(0x45800008, 0x208000)
-        for pin in (scl, sda): m.write((0x44100000 if venus else 0x47500000)+4*pin, 8)
+        for pin in (scl, sda): m.write((0x44100000 if venusa else 0x47500000)+4*pin, 8)
         m.write(bus+0x2c, 5 | (200 << 4))
 
         def transfer(data=None, read=False, stop=True, reset=True):
@@ -48,7 +48,7 @@ def run(chip):
         write(0x30,4); write(0x31,4)
         assert read(0x33)&4
         snapshot = lambda: json.loads(m.qmp_command('qom-get', {'path':'/machine','property':'x-lisa-snapshot'}))
-        if not venus: assert snapshot()['audio_output']['pa_enabled']
+        if not venusa: assert snapshot()['audio_output']['pa_enabled']
         write(0x31,0); assert not read(0x33)&4
         write(0x35,4); write(0x34,4)
         assert read(0x30)&4==0 and read(0x33)&4
