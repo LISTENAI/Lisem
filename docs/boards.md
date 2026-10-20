@@ -155,6 +155,6 @@ ST7789 的显示 RAM 为 240 × 320，面板的 `viewport` 指定可见区域的
 - [Arcs-Mini](../boards/arcs-mini.json)：显示控制器、面板、背光及摄像头的组合。
 - [Arcs-Mini3](../boards/arcs-mini3.json)：GPIO 扩展器、USB-C 角色控制器及外设连接。
 - [Arcs-EVB](../boards/arcs-evb.json)：触摸面板与电阻按键。
-- [VenusA RD EVB](../boards/venusa-rd-evb.json)：串口、SD 卡及芯片引脚配置。
+- [VenusA RD EVB](../boards/venusa-rd-evb.json)：GC0328 摄像头、串口、SD 卡及芯片引脚配置。
 
 [自定义 Mini 示例](../examples/boards/mini-custom.json)可作为导入配置的起点。

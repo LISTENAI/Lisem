@@ -1025,6 +1025,15 @@ mod tests {
             assert_eq!(board["runtime"]["machine"], machine);
             assert!(board["definition"].is_object());
         }
+        let venusa = compile(
+            &serde_json::from_str(include_str!("../../../boards/venusa-rd-evb.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(venusa["camera"]["model"], "gc0328");
+        assert_eq!(venusa["assembly"]["camera"]["pads"]["SCL"], 34);
+        assert_eq!(venusa["assembly"]["camera"]["pads"]["SDA"], 33);
+        assert_eq!(venusa["assembly"]["camera"]["pads"]["MCLK"], 35);
+        assert_eq!(venusa["assembly"]["camera"]["pads"]["D7"], 31);
         let board = compile(
             &serde_json::from_str(include_str!("../../../boards/arcs-mini3.json")).unwrap(),
         )
