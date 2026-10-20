@@ -360,6 +360,21 @@ mod unix_tests {
         time::Duration,
     };
 
+    fn isolated(name: &str) -> bool {
+        if std::env::var("LISEM_FORK_TEST").as_deref() == Ok(name) {
+            return false;
+        }
+        // Only this process opens the fixture's lease. Parallel tests in the
+        // parent cannot fork while it is open and retain an unrelated copy.
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env("LISEM_FORK_TEST", name)
+            .status()
+            .unwrap();
+        assert!(status.success(), "Isolated fork fixture failed: {name}");
+        true
+    }
+
     fn retained_by_unrelated_fork(lease: impl Sized, path: &Path) -> bool {
         let (mut ready, child_ready) = UnixStream::pair().unwrap();
         let (child_resume, mut resume) = UnixStream::pair().unwrap();
@@ -397,6 +412,9 @@ mod unix_tests {
 
     #[test]
     fn metadata_lease_releases_while_unrelated_child_waits_to_exec() {
+        if isolated("storage::unix_tests::metadata_lease_releases_while_unrelated_child_waits_to_exec") {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("device.lock");
         let lease = MetadataLease::acquire(&path).unwrap();
@@ -406,6 +424,9 @@ mod unix_tests {
 
     #[test]
     fn storage_lease_survives_its_original_owner_until_child_exit() {
+        if isolated("storage::unix_tests::storage_lease_survives_its_original_owner_until_child_exit") {
+            return;
+        }
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("instance.lock");
         let lease = Lease::acquire(&path).unwrap();
