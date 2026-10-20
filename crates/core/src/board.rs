@@ -1,11 +1,16 @@
 //! Physical board descriptions and the checked QEMU assembly plan.
 //! Front-end metadata is derived; it is never a second source of wiring.
 use anyhow::{Context, Result, bail, ensure};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+mod models;
+pub use models::{ModelQuery, query_models, wiring};
+
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
     pub schema_version: u32,
@@ -13,21 +18,25 @@ pub struct Board {
     pub name: String,
     pub chip: String,
     pub storage: Storage,
+    #[schemars(length(max = 64))]
     pub devices: BTreeMap<String, Device>,
+    #[schemars(length(max = 128))]
     pub nets: BTreeMap<String, Net>,
     #[serde(default)]
+    #[schemars(length(max = 32))]
     pub links: Vec<Link>,
     #[serde(default)]
+    #[schemars(length(max = 64))]
     pub inputs: BTreeMap<String, Stimulus>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Storage {
     pub flash_bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
     pub model: String,
@@ -41,22 +50,23 @@ fn empty_object() -> Value {
     json!({})
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Net {
+    #[schemars(length(min = 1, max = 16))]
     pub endpoints: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pull: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Link {
     pub from: String,
     pub to: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Stimulus {
     Digital {
@@ -75,7 +85,7 @@ pub enum Stimulus {
     },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Range {
     pub min: u32,
@@ -117,6 +127,31 @@ pub fn pad(value: &str, chip: &str) -> Result<u8> {
     Ok(bank + number)
 }
 
+const SUPPORTED_CHIPS: [&str; 3] = ["ls2663", "ls2684", "venusa"];
+const EXTIO_ADC_PINS: [u8; 8] = [66, 65, 84, 90, 91, 93, 94, 92];
+const NOR_BYTES: u64 = 16 * 1024 * 1024;
+const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
+    ("venusa", 34, 33, 1),
+    ("ls2663", 39, 38, 0),
+    ("ls2663", 23, 22, 0),
+    ("ls2663", 33, 32, 1),
+    ("ls2684", 39, 38, 0),
+    ("ls2684", 23, 22, 0),
+    ("ls2684", 33, 32, 1),
+];
+
+fn sd_pads(chip: &str) -> [u8; 6] {
+    if chip == "venusa" {
+        [42, 43, 44, 45, 46, 47]
+    } else {
+        [6, 7, 5, 4, 9, 8]
+    }
+}
+
+const ROTATIONS: [u32; 4] = [0, 90, 180, 270];
+const EXTIO_ADDRESSES: [u8; 2] = [0x6c, 0x15];
+const TYPEC_ADDRESSES: [u8; 2] = [0x31, 0x21];
+
 const EXTIO: &str = "listenai-extio-ch32v003-v1.3";
 
 fn extio_pin(port: &str) -> Option<u8> {
@@ -137,27 +172,7 @@ fn extio_pin(port: &str) -> Option<u8> {
 }
 
 fn ports(model: &str) -> Result<&'static [&'static str]> {
-    Ok(match model {
-        "st7789" => &["SCK", "SDI", "CS", "DC", "RESET", "TE"],
-        "display-panel" => &[],
-        "backlight" => &["EN"],
-        "button" => &["OUT"],
-        "led" | "audio-amplifier" | "signal-probe" => &["IN"],
-        "voltage-divider" => &["IN", "OUT"],
-        "gc0328" => &[
-            "SCL", "SDA", "MCLK", "PCLK", "HSYNC", "VSYNC", "D0", "D1", "D2", "D3", "D4", "D5",
-            "D6", "D7", "PWDN", "RESET",
-        ],
-        "cst328" => &["SCL", "SDA", "INT"],
-        "husb320-ba" => &["SCL", "SDA", "INT_N", "ID"],
-        "sd-card-slot" => &["CLK", "CMD", "DAT0", "DAT1", "DAT2", "DAT3", "CD"],
-        "resistor-keypad" => &["OUT"],
-        EXTIO => &[
-            "SCL", "SDA", "PA1", "PA2", "PC0", "PC1", "PC2", "PC3", "PC4", "PC7", "PD0", "PD1",
-            "PD2", "PD3", "PD4", "PD5", "PD6",
-        ],
-        _ => bail!("Unsupported device model: {model}"),
-    })
+    Ok(models::find(model)?.ports)
 }
 
 impl Board {
@@ -220,12 +235,12 @@ impl Board {
             "Invalid board ID or name"
         );
         ensure!(
-            matches!(self.chip.as_str(), "ls2684" | "ls2663" | "venusa"),
+            SUPPORTED_CHIPS.contains(&self.chip.as_str()),
             "Board assembly is unavailable for chip {}",
             self.chip
         );
         ensure!(
-            self.storage.flash_bytes == 16 * 1024 * 1024,
+            self.storage.flash_bytes == NOR_BYTES,
             "This chip backend requires a 16 MiB NOR"
         );
         ensure!(
@@ -281,30 +296,10 @@ impl Board {
                     continue;
                 }
                 let model = self.devices[id].model.as_str();
-                let is_analog = matches!(model, "voltage-divider" | "resistor-keypad");
+                let is_analog = models::analog(model);
                 analog |= is_analog;
                 digital |= !is_analog && model != EXTIO;
-                drivers += usize::from(matches!(
-                    (model, port),
-                    ("button" | "resistor-keypad" | "voltage-divider", "OUT")
-                        | ("st7789", "TE")
-                        | ("cst328", "INT")
-                        | ("husb320-ba", "INT_N" | "ID")
-                        | (
-                            "gc0328",
-                            "PCLK"
-                                | "HSYNC"
-                                | "VSYNC"
-                                | "D0"
-                                | "D1"
-                                | "D2"
-                                | "D3"
-                                | "D4"
-                                | "D5"
-                                | "D6"
-                                | "D7"
-                        )
-                ));
+                drivers += usize::from(models::fixed_output(model, port));
             }
             ensure!(drivers <= 1, "Multiple fixed drivers on net {name}");
             ensure!(
@@ -369,12 +364,11 @@ impl Board {
             };
             let scl = self.chip_pad(&format!("{id}.SCL"))?;
             let sda = self.chip_pad(&format!("{id}.SDA"))?;
-            let bus = match (self.chip.as_str(), scl, sda) {
-                ("venusa", 34, 33) => 1,
-                ("ls2663" | "ls2684", 39, 38) | ("ls2663" | "ls2684", 23, 22) => 0,
-                ("ls2663" | "ls2684", 33, 32) => 1,
-                _ => bail!("Unsupported I2C pad route for {id}"),
-            };
+            let bus = I2C_ROUTES
+                .iter()
+                .find(|(chip, clock, data, _)| *chip == self.chip && *clock == scl && *data == sda)
+                .map(|(_, _, _, bus)| *bus)
+                .with_context(|| format!("Unsupported I2C pad route for {id}"))?;
             let route = buses
                 .entry(bus)
                 .or_insert_with(|| (scl, sda, BTreeSet::new()));
@@ -411,7 +405,7 @@ impl Board {
         if let Some((id, dev)) = self.single(EXTIO)? {
             let p: Extio = serde_json::from_value(dev.parameters.clone())?;
             ensure!(
-                [0x6c, 0x15].contains(&p.address),
+                EXTIO_ADDRESSES.contains(&p.address),
                 "Invalid EXTIO address strap"
             );
             plan["extio"] = json!({"id":id,"SCL":self.chip_pad(&format!("{id}.SCL"))?,
@@ -420,7 +414,7 @@ impl Board {
         if let Some((id, dev)) = self.single("husb320-ba")? {
             let p: TypeC = serde_json::from_value(dev.parameters.clone())?;
             ensure!(
-                [0x31, 0x21].contains(&p.address),
+                TYPEC_ADDRESSES.contains(&p.address),
                 "Invalid HUSB320 address strap"
             );
             let mut device = json!({"SCL":self.chip_pad(&format!("{id}.SCL"))?,
@@ -466,12 +460,18 @@ impl Board {
             ensure!(
                 p.viewport.width > 0
                     && p.viewport.height > 0
-                    && p.viewport.x + p.viewport.width <= 240
-                    && p.viewport.y + p.viewport.height <= 320,
+                    && p.viewport
+                        .x
+                        .checked_add(p.viewport.width)
+                        .is_some_and(|end| end <= 240)
+                    && p.viewport
+                        .y
+                        .checked_add(p.viewport.height)
+                        .is_some_and(|end| end <= 320),
                 "Display viewport is outside controller RAM"
             );
             ensure!(
-                [0, 90, 180, 270].contains(&p.rotation_clockwise),
+                ROTATIONS.contains(&p.rotation_clockwise),
                 "Invalid display rotation"
             );
             let controller: Controller = serde_json::from_value(lcd.parameters.clone())?;
@@ -501,7 +501,7 @@ impl Board {
         if let Some((id, camera)) = self.single("gc0328")? {
             let p: Camera = serde_json::from_value(camera.parameters.clone())?;
             ensure!(
-                [0, 90, 180, 270].contains(&p.rotation_clockwise),
+                ROTATIONS.contains(&p.rotation_clockwise),
                 "Invalid camera rotation"
             );
             let mut pads = BTreeMap::new();
@@ -610,7 +610,7 @@ impl Board {
                 "cst328" => {
                     let p: Touch = serde_json::from_value(device.parameters.clone())?;
                     ensure!(
-                        [0, 90, 180, 270].contains(&p.rotation_clockwise),
+                        ROTATIONS.contains(&p.rotation_clockwise),
                         "Invalid touch rotation"
                     );
                     let scl = self.chip_pad(&format!("{id}.SCL"))?;
@@ -653,11 +653,7 @@ impl Board {
             for port in ["CLK", "CMD", "DAT0", "DAT1", "DAT2", "DAT3"] {
                 pads.insert(port, self.chip_pad(&format!("{id}.{port}"))?);
             }
-            let expected = if self.chip == "venusa" {
-                [42, 43, 44, 45, 46, 47]
-            } else {
-                [6, 7, 5, 4, 9, 8]
-            };
+            let expected = sd_pads(&self.chip);
             for (port, expected) in ["CLK", "CMD", "DAT0", "DAT1", "DAT2", "DAT3"]
                 .iter()
                 .zip(expected)
@@ -740,9 +736,9 @@ impl Board {
                     let (channel, device) = if pin < 64 {
                         (adc_channel(&self.chip, pin)?, None)
                     } else {
-                        let pins = [66, 65, 84, 90, 91, 93, 94, 92];
                         (
-                            pins.iter()
+                            EXTIO_ADC_PINS
+                                .iter()
                                 .position(|p| *p == pin)
                                 .context("EXTIO pin has no ADC route")?
                                 as u8,
@@ -811,141 +807,139 @@ fn adc_channel(chip: &str, pad: u8) -> Result<u8> {
     })
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Slot {
     #[serde(default)]
+    #[schemars(range(max = 1))]
     detect_active_level: u8,
 }
 
 fn extio_address() -> u8 {
     0x6c
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Extio {
     #[serde(default = "extio_address")]
+    #[schemars(schema_with = "models::extio_address_schema")]
     address: u8,
 }
 
 fn typec_address() -> u8 {
     0x31
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct TypeC {
     #[serde(default = "typec_address")]
+    #[schemars(schema_with = "models::typec_address_schema")]
     address: u8,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Keypad {
+    /// Supply voltage in millivolts.
+    #[schemars(range(min = 1, max = 3600))]
     supply_mv: u32,
+    #[schemars(range(min = 1, max = 1000000))]
     pull_up_ohms: u32,
+    #[schemars(length(min = 1, max = 16))]
     keys: Vec<AnalogKey>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct AnalogKey {
     id: String,
     label: String,
+    #[schemars(range(max = 1000000))]
     resistance_ohms: u32,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Touch {
     #[serde(default)]
+    #[schemars(schema_with = "models::rotation_schema")]
     rotation_clockwise: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Panel {
     viewport: Viewport,
     #[serde(default)]
+    #[schemars(schema_with = "models::rotation_schema")]
     rotation_clockwise: u32,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Viewport {
+    #[schemars(range(max = 239))]
     x: u32,
+    #[schemars(range(max = 319))]
     y: u32,
+    #[schemars(range(min = 1, max = 240))]
     width: u32,
+    #[schemars(range(min = 1, max = 320))]
     height: u32,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Controller {
     #[serde(default)]
     panel_inverted: bool,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Active {
+    #[schemars(range(max = 1))]
     active_level: u8,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Button {
+    #[schemars(range(max = 1))]
     pressed_level: u8,
+    #[schemars(range(max = 1))]
     released_level: u8,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Indicator {
+    #[schemars(range(max = 1))]
     active_level: u8,
     #[serde(default)]
     color: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Camera {
     #[serde(default)]
+    #[schemars(schema_with = "models::rotation_schema")]
     rotation_clockwise: u32,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Divider {
+    #[schemars(range(min = 1, max = 1000000))]
     numerator: u32,
+    #[schemars(range(min = 1, max = 1000000))]
     denominator: u32,
 }
 
-/// Model ports and parameter examples for clients composing board files.
+/// Model ports and parameters for clients composing board files.
 pub fn models() -> Value {
-    let descriptions = [
-        ("st7789", json!({"panel_inverted":true})),
-        (
-            "display-panel",
-            json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90}),
-        ),
-        ("backlight", json!({"active_level":1})),
-        ("gc0328", json!({"rotation_clockwise":90})),
-        ("cst328", json!({"rotation_clockwise":270})),
-        ("button", json!({"pressed_level":0,"released_level":1})),
-        (
-            "resistor-keypad",
-            json!({"supply_mv":3300,"pull_up_ohms":10000,
-            "keys":[{"id":"key","label":"按键","resistance_ohms":5100}]}),
-        ),
-        ("led", json!({"active_level":0,"color":"#4cc3a2"})),
-        ("audio-amplifier", json!({"active_level":1})),
-        ("signal-probe", json!({"active_level":1})),
-        ("voltage-divider", json!({"numerator":2,"denominator":5})),
-        ("sd-card-slot", json!({"detect_active_level":0})),
-        (EXTIO, json!({"address":108})),
-        ("husb320-ba", json!({"address":49})),
-    ];
-    json!(descriptions.into_iter().map(|(model, parameters)|{
-        let links = match model {
-            "st7789"=>json!({"outputs":["pixels"]}),
-            "backlight"=>json!({"outputs":["brightness"]}),
-            "display-panel"=>json!({"inputs":["pixels","brightness"]}),
-            "husb320-ba"=>json!({"inputs":["partner"],"sources":["chip.usb0.host"]}),
-            _=>json!({}),
-        };
-        json!({"model":model,"ports":ports(model).unwrap(),"parameter_example":parameters,"links":links})
-    }).collect::<Vec<_>>())
+    models::descriptions()
+}
+
+pub fn schema() -> Value {
+    let mut schema = serde_json::to_value(schemars::schema_for!(Board)).unwrap();
+    schema["properties"]["schema_version"]["const"] = json!(1);
+    schema["properties"]["chip"]["enum"] = json!(SUPPORTED_CHIPS);
+    schema["$defs"]["Storage"]["properties"]["flash_bytes"]["const"] = json!(NOR_BYTES);
+    models::apply_parameter_schemas(&mut schema);
+    schema
 }
 
 pub fn compile(value: &Value) -> Result<Value> {
@@ -1003,6 +997,13 @@ mod tests {
         assert!(compile(&raw).is_err());
         let mut raw = example();
         raw["devices"]["backlight"]["parameters"]["active_level"] = json!(2);
+        assert!(compile(&raw).is_err());
+    }
+
+    #[test]
+    fn invalid_large_viewport_is_rejected_without_arithmetic_overflow() {
+        let mut raw = example();
+        raw["devices"]["screen"]["parameters"]["viewport"]["x"] = json!(u32::MAX);
         assert!(compile(&raw).is_err());
     }
 

@@ -38,8 +38,21 @@ enum Action {
     Mcp,
     /// List device instances.
     List,
-    /// List built-in device models, ports and parameter examples.
-    BoardModels,
+    /// Query device models by category or exact model ID.
+    BoardModels {
+        /// Category from the returned categories list, for example camera.
+        #[arg(long)]
+        category: Option<String>,
+        /// Exact model ID (case-insensitive); an unknown model returns found=false.
+        #[arg(long)]
+        model: Option<String>,
+        /// Include full descriptions in a category listing.
+        #[arg(long)]
+        details: bool,
+        /// Include board JSON schema, installed chips and reference boards.
+        #[arg(long)]
+        schema: bool,
+    },
     /// Validate a board JSON and show its resolved hardware description.
     BoardValidate { path: PathBuf },
     /// Import or replace a custom board; affected instances must be powered off.
@@ -319,7 +332,13 @@ fn run() -> Result<i32> {
     let mut foreground = None;
     let value = match args.command {
         Action::List => json!(manager.catalog.devices()?),
-        Action::BoardModels => lisem_core::board::models(),
+        Action::BoardModels { category, model, details, schema } => {
+            let legacy = category.is_none() && model.is_none() && !details && !schema;
+            let result = manager.catalog.model_catalog(&lisem_core::board::ModelQuery {
+                category, model, details, schema,
+            })?;
+            if legacy { result["models"].clone() } else { result }
+        },
         Action::BoardValidate { path } => manager.call("board_validate", json!({"path":absolute(&path)?}))?,
         Action::BoardImport { path } => manager.call("board_import", json!({"path":absolute(&path)?}))?,
         Action::Create { board, name, lpk } => manager.call(

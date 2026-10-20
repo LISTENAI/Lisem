@@ -384,9 +384,9 @@ fn tools() -> Vec<Tool> {
             "Configure nearby Wi-Fi hotspots while running or powered off. Each hotspot has an Internet access switch and open or WPA2-Personal security. Supply the current run identifier while powered on. Read saved settings through lisem_status.",
             false,
         ),
-        definition::<Empty>(
+        definition::<lisem_core::board::ModelQuery>(
             "lisem_catalog",
-            "List supported boards, chips, device models, ports and parameter examples for physical board JSON files.",
+            "Query supported device models and capabilities. Use category for a short list or model for exact case-insensitive lookup. Model details include signals, parameter schemas and wiring constraints. details=true expands lists; schema=true adds board schemas, chip routes and reference configurations. Unfiltered queries include installed boards, chips and complete model descriptions. found=false indicates no matching model.",
             true,
         ),
         definition::<BoardFile>("lisem_board_validate",
@@ -532,9 +532,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
             arguments::<SetWifiEnvironment>(value)?,
         )?,
         "lisem_catalog" => {
-            let _: Empty = arguments(value)?;
-            manager.catalog.reload_hardware()?;
-            json!({"boards":manager.catalog.boards.values().collect::<Vec<_>>(),"chips":manager.catalog.chips.values().collect::<Vec<_>>(),"models":lisem_core::board::models()})
+            manager.catalog.model_catalog(&arguments::<lisem_core::board::ModelQuery>(value)?)?
         }
         "lisem_list" => {
             let _: Empty = arguments(value)?;

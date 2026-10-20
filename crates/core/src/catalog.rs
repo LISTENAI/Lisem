@@ -77,6 +77,21 @@ impl Catalog {
         Ok(())
     }
 
+    pub fn model_catalog(&mut self, query: &crate::board::ModelQuery) -> Result<Value> {
+        let mut result = crate::board::query_models(query)?;
+        if query.schema || (query.category.is_none() && query.model.is_none()) {
+            self.reload_hardware()?;
+            result["boards"] = json!(self.boards.values().collect::<Vec<_>>());
+            result["chips"] = json!(self.chips.values().collect::<Vec<_>>());
+        }
+        if query.schema {
+            result["board_schema"] = crate::board::schema();
+            result["wiring"] = json!(self.chips.keys().map(|chip| (chip.clone(), crate::board::wiring(chip)))
+                .collect::<BTreeMap<_, _>>());
+        }
+        Ok(result)
+    }
+
     pub fn import_board(&mut self, path: &Path) -> Result<Value> {
         let raw = storage::read_json(path)?;
         let board = crate::board::compile(&raw)?;

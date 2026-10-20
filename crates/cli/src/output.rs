@@ -16,7 +16,7 @@ impl Output {
     pub fn for_action(action: &Action) -> Self {
         match action {
             Action::List => Self::List,
-            Action::BoardModels | Action::BoardValidate { .. } | Action::BoardImport { .. } => Self::Json,
+            Action::BoardModels { .. } | Action::BoardValidate { .. } | Action::BoardImport { .. } => Self::Json,
             Action::Create { .. } | Action::Attach { .. } => Self::Device,
             Action::Status { .. } => Self::Status,
             Action::Run { id, .. }

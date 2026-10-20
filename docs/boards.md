@@ -61,14 +61,36 @@ MCP 对应 `lisem_board_validate` 和 `lisem_board_import`。校验只检查配�
 ### 器件与连线
 
 `devices` 中的键是器件 ID；`model` 指定内置模型，`parameters` 提供参数，
-`label` 设置界面名称。运行以下命令可查看支持的模型、端口和参数示例：
+`label` 设置界面名称。用当前安装的程序查询器件能力：
 
 ```sh
 lisem board-models
+lisem board-models --category camera
+lisem board-models --model GC0328
+lisem board-models --category display --details
+lisem board-models --schema
 ```
 
-MCP 的 `lisem_catalog` 提供芯片、板型和器件模型信息。模型的参数、端口及
-连接约束由各自的实现定义，校验器据此检查配置。
+不带选项时返回完整模型数组。筛选查询返回 `categories`、`query`、`found`、
+`models` 和程序构建身份。`category` 使用返回的类别 ID，分类列表默认只含
+型号和简介；`--details` 展开详情。`--model` 按型号精确匹配，忽略大小写，
+自动返回详情；两种筛选可同时使用。未找到匹配时返回 `found: false` 和空
+`models`，未知类别报错。
+
+详情中的 `signals` 描述器件端口的方向、类型及是否必需，方向以器件为参照。
+`data_signals` 描述 `links` 使用的数据端口；`parameter_schema` 提供参数类型、
+默认值、范围及枚举，`parameter_example` 给出示例。`interfaces` 和 `constraints`
+补充总线地址、组合要求和接线条件。模型可装配不等于覆盖实物的全部工作模式，
+功能验证仍需匹配固件所用的行为。
+
+`--schema` 另附 `board_schema`、`chips`、`wiring` 和 `boards`。
+`wiring` 提供芯片引脚、I²C、ADC 和 SD 路由；`boards` 中的 `definition` 是
+可用于编辑的参考板型 JSON。JSON Schema 检查结构与参数，完整接线和跨参数
+条件由 `board-validate` 校验。
+
+MCP 的 `lisem_catalog` 接受对应的 `category`、`model`、`details`、`schema`
+参数；无筛选时保留完整模型、芯片和板型信息。例如查询摄像头类别使用
+`{"category":"camera"}`，查询型号使用 `{"model":"GC0328"}`。
 
 `nets` 的键是网络名。`endpoints` 采用 `器件ID.端口`，例如 `key.OUT`；
 芯片引脚以 `chip.PA0`、`chip.PB4` 等名称表示，扩展器引脚可写为 `extio.PC2`。

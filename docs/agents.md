@@ -22,6 +22,12 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 客户端负责启动和关闭服务。
 服务断开时停止自己启动的运行，不影响只观察过的其它运行。
 
+`lisem_catalog` 用于发现当前版本的模拟器能力。传入 `category` 查询简短型号
+列表，传入 `model` 查询具体器件的信号、参数 schema 和接线条件；`details=true`
+展开分类结果，`schema=true` 取得板型 JSON 格式、芯片路由和参考配置。
+未找到匹配时 `found=false`。CLI 对应
+`lisem board-models`，详见[器件与连线](boards.md#器件与连线)。
+
 | 工具 | 用途 |
 | --- | --- |
 | `lisem_catalog`、`lisem_list`、`lisem_status` | 查询硬件能力、实例和状态 |

@@ -90,6 +90,52 @@ class Client:
         return metadata
 
 
+def catalog_checks(binary, data, client):
+    def cli(*arguments, error=False):
+        result = subprocess.run([str(binary), '--data-dir', str(data), '--json', *arguments],
+                                capture_output=True, text=True, encoding='utf-8', timeout=20)
+        assert bool(result.returncode) == error, result.stderr
+        return None if error else json.loads(result.stdout)
+
+    category = client.tool('lisem_catalog', {'category': 'camera'})
+    assert category == cli('board-models', '--category', 'camera')
+    assert category['found'] and category['models']
+    assert all(m['category'] == 'camera' and 'parameter_schema' not in m for m in category['models'])
+    assert 'boards' not in category and 'chips' not in category
+    exact = client.tool('lisem_catalog', {'model': 'GC0328'})
+    assert exact == cli('board-models', '--model', 'GC0328')
+    camera = exact['models'][0]
+    assert camera['model'] == 'gc0328' and camera['parameter_schema']['additionalProperties'] is False
+    assert camera['parameter_schema']['properties']['rotation_clockwise']['default'] == 0
+    assert any(p['name'] == 'PCLK' and p['direction'] == 'output' for p in camera['signals'])
+    detailed = client.tool('lisem_catalog', {'category': 'camera', 'details': True})
+    assert detailed['models'] == exact['models']
+    for arguments, command in [
+        ({'model': 'GC0828'}, ('--model', 'GC0828')),
+        ({'category': 'display', 'model': 'gc0328'}, ('--category', 'display', '--model', 'gc0328')),
+    ]:
+        missing = client.tool('lisem_catalog', arguments)
+        assert missing == cli('board-models', *command)
+        assert missing['found'] is False and missing['models'] == []
+    client.tool('lisem_catalog', {'category': 'unknown'}, error=True)
+    cli('board-models', '--category', 'unknown', error=True)
+    client.tool('lisem_catalog', {'model': ''}, error=True)
+    client.tool('lisem_catalog', {'details': 'yes'}, error=True)
+    context = client.tool('lisem_catalog', {'schema': True})
+    assert context == cli('board-models', '--schema')
+    assert 'camera' in context['categories'] and context['board_schema']['$defs']['Stimulus']
+    assert context['wiring']['ls2663']['sd']['DAT0'] == 'chip.PA5'
+    # Build and validate entirely from returned descriptors, without source files.
+    raw = json.loads(json.dumps(context['boards'][0]['definition']))
+    raw.update(id='catalog-test-board', name='Catalog test board')
+    path = data.parent / 'board-from-catalog.json'
+    path.write_text(json.dumps(raw), encoding='utf-8')
+    assert client.tool('lisem_board_validate', {'path': str(path)}) == cli('board-validate', str(path))
+    default = client.tool('lisem_catalog')
+    assert default['models'] == cli('board-models')  # Keep the unfiltered CLI array contract.
+    print('CLI/MCP model discovery: category, exact lookup, schemas and source-free board validation: PASS')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
@@ -115,6 +161,7 @@ def main():
             client.tool('lisem_create', {'board': 'missing'}, error=True)
             client.tool('lisem_list', {'unexpected': True}, error=True)
             assert client.tool('lisem_list')['instances'] == []
+            catalog_checks(args.binary.resolve(), data, client)
             boards = client.tool('lisem_catalog')['boards']
             assert any(board['id'] == 'arcs-mini' for board in boards)
             item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
