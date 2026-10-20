@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """Sensor image -> DVP -> FIFO/GPDMA with immutable frame and cancellation."""
-import base64
 import time
-from qemu_test import Machine, ROOT
+from qemu_test import ROOT
+from qemu_camera_test import CameraMachine as Machine
 from run_qemu_camera import setup, transfer
 
 OUTPUT = ROOT / 'artifacts/qemu' / ('camera-capture-' + time.strftime('%Y%m%d-%H%M%S'))
 DVP, DMA, RAM = 0x45000800, 0x45900000, 0x20012000
 
 def image(m, rgb=(255, 0, 0)):
-    value = base64.b64encode(bytes(rgb) * (640 * 480)).decode() if rgb else ''
-    m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-camera-frame', 'value': value})
+    m.camera_frame(bytes(rgb) * (640 * 480) if rgb else None)
 
 def configure(m, width=8, height=2):
     setup(m)
@@ -167,14 +166,13 @@ def formats():
     # not a solid color that could hide the same bug in each FIFO word.
     colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 255)]
     row = b''.join(bytes(colors[x % 4]) for x in range(640))
-    encoded = base64.b64encode(row * 480).decode()
     expected = [0x07e0f800, 0xffff001f] * 640
     m = Machine(OUTPUT / 'formats')
     try:
         configure(m, 640, 4)
         m.write(DVP + 0x18, 9)  # 15 MHz, as used by the hardware probe.
         m.write(DVP + 0x24, 8)
-        m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-camera-frame', 'value': encoded})
+        m.camera_frame(row * 480)
         for form in (0, 1, 2, 3, 14):
             m.write(DVP, 1280 if form == 14 else 640)
             m.write(DVP + 0x1c, form)
@@ -276,15 +274,13 @@ def subsampling():
     image_bytes = bytes(c for y in range(480) for x in range(640)
                         for c in ((x * 23) % 256, (y * 71 + x * 5) % 256,
                                   (x * 13 + y * 29) % 256))
-    encoded = base64.b64encode(image_bytes).decode()
     m = Machine(OUTPUT / 'subsample')
     try:
         configure(m)
         transfer(m, [0x50, 1, 0, 2, 0, 4])
         transfer(m, [0x55, 0, 4, 0, 16])
         transfer(m, [0x59, 0x22, 0x33])
-        m.qmp_command('qom-set', {'path': '/machine',
-                      'property': 'x-lisa-camera-frame', 'value': encoded})
+        m.camera_frame(image_bytes)
         for mirror in (0, 1, 2, 3):
             transfer(m, [0x17, mirror])
             expected_pixels = []

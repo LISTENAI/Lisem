@@ -3,6 +3,7 @@
 import json
 import time
 from qemu_test import Machine, ROOT
+from qemu_camera_test import CameraMachine
 
 OUTPUT = ROOT / 'artifacts/qemu' / ('board-' + time.strftime('%Y%m%d-%H%M%S'))
 
@@ -181,12 +182,11 @@ def venusa_screen():
 
 
 def venusa_camera(subsample=False):
-    import base64
     p = {'version': 1, 'chip': 'venusa', 'buttons': [], 'indicators': [],
          'camera': {'pads': dict(zip(
              ['SCL','SDA','MCLK','PCLK','HSYNC','VSYNC', *['D%d' % i for i in range(8)]],
              [34,33,35,23,21,22,24,25,26,27,28,29,30,31]))}}
-    m = Machine(OUTPUT / ('venusa-camera-half' if subsample else 'venusa-camera'),
+    m = CameraMachine(OUTPUT / ('venusa-camera-half' if subsample else 'venusa-camera'),
                 board='venusa-board', assembly=p, desktop=True)
     bus, dvp = 0x43c00000, 0x42000800
     try:
@@ -205,8 +205,7 @@ def venusa_camera(subsample=False):
         size = 8 if subsample else 4
         for address, value in [(0x50,1),(0x55,0),(0x56,size),(0x57,0),(0x58,size)]: reg(address,value)
         if subsample: reg(0x59,0x22); reg(0x5a,0x33)
-        scene = base64.b64encode(bytes([0,255,0]) * (640*480)).decode()
-        m.qmp_command('qom-set', {'path':'/machine','property':'x-lisa-camera-frame','value':scene})
+        m.camera_frame(bytes([0,255,0]) * (640*480))
         m.write(dvp,4); m.write(dvp+4,4); m.write(dvp+0x10,8); m.write(dvp+0x18,12)
         m.write(dvp+0x1c,1); reg(0xf2,1)
         m.command('clock_step 30000000')
