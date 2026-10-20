@@ -128,6 +128,24 @@ def current_build():
         return False
 
 
+def invalidate_changed_inputs(inputs):
+    """Rebuild embedded assets even when replacements retain old timestamps."""
+    stamp = BUILD / 'arcs-build.json'
+    try:
+        previous = json.loads(stamp.read_text())
+    except (OSError, ValueError):
+        previous = {}
+    if (previous.get('inputs_sha256') == inputs and BINARY.is_file()
+            and previous.get('binary_sha256') == sha256(BINARY)):
+        return
+    outputs = (BINARY, BINARY.with_name(BINARY.stem + '-unsigned' + BINARY.suffix),
+               BUILD / 'hw/misc/lisem_luna_validated.h',
+               BUILD / 'hw/riscv/arcs/arcs_roms.inc',
+               BUILD / 'hw/riscv/venusa/venusa_rom.inc')
+    for output in outputs:
+        output.unlink(missing_ok=True)
+
+
 def prepare():
     state = source_state()
     if (SOURCE / 'VERSION').read_text().strip() != VERSION:
@@ -182,12 +200,14 @@ def main():
         subprocess.run(configuration, cwd=BUILD, env=configure_environment,
                        check=True, timeout=600)
         config_stamp.write_text(json.dumps(configure_stamp) + '\n')
+    inputs = build_inputs()
+    invalidate_changed_inputs(inputs)
     subprocess.run(['ninja', '-C', str(BUILD), '-j', str(args.jobs),
                     BINARY.name], check=True, timeout=1800)
     binary = BINARY
     manifest = {**state, 'qemu_version': VERSION,
                 'host_cflags': host_cflags(), 'lto': args.lto,
-                'binary_sha256': sha256(binary), 'inputs_sha256': build_inputs()}
+                'binary_sha256': sha256(binary), 'inputs_sha256': inputs}
     (BUILD / 'arcs-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print('Built QEMU ListenAI runtime:', binary)
 
