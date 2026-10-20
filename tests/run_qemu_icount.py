@@ -21,7 +21,7 @@ FINISH = '''
 '''
 
 
-def run(name, code, hart, expected, status='probe-pass'):
+def run(name, code, hart, expected, status='probe-pass', clocks=()):
     directory = OUTPUT / name
     directory.mkdir(parents=True)
     source, elf = directory / 'probe.S', directory / 'probe.elf'
@@ -31,15 +31,15 @@ def run(name, code, hart, expected, status='probe-pass'):
                     '-o', str(elf)], check=True, timeout=30)
     subprocess.run([sys.executable, str(ROOT / 'tools/qemu_run.py'), '--probe-elf', str(elf),
                     '--boot-hart', str(hart), '--virtual-ns', '1000000',
-                    '--output', str(directory / 'run')], check=True, timeout=30,
+                    '--output', str(directory / 'run'), *clocks], check=True, timeout=30,
                    stdout=subprocess.DEVNULL)
     report = json.loads((directory / 'run/report.json').read_text())
     counts = [c['instructions'] for c in report['cores']]
     assert report['status'] == status and counts == expected, (name, counts, report)
     assert sum(counts) == report['aggregate_instructions'], report
     if status == 'budget-complete':
-        assert report['virtual_ns'] == 1000000 and sum(counts) < 1000000
-    assert all(c['exceptions'] == 0 for c in report['cores'])
+        assert report['virtual_ns'] == 1000000 and sum(counts) < 1000000, (name, report)
+    assert all(c['exceptions'] == 0 for c in report['cores']), (name, report)
     print(name + ': exact per-core instruction totals / aggregate / WFI accounting: PASS')
 
 
@@ -49,6 +49,17 @@ def main():
         run('single%d' % hart, '.rept 47\nnop\n.endr\n' + FINISH, hart, counts)
         counts[hart] = 24
         run('idle%d' % hart, '.rept 23\nnop\n.endr\nwfi\n.rept 31\nnop\n.endr\nj .\n', hart, counts, 'budget-complete')
+        # Commit only executed instructions at WFI, including a decrementer
+        # refill, and keep idle time out of both lifetime counters.
+        for count in (1, 65537):
+            counts[hart] = count
+            run('idle%d-count%d' % (hart, count),
+                '.rept %d\nnop\n.endr\nwfi\nj .\n' % (count - 1),
+                hart, counts, 'budget-complete')
+        counts[hart] = 24
+        run('idle%d-clocks' % hart, '.rept 23\nnop\n.endr\nwfi\nj .\n',
+            hart, counts, 'budget-complete',
+            ('--cpu-clock-experiment', '32000000', '96000000', '10000'))
     # AP is parked after exactly 27 instructions. Its WFI must not receive
     # CP's subsequent 102 instructions or the common idle-time advance.
     run('asymmetric', '''
