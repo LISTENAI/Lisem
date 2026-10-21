@@ -321,6 +321,7 @@ impl Manager {
             | "audio_record"
             | "uart_read"
             | "signals"
+            | "signal_trace"
             | "sd_card"
             | "usb_adb"
             | "events"

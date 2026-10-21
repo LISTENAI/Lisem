@@ -24,3 +24,4 @@ pub mod install;
 pub mod wifi_environment;
 
 pub mod signals;
+pub mod signal_trace;

@@ -324,6 +324,7 @@ pub struct Capabilities {
     pub usb_adb: bool,
     pub download: bool,
     pub signals: bool,
+    pub signal_trace: bool,
     pub events: bool,
     pub button_sequence: bool,
     pub uart_channels: Vec<u8>,

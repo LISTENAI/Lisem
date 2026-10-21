@@ -450,6 +450,8 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Signals>("lisem_signals",
             "Enumerate or edit typed external board inputs. Digital values drive GPIO levels; voltage values pass through the board divider and ADC. Changes are saved per instance after runtime confirmation and survive reset. A pending response is not confirmation: poll this tool until change.request matches and status is applied or rejected. Firmware interprets inputs; inspect its response separately.", false),
+        definition::<lisem_core::signal_trace::Request>("lisem_signal_trace",
+            "List digital sources and board net aliases, or start/read/stop a bounded transition capture. Controls require the current run; read/stop also require the returned capture ID. Events contain drive enable, logical level and virtual_ns from device transitions; initial=true marks the starting state. Read after=0 initially, then use next_cursor. lost_events reports cursor overflow; interrupted/unknown is not confirmed completion. Capture stops on reset or power-off; stopped events remain readable until the next capture/run. No capture is active by default.", false),
         definition::<UsbAdb>("lisem_usb_adb",
             "Inspect or enable the running instance's USB ADB bridge. Returns enabled, listen (127.0.0.1:port), connected, status and error. Use host adb connect with listen, then adb -s ADDRESS shell or push. The firmware must expose a USB ADB interface; TCP listening alone does not confirm firmware readiness. Enabling is explicit and lasts for this run; disabling disconnects clients. USB re-enumeration may require adb connect again. Requires current run for changes.", false),
         definition::<SdCard>("lisem_sd_card",
@@ -578,6 +580,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_signal_trace" => call(manager, "signal_trace", arguments::<lisem_core::signal_trace::Request>(value)?)?,
         "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,
         "lisem_usb_adb" => call(manager, "usb_adb", arguments::<UsbAdb>(value)?)?,
         "lisem_sd_card" => {

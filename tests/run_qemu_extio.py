@@ -60,11 +60,24 @@ def run(chip):
         write(0x51,4)
         assert read(0x52)==1 and read(0x52)==0
         assert (read(0x64)<<8)|read(0x65)==512
+        m.qmp_command('qom-set', {'path':'/machine','property':'x-lisa-signal-trace',
+            'value':json.dumps({'action':'start','id':'extio-pwm','endpoints':[82,83,92],'capacity':128})})
+        trace = lambda: json.loads(m.qmp_command('qom-get', {'path':'/machine','property':'x-lisa-signal-trace'}))
+        initial = trace()
+        assert len(initial['events']) == 3
+        assert {e['endpoint'] for e in initial['events']} == {82,83,92}
         # PWM's physical PC3 pin and duty share the same timer registers.
         write(0x70,1)
         assert read(0x70)==1 and read(0x72)==100
         state = snapshot()['devices']['extio']['pads']['C']
         assert state['driven']&8
+        m.command('clock_step 50000000')
+        edges = [e for e in trace()['events'] if e['endpoint'] == 83 and e['driven']]
+        assert len(edges) >= 5, edges
+        assert [e['level'] for e in edges[:5]] == [True,False,True,False,True], edges
+        assert [edges[i+1]['virtual_ns']-edges[i]['virtual_ns'] for i in range(4)] == [7000000,3000000]*2, edges
+        # No false changes on neighboring banks while PC3 toggles.
+        assert sum(e['endpoint'] == 92 for e in trace()['events']) == 1
         write(0x70,0)
         assert not snapshot()['devices']['extio']['pads']['C']['driven']&8
         # Slot CD reaches the expander without changing controller CD wiring.
@@ -76,8 +89,11 @@ def run(chip):
         m.qmp_command('eject', {'device':'sdcard','force':False})
         assert read(0x43)&8
         write(6,1)
+        assert trace()['status'] == 'running'  # Peripheral reset is a recorded transition, not chip reset.
         assert read(1)==1 and read(2)==13 and not read(0x30)
         assert read(0x43)&16  # External input survives the protocol reset.
+        m.qmp_command('system_reset')
+        assert trace()['status'] == 'stopped' and trace()['reason'] == 'reset'
         print('%s EXTIO 1.3: GPIO/pulls, reserved NACK, ADC/EOC, PWM, SD detect and reset: PASS' % chip)
     finally:
         m.close()

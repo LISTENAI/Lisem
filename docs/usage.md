@@ -56,6 +56,32 @@ lisem logs INSTANCE_ID 0
 即可生效。修改时可同时观察设备画面和操作按键。
 「恢复默认」使用板型声明的默认值，设置按实例保存。
 
+## 数字信号时序
+
+CLI 的 `signal-trace` 和 MCP 的 `lisem_signal_trace` 提供有界边沿采集。
+先查询实例的数字信号源及网络名，再使用当前运行标识开始采集：
+
+```sh
+lisem signal-trace INSTANCE_ID
+lisem signal-trace INSTANCE_ID --run RUN --start SOURCE --capacity 1024
+lisem signal-trace INSTANCE_ID --run RUN --trace CAPTURE --after 0 --limit 128
+lisem signal-trace INSTANCE_ID --run RUN --trace CAPTURE --stop
+```
+
+`RUN` 取自 `--json status` 的运行状态，`SOURCE` 使用查询返回的源 ID 或
+网络名，`CAPTURE` 使用开始采集时返回的标识。事件包含序号、虚拟纳秒时间、
+逻辑电平及 `driven` 驱动状态；`initial=true` 标记采集开始时的状态。
+MCP 对应使用 `list`、`start`、`read`、`stop` 动作。
+
+读取后用 `next_cursor` 作为下一次的 `after`，直到 `has_more=false`。
+最多保留 4096 条事件；`evicted_events` 是累计淘汰数，`lost_events` 表示
+当前游标漏掉的条数。复位或下电会结束采集，结束记录保留到下一次采集或运行。
+`unknown` 须继续查询确认，`interrupted` 表示无法确认结束前的完整记录。
+采集默认关闭，结果仅保存在当前后台的有界内存中，需要时显式保存命令输出。
+
+事件反映器件模型产生的数字变化。未驱动时的逻辑电平不代表实际模拟电压；
+物理引脚波形和模型未生成边沿的总线时序需要相应测量手段验证。
+
 ## 音频和网络
 
 右上角分别提供麦克风和扬声器入口。扬声器控制宿主声音输出，默认开启；

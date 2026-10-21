@@ -807,6 +807,7 @@ impl Session {
             if let Some(report) = report {
                 if let Some(input) = report.get("audio_input") { self.state["audio_input"] = input.clone(); }
                 if let Some(events) = report.get("events") { self.state["events"] = events.clone(); }
+                if let Some(trace) = report.get("signal_trace") { self.state["signal_trace"] = trace.clone(); }
                 if let Some(sequence) = report.get("button_sequence") {
                     self.state["button_sequence"] = sequence.clone();
                 }
@@ -831,6 +832,11 @@ impl Session {
             }
             if self.state["audio_input"]["status"] == "running" {
                 self.state["audio_input"]["status"] = json!("interrupted");
+            }
+            if self.state["signal_trace"]["status"] == "running" {
+                self.state["signal_trace"]["status"] = json!("interrupted");
+                self.state["signal_trace"]["reason"] = json!("runtime-ended-without-final-snapshot");
+                self.state["signal_trace"]["ended_ns"] = Value::Null;
             }
             self.state["input_busy"] = json!(false);
             if self.state["button_sequence"]["status"] == "running" {
@@ -966,6 +972,27 @@ impl Session {
             .qmp
             .set("x-lisa-button-sequence", json!("cancel"), &mut self.uart);
         let _ = self.button_sequence();
+        if self.backend.capabilities.signal_trace && self.state["signal_trace_context"].is_object() {
+            // Freeze the ring before quit: manual exits need not produce a report.
+            let result = (|| -> Result<Value> {
+                let value = self.qmp.get("x-lisa-signal-trace", &mut self.uart)?;
+                let raw: Value = serde_json::from_str(value.as_str().context("Invalid signal capture")?)?;
+                if let Some(id) = raw["id"].as_str() {
+                    let stop = json!({"action":"stop","id":id});
+                    self.qmp.set("x-lisa-signal-trace", json!(stop.to_string()), &mut self.uart)?;
+                }
+                let value = self.qmp.get("x-lisa-signal-trace", &mut self.uart)?;
+                Ok(serde_json::from_str(value.as_str().context("Invalid signal capture")?)?)
+            })();
+            match result {
+                Ok(raw) => self.state["signal_trace"] = raw,
+                Err(error) => {
+                    self.state["signal_trace"]["status"] = json!("interrupted");
+                    self.state["signal_trace"]["reason"] = json!(error.to_string());
+                    self.state["signal_trace"]["ended_ns"] = Value::Null;
+                }
+            }
+        }
         let _ = self.qmp.call("quit", json!({}), &mut self.uart);
         let deadline = Instant::now() + Duration::from_secs(3);
         while self.process.child.try_wait()?.is_none() && Instant::now() < deadline {
@@ -1460,6 +1487,16 @@ impl Runtime {
             .as_ref()
             .map(|s| s.state.clone())
             .unwrap_or_else(|| self.last_state.clone());
+        if let Some(object) = state.as_object_mut() {
+            object.remove("signal_trace_context");
+            if let Some(trace) = object.get_mut("signal_trace").and_then(Value::as_object_mut) {
+                trace.remove("events");
+            }
+            if let Some(trace) = object.get_mut("report").and_then(|r| r.get_mut("signal_trace"))
+                .and_then(Value::as_object_mut) {
+                trace.remove("events");
+            }
+        }
         if state.is_object() {
             state["device_id"] = json!(self.id);
             state["finished"] = json!(self.session.is_none());
@@ -1512,6 +1549,69 @@ impl Runtime {
             .map(|(channel, capture)| (channel.to_string(), capture.status())).collect();
         Ok(json!({"session":state,"serial":ports,"uart_captures":captures,"worker":self.identity}))
     }
+
+    fn trace_snapshot(&mut self) -> Result<Value> {
+        if let Some(session) = self.session.as_mut() {
+            let value = session.qmp.get("x-lisa-signal-trace", &mut session.uart)?;
+            let raw: Value = serde_json::from_str(value.as_str().context("Invalid signal capture")?)?;
+            session.state["signal_trace"] = raw.clone();
+            Ok(raw)
+        } else {
+            Ok(self.last_state.get("signal_trace").cloned()
+                .unwrap_or_else(|| json!({"id":null,"status":"idle","events":[]})))
+        }
+    }
+
+    fn signal_trace(&mut self, request: crate::signal_trace::Request, board: &Value) -> Result<Value> {
+        use crate::signal_trace::Action;
+        let available = crate::board::trace_sources(board)?;
+        let run = self.session.as_ref().map(|s| json!(s.output))
+            .unwrap_or_else(|| self.last_state["output"].clone());
+        if request.action == Action::Start {
+            let capacity = request.capacity.unwrap_or(1024);
+            let endpoints = crate::signal_trace::endpoints(&available, request.sources.as_ref().unwrap(), capacity)?;
+            ensure!(self.trace_snapshot()?["status"] != "running", "A signal capture is already running");
+            let session = self.session.as_mut().context("Power on the instance before starting a signal capture")?;
+            session.qmp.ensure_idle()?;
+            let capture = Uuid::new_v4().simple().to_string();
+            let previous = session.state["signal_trace_context"].clone();
+            session.state["signal_trace_context"] = json!({"id":capture,"run":run,"sources":available});
+            let value = json!({"action":"start","id":capture,"endpoints":endpoints,"capacity":capacity});
+            if let Err(error) = session.qmp.set("x-lisa-signal-trace", json!(value.to_string()), &mut session.uart) {
+                if session.qmp.pending_id().is_none() {
+                    session.state["signal_trace_context"] = previous;
+                    return Err(error);
+                }
+                return Ok(json!({"capture":capture,"run":run,"status":"unknown","error":error.to_string()}));
+            }
+            return match self.trace_snapshot() {
+                Ok(raw) => crate::signal_trace::page(&raw, &capture, &run, &available, 0, 128),
+                Err(error) => Ok(json!({"capture":capture,"run":run,"status":"unknown","error":error.to_string()})),
+            };
+        }
+        let mut raw = self.trace_snapshot()?;
+        if request.action == Action::List {
+            if let Some(object) = raw.as_object_mut() { object.remove("events"); }
+            return Ok(json!({"run":run,"sources":available,"capture":raw,"max_capacity":4096,"max_page_events":512}));
+        }
+        let capture = request.capture.as_ref().unwrap();
+        ensure!(raw["id"] == *capture, "The request belongs to an earlier signal capture");
+        if request.action == Action::Stop && self.session.is_some() {
+            let session = self.session.as_mut().unwrap();
+            let value = json!({"action":"stop","id":capture});
+            if let Err(error) = session.qmp.set("x-lisa-signal-trace", json!(value.to_string()), &mut session.uart) {
+                if session.qmp.pending_id().is_none() { return Err(error); }
+                return Ok(json!({"capture":capture,"run":run,"status":"unknown","error":error.to_string()}));
+            }
+            raw = self.trace_snapshot()?;
+        }
+        let state = self.session.as_ref().map(|s| &s.state).unwrap_or(&self.last_state);
+        let context = &state["signal_trace_context"];
+        ensure!(context["id"] == *capture && context["run"] == run, "Signal capture source context is unavailable");
+        crate::signal_trace::page(&raw, capture, &run, &context["sources"],
+            request.after.unwrap_or(0), request.limit.unwrap_or(128))
+    }
+
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
         let _board_change = if method == "start" {
             Some(crate::storage::MetadataLease::acquire(&self.catalog.data.join("library.lock"))?)
@@ -1539,6 +1639,7 @@ impl Runtime {
             "audio" | "audio_record" | "audio_cancel" | "microphone" | "sound" => capabilities.audio,
             "access_point" | "wifi_environment" => capabilities.wifi,
             "signals" if params.get("changes").is_some() => capabilities.signals,
+            "signal_trace" => capabilities.signal_trace,
             "events" => capabilities.events,
             "button_sequence" | "button_sequence_status" | "button_sequence_cancel" => capabilities.button_sequence,
             "reset_download" => capabilities.download,
@@ -1656,6 +1757,12 @@ impl Runtime {
                 };
                 session.qmp.set(property, json!(value), &mut session.uart)?;
                 Ok(json!({"x":x,"y":y,"pressed":pressed}))
+            }
+            "signal_trace" => {
+                let request: crate::signal_trace::Request = serde_json::from_value(params.clone())?;
+                ensure!(request.id == self.id, "Signal capture belongs to another instance");
+                request.validate()?;
+                return self.signal_trace(request, &board["hardware"]["board"]);
             }
             "signals" => {
                 let item = self.catalog.device(&self.id)?;

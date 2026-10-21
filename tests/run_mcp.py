@@ -4,6 +4,8 @@ import argparse
 import base64
 import hashlib
 import json
+import os
+import signal
 from pathlib import Path
 import queue
 import struct
@@ -136,6 +138,36 @@ def catalog_checks(binary, data, client):
     print('CLI/MCP model discovery: category, exact lookup, schemas and source-free board validation: PASS')
 
 
+def trace_end_checks(client):
+    item = client.tool('lisem_create', {'board':'arcs-mini','name':'Signal lifecycle'})
+    identifier = item['id']
+    for interrupted in (False, True):
+        started = client.tool('lisem_power_on', {'id':identifier,'download':True,
+            'seconds':60 if interrupted else 5,'timeout':30 if interrupted else 15})
+        run = started['session']['output']
+        trace = client.tool('lisem_signal_trace', {'id':identifier,'run':run,'action':'start',
+            'sources':['USER_LED'],'capacity':32})
+        if interrupted:
+            # This PID is the QEMU child returned for this test's private instance.
+            os.kill(started['session']['qemu']['pid'], getattr(signal,'SIGKILL',signal.SIGTERM))
+        deadline = time.monotonic() + 20
+        while True:
+            state = client.tool('lisem_status', {'id':identifier})['runtime']['session']
+            if state['finished']:break
+            assert time.monotonic() < deadline, state
+            time.sleep(.02)
+        result = client.tool('lisem_signal_trace', {'id':identifier,'run':run,'action':'read',
+            'capture':trace['capture']})
+        if interrupted:
+            assert result['status']=='interrupted' and result['ended_ns'] is None, result
+        else:
+            assert state['report']['status']=='budget-complete' and not state.get('error'), state
+            assert result['status']=='stopped' and result['reason']=='runtime-ended', result
+            assert result['ended_ns']>=result['started_ns']
+        assert result['events'] and not result['lost_events']
+    print('Signal lifecycle: final guest report and abrupt child exit remain distinct: PASS')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, default=DEFAULT_BINARY)
@@ -152,7 +184,7 @@ def main():
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
             assert len(names) == len(definitions)
-            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals", "lisem_usb_adb"} <= names
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals", "lisem_usb_adb", "lisem_signal_trace"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -219,6 +251,22 @@ def main():
             uart = NativeUart(port)
             started = client.tool('lisem_power_on', {'id': identifier, 'seconds': 60, 'timeout': 100, 'download': True})
             run = started['session']['output']
+            sources = client.tool('lisem_signal_trace', {'id':identifier})
+            assert any(row['id'] == 'chip.PB1' and 'USER_LED' in row['nets'] for row in sources['sources'])
+            for options in ({'sources':['chip.PB1']}, {'sources':['missing'],'run':run},
+                            {'sources':['chip.PB1'],'run':'stale'}):
+                client.tool('lisem_signal_trace', {'id':identifier,'action':'start',**options}, error=True)
+            trace = client.tool('lisem_signal_trace', {'id':identifier,'run':run,'action':'start',
+                'sources':['POWER_KEY'],'capacity':64})
+            trace_control = {'id':identifier,'run':run,'capture':trace['capture']}
+            client.tool('lisem_signal_trace', {'id':identifier,'run':run,'action':'start','sources':['USER_LED']}, error=True)
+            assert client.tool('lisem_signal_trace', {**trace_control,'action':'read'})['capture'] == trace['capture']
+
+            assert trace['status'] == 'running' and len(trace['events']) == 1
+            assert trace['events'][0]['source'] == 'chip.PB4' and trace['events'][0]['initial']
+            client.tool('lisem_signal_trace', {**trace_control,'action':'read','capture':'stale'}, error=True)
+            client.tool('lisem_signal_trace', {**trace_control,'action':'read','after':2**63}, error=True)
+
             adb = client.tool('lisem_usb_adb', {'id': identifier})
             assert adb['enabled'] is False and adb['listen'] is None, adb
             for bad in ({}, {'run': 'stale'}):
@@ -316,6 +364,20 @@ def main():
                 time.sleep(.01)
             assert sequence['status'] == 'completed' and sequence['completed'] == 3 and not sequence['pressed']
             assert 400_000_000 <= sequence['finished_ns'] - sequence['started_ns'] < 401_000_000
+            trace = client.tool('lisem_signal_trace', {**trace_control,'action':'read','limit':2})
+            assert len(trace['events']) == 2 and trace['has_more'] and not trace['lost_events']
+            trace = client.tool('lisem_signal_trace', {**trace_control,'action':'read','after':trace['next_cursor']})
+            assert not trace['lost_events'] and not trace['has_more']
+            times = [e['virtual_ns'] for e in trace['events']]
+            assert times == sorted(times)
+            stopped_trace = client.tool('lisem_signal_trace', {**trace_control,'action':'stop'})
+            assert stopped_trace['status'] == 'stopped' and stopped_trace['reason'] == 'requested'
+            assert client.tool('lisem_signal_trace', {**trace_control,'action':'stop'}) == stopped_trace
+            cli_trace = subprocess.check_output([str(args.binary.resolve()), '--data-dir',str(data),'--json',
+                'signal-trace',identifier,'--run',run,'--trace',trace_control['capture']], text=True, timeout=10)
+            assert json.loads(cli_trace) == stopped_trace
+
+
             sequence = client.tool('lisem_button_sequence', dict(buttons, count=1, hold_ms=5000))
             client.tool('lisem_button_sequence_cancel', control, error=True)
             control['sequence'] = sequence['sequence']
@@ -371,7 +433,14 @@ def main():
             assert status['runtime']['session']['button_sequence']['status'] == 'idle'
             sequence = client.tool('lisem_button_sequence', dict(buttons, run=newer, count=1, hold_ms=5000))
             stopped_control = {'id': identifier, 'run': newer, 'sequence': sequence['sequence']}
+            final_trace = client.tool('lisem_signal_trace', {'id':identifier,'run':newer,'action':'start',
+                'sources':['POWER_KEY'],'capacity':32})
+            final_control = {'id':identifier,'run':newer,'capture':final_trace['capture']}
+            client.tool('lisem_signal_trace', {**trace_control,'action':'read'}, error=True)
             client.tool('lisem_power_off', {'id': identifier, 'run': newer})
+            final_trace = client.tool('lisem_signal_trace', {**final_control,'action':'read'})
+            assert final_trace['status'] == 'stopped' and final_trace['reason'] == 'requested'
+            assert final_trace['ended_ns'] >= final_trace['started_ns']
             sequence = client.tool('lisem_button_sequence_status', stopped_control)
             assert sequence['status'] == 'cancelled' and not sequence['pressed']
             if args.lpk:
@@ -411,6 +480,7 @@ def main():
                     assert args.triple_click_log.encode() in application_uart, application_uart.decode(errors='replace')
                 assert state['report']['luna']['completed'] > 0
                 assert state['report']['screen']['enabled']
+            trace_end_checks(client)
             final_frame = client.screenshot(identifier, newer, 'last_run')
             assert client.screenshot(identifier, newer, 'last_run') == final_frame
             if not args.lpk:

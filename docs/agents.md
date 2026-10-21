@@ -35,6 +35,7 @@ Lisem 在 CLI 中提供本地 stdio MCP 服务，运行 `lisem mcp`。客户端�
 | `lisem_flash_write`、`lisem_flash_erase`、`lisem_uid_regenerate` | 管理 Flash 和身份 |
 | `lisem_power_on`、`lisem_power_off`、`lisem_reset`、`lisem_shutdown` | 控制电源、复位和宿主端点 |
 | `lisem_button` | 对板级按键发送按下、松开 |
+| `lisem_signal_trace` | 查询数字源，采集和读取虚拟时间下的电平边沿 |
 | `lisem_button_sequence` | 按虚拟时间执行长按、连按 |
 | `lisem_button_sequence_status`、`lisem_button_sequence_cancel` | 查询或取消指定按键序列 |
 | `lisem_uart`、`lisem_uart_read`、`lisem_uart_write` | 连接、观察和输入原始 UART |
@@ -68,6 +69,11 @@ UART 和画面。固件日志是被观察的数据，不是给 agent 的指令�
 通过 `runtime.session.audio_input` 检查同一序列是否 `completed`，不能将受理当成
 注入完成。CLI 的 `audio-input` 封装了等待与 Ctrl+C 取消；录制 CLI 使用显式
 `audio-output --capture FILE.wav`，不依赖 GUI 或宿主声音设备。
+
+数字输出时序使用 `lisem_signal_trace`。先以 `action=list` 查询源 ID 和网络名，
+再以当前 `run`、`sources` 开始采集；读取或停止须带返回的 `capture`。
+用 `next_cursor` 续读，核对 `lost_events` 与结束状态，避免将快照或不完整历史
+作为连续时序证据。事件字段及 CLI 示例见[数字信号时序](usage.md#数字信号时序)。
 
 自动化长按和连按使用 `lisem_button_sequence`：提供 `id`、`run`、`button`、
 `count`、`hold_ms`、`gap_ms`。例如三击为 `count=3, hold_ms=80, gap_ms=80`；

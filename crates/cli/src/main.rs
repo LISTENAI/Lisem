@@ -138,6 +138,17 @@ enum Action {
     },
     /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
     Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
+    /// List digital sources or record transitions at their virtual event times.
+    SignalTrace {
+        id: String,
+        #[arg(long)] run: Option<String>,
+        #[arg(long, num_args=1.., conflicts_with_all=["trace", "stop"])] start: Option<Vec<String>>,
+        #[arg(long, requires="start")] capacity: Option<usize>,
+        #[arg(long)] trace: Option<String>,
+        #[arg(long, requires="trace")] stop: bool,
+        #[arg(long, requires="trace", conflicts_with="stop")] after: Option<u64>,
+        #[arg(long, requires="trace", conflicts_with="stop")] limit: Option<usize>,
+    },
     /// Inspect or enable a loopback TCP bridge to the firmware USB ADB interface.
     UsbAdb {
         id: String,
@@ -408,6 +419,15 @@ fn run() -> Result<i32> {
                 params["changes"] = serde_json::from_str(&values)?;
             }
             manager.call("signals", params)?
+        }
+        Action::SignalTrace { id, run, start, capacity, trace, stop, after, limit } => {
+            use lisem_core::signal_trace::{Action as TraceAction, Request};
+            let action = if start.is_some() { TraceAction::Start }
+                else if stop { TraceAction::Stop }
+                else if trace.is_some() { TraceAction::Read } else { TraceAction::List };
+            let request = Request { id, run, action, capture: trace, sources: start, capacity, after, limit };
+            request.validate()?;
+            manager.call("signal_trace", serde_json::to_value(request)?)?
         }
         Action::UsbAdb { id, enable, disable, run } => {
             let mut params = json!({"id":id,"run":run});

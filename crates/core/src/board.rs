@@ -385,13 +385,13 @@ impl Board {
             "flash_bytes":self.storage.flash_bytes,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some(),
             "buttons":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
-                "sd":false,"usb_adb":true,"download":true,"signals":true,"events":true,
+                "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
                 "button_sequence":true}},
             "assembly":{"version":1,"chip":self.chip,"buttons":[],"indicators":[]}});
         if self.chip == "venusa" {
             compiled["runtime"] = json!({"available":true,"machine":"venusa-board",
                 "capabilities":{"snapshot":true,"wifi":false,"sd":false,"usb_adb":false,
-                    "download":false,"signals":true,"events":false,"button_sequence":false,"audio":false}});
+                    "download":false,"signals":true,"signal_trace":true,"events":false,"button_sequence":false,"audio":false}});
         }
         let assembly = self.assemble(&mut compiled)?;
         compiled["assembly"] = assembly;
@@ -950,12 +950,57 @@ pub fn source(value: &Value) -> &Value {
     value.get("definition").unwrap_or(value)
 }
 
+/// Digital pad identities and their declared board-net connections.
+pub fn trace_sources(compiled: &Value) -> Result<Value> {
+    let board: Board = serde_json::from_value(source(compiled).clone())?;
+    let mut pins = BTreeMap::new();
+    for bank in ['A', 'B'] {
+        for pin in 0..32 {
+            let id = format!("chip.P{bank}{pin}");
+            if let Ok(endpoint) = pad(&id, &board.chip) { pins.insert(id, endpoint); }
+        }
+    }
+    for (id, device) in &board.devices {
+        if device.model == EXTIO {
+            for port in ports(EXTIO)? {
+                if let Some(endpoint) = extio_pin(port) {
+                    pins.insert(format!("{id}.{port}"), endpoint);
+                }
+            }
+        }
+    }
+    Ok(json!(pins.into_iter().map(|(id, endpoint)| {
+        let nets: Vec<_> = board.nets.iter().filter(|(_, net)| net.endpoints.contains(&id))
+            .map(|(name, _)| name.clone()).collect();
+        let connections: BTreeSet<_> = board.nets.values()
+            .filter(|net| net.endpoints.contains(&id))
+            .flat_map(|net| net.endpoints.iter().filter(|other| **other != id).cloned()).collect();
+        json!({"id":id,"endpoint":endpoint,"type":"digital","nets":nets,"connections":connections})
+    }).collect::<Vec<_>>()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn example() -> Value {
         serde_json::from_str(include_str!("../../../examples/boards/mini-custom.json")).unwrap()
+    }
+
+    #[test]
+    fn trace_sources_follow_installed_board_wiring() {
+        let mut raw = example();
+        raw["nets"]["LCD_DC"]["endpoints"][0] = json!("chip.PA0");
+        let rows = trace_sources(&compile(&raw).unwrap()).unwrap();
+        let row = rows.as_array().unwrap().iter().find(|r| r["id"] == "chip.PA0").unwrap();
+        assert_eq!(row["endpoint"], 0);
+        assert!(row["nets"].as_array().unwrap().contains(&json!("LCD_DC")));
+        assert!(row["connections"].as_array().unwrap().contains(&json!("lcd.DC")));
+        assert!(!rows.as_array().unwrap().iter().any(|r| r["id"] == "chip.PB31"));
+        let mini3: Value = serde_json::from_str(include_str!("../../../boards/arcs-mini3.json")).unwrap();
+        let rows = trace_sources(&mini3).unwrap();
+        let extio = rows.as_array().unwrap().iter().find(|r| r["id"] == "extio.PC3").unwrap();
+        assert_eq!(extio["endpoint"], 83);
     }
 
     #[test]
