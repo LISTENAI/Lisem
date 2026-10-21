@@ -458,6 +458,20 @@ pub struct SerialPort {
     retired: VecDeque<u8>,
     pending: Vec<u8>,
 }
+
+fn write_terminal(writer: &mut impl Write, bytes: &mut VecDeque<u8>) -> Result<()> {
+    let length = bytes.len().min(4096);
+    if length == 0 {
+        return Ok(());
+    }
+    match writer.write(&bytes.make_contiguous()[..length]) {
+        Ok(n) => { bytes.drain(..n); }
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
+}
+
 impl SerialPort {
     pub fn new() -> Result<Self> {
         #[cfg(unix)]
@@ -585,24 +599,10 @@ impl SerialPort {
         {
             self.collect_retired()?;
             if !self.retired.is_empty() {
-                let bytes = self.retired.make_contiguous();
-                let length = bytes.len().min(4096);
-                match self.master.write(&bytes[..length]) {
-                    Ok(n) => { self.retired.drain(..n); }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                    Err(e) => return Err(e.into()),
-                }
+                write_terminal(&mut self.master, &mut self.retired)?;
             } else if let Some(source) = &self.source {
                 let mut output = source.lock().unwrap();
-                let bytes = output.bytes.make_contiguous();
-                let length = bytes.len().min(4096);
-                if length != 0 {
-                    match self.master.write(&bytes[..length]) {
-                        Ok(n) => { output.bytes.drain(..n); }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                        Err(e) => return Err(e.into()),
-                    }
-                }
+                write_terminal(&mut self.master, &mut output.bytes)?;
             }
             if let Some(uart) = uart {
                 if self.pending.is_empty() {
@@ -1104,15 +1104,6 @@ mod tests {
     #[test]
     fn terminal_backlog_is_bounded_by_bytes_and_preserves_run_histories() {
         let mut port = SerialPort::new().unwrap();
-        #[cfg(unix)]
-        let mut terminal = OpenOptions::new().read(true).write(true)
-            .custom_flags(libc::O_NONBLOCK).open(&port.path).unwrap();
-        #[cfg(windows)]
-        let mut terminal = {
-            let stream = TcpStream::connect(port.path.strip_prefix("tcp://").unwrap()).unwrap();
-            stream.set_nonblocking(true).unwrap();
-            stream
-        };
         let mut expected = Vec::new();
         let mut observers = Vec::new();
         // No terminal reads between runs. More than eight modest runs must
@@ -1148,20 +1139,48 @@ mod tests {
         expected.push(0xfe);
         assert!(port.prepare_bind().is_err());
         assert_eq!(port.retired.len(), SERIAL_RETIRED_CAPACITY);
-        let mut actual = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while actual.len() < expected.len() {
-            assert!(Instant::now() < deadline);
-            port.pump(None).unwrap();
-            let mut bytes = [0; 65536];
-            match terminal.read(&mut bytes) {
-                Ok(n) => actual.extend_from_slice(&bytes[..n]),
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
-                Err(e) => panic!("{e}"),
-            }
-            std::thread::yield_now();
+        // Exercise the full byte budget with deterministic backpressure. The
+        // endpoint integration test below checks real PTY/TCP delivery; queue
+        // correctness must not depend on the kernel's bulk terminal throughput.
+        struct Terminal {
+            bytes: Vec<u8>,
+            calls: usize,
         }
-        assert_eq!(actual, expected);
+        impl Write for Terminal {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.calls += 1;
+                if self.calls % 3 == 1 {
+                    return Err(std::io::ErrorKind::WouldBlock.into());
+                }
+                let count = bytes.len().min(71);
+                self.bytes.extend_from_slice(&bytes[..count]);
+                Ok(count)
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let mut terminal = Terminal { bytes: Vec::new(), calls: 0 };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while terminal.bytes.len() < expected.len() {
+            assert!(Instant::now() < deadline,
+                "Terminal drain timed out: received={}/{} retired={} calls={}",
+                terminal.bytes.len(), expected.len(), port.retired.len(), terminal.calls);
+            port.collect_retired().unwrap();
+            assert!(port.retired.len() <= SERIAL_RETIRED_CAPACITY);
+            let before = port.retired.len();
+            let received = terminal.bytes.len();
+            write_terminal(&mut terminal, &mut port.retired).unwrap();
+            let accepted = terminal.bytes.len() - received;
+            assert_eq!(port.retired.len(), before - accepted);
+            let live = port.source.as_ref()
+                .map_or(0, |source| source.lock().unwrap().bytes.len());
+            assert_eq!(terminal.bytes.len() + port.retired.len() + live, expected.len());
+            if terminal.calls == 1 {
+                assert_eq!(accepted, 0);
+                assert!(port.prepare_bind().is_err());
+            }
+            assert!(terminal.calls <= 3 * expected.len().div_ceil(71));
+        }
+        assert_eq!(terminal.bytes, expected);
         port.prepare_bind().unwrap();
     }
 
