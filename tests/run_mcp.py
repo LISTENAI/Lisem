@@ -71,8 +71,14 @@ class Client:
             assert time.monotonic() < deadline, 'Camera source was never acknowledged'
             time.sleep(.02)
             state = self.tool('lisem_status', {'id': arguments['id']})
-            assert not state['runtime']['session']['finished'], state
-            result = state['runtime']['session']['camera_change']
+            # Bounded status observations can be unavailable while the worker
+            # is handling a control request. Keep waiting on this selection.
+            if state['runtime'] is None:
+                continue
+            session = state['runtime']['session']
+            assert session and not session['finished'], state
+            assert session['output'] == arguments['run'], state
+            result = session['camera_change']
         assert result['status'] in ('saved', 'applied'), result
         return result
 
