@@ -46,6 +46,11 @@ struct Create {
     name: Option<String>,
     /// LPK path on the machine running Lisem.
     package: Option<PathBuf>,
+    /// Exact chip UID in hexadecimal; omitted generates a random prefixed UID (prefix: ff00).
+    uid: Option<String>,
+    /// Explicit permission to use a UID without the default prefix for this request. Requires uid.
+    #[serde(default)]
+    allow_unprefixed_uid: bool,
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -405,7 +410,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Create>(
             "lisem_create",
-            "Create an independent instance and UID. Optionally import an original LPK into Flash. Does not power on.",
+            "Create an independent instance with a random prefixed OTP UID (default prefix: ff00), or specify a unique chip UID. UIDs without the default prefix require explicit allow_unprefixed_uid for this request. Optionally import an original LPK into Flash. Does not power on.",
             false,
         ),
         definition::<Import>(
@@ -425,7 +430,7 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<Confirm>(
             "lisem_uid_regenerate",
-            "Generate a new persistent UID without erasing Flash. Requires power off and the current UID.",
+            "Generate a unique persistent prefixed UID without erasing Flash or other OTP bytes. Requires power off and the current UID.",
             false,
         ),
         definition::<Start>(
@@ -736,6 +741,16 @@ pub fn serve(manager: Manager, stop: Arc<AtomicBool>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_uid_permission_is_explicit_and_typed() {
+        let request: Create = arguments(json!({"board":"arcs-mini","uid":"ff00a37c102d9e65"})).unwrap();
+        assert!(!request.allow_unprefixed_uid);
+        assert!(arguments::<Create>(json!({"board":"arcs-mini","uid":123})).is_err());
+        assert!(arguments::<Create>(json!({"board":"arcs-mini","allow_unprefixed_uid":"true"})).is_err());
+        let request: Create = arguments(json!({"board":"arcs-mini","uid":"0102a37c102d9e65","allow_unprefixed_uid":true})).unwrap();
+        assert!(request.allow_unprefixed_uid);
+    }
 
     #[test]
     fn usb_adb_inspection_does_not_send_a_mutation() {

@@ -65,6 +65,12 @@ enum Action {
         name: Option<String>,
         #[arg(long)]
         lpk: Option<PathBuf>,
+        /// Exact chip UID in hexadecimal; defaults to a random prefixed UID (prefix: ff00).
+        #[arg(long)]
+        uid: Option<String>,
+        /// Allow the specified UID without the default prefix for this request.
+        #[arg(long, requires = "uid")]
+        allow_unprefixed_uid: bool,
     },
     /// Add an existing instance to this library without changing its storage.
     Attach { path: PathBuf },
@@ -352,9 +358,9 @@ fn run() -> Result<i32> {
         },
         Action::BoardValidate { path } => manager.call("board_validate", json!({"path":absolute(&path)?}))?,
         Action::BoardImport { path } => manager.call("board_import", json!({"path":absolute(&path)?}))?,
-        Action::Create { board, name, lpk } => manager.call(
+        Action::Create { board, name, lpk, uid, allow_unprefixed_uid } => manager.call(
             "create",
-            json!({"board": board, "name": name, "package": lpk.as_deref().map(absolute).transpose()?}),
+            json!({"board": board, "name": name, "package": lpk.as_deref().map(absolute).transpose()?, "uid":uid, "allow_unprefixed_uid":allow_unprefixed_uid}),
         )?,
         Action::Attach { path } => manager.call("attach", json!({"path": absolute(&path)?}))?,
         Action::Status { id: None } => manager.status()?,
@@ -560,6 +566,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uid_override_permission_requires_a_uid() {
+        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini","--allow-unprefixed-uid"]).is_err());
+        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini","--uid","0102a37c102d9e65","--allow-unprefixed-uid"]).is_ok());
+    }
 
     #[test]
     fn usb_adb_arguments_select_one_operation() {

@@ -18,8 +18,15 @@ Linux 可在解压目录运行 `./install-desktop.sh`，将 Lisem 加入当前�
 
 新建设备时选择板型，也可先[导入自定义板型 JSON](boards.md)。创建实例可使用
 空白 Flash 或导入对应芯片的 LPK，板型需手动选择。LPK 内容按包内布局写入
-实例 Flash。设置的「身份与存储」页提供 UID 重新生成、Flash 清空和 LPK
-写入，修改前须下电。「更多」菜单提供复制 UID 和 LPK 写入入口。
+实例 Flash。芯片 UID 留空时自动生成带预设前缀的 UID（prefixed UID），
+当前前缀为 `ff00`；也可填写芯片要求长度的十六进制 UID，当前板型均为 16 个
+字符。不使用预设前缀须在创建时单独确认。同一实例库拒绝重复 UID。
+实例 ID 与芯片 UID 是独立身份。
+
+设置的「身份与存储」页提供 UID 重新生成、Flash 清空和 LPK
+写入，修改前须下电。重新生成使用新的带预设前缀的 UID，只修改 OTP 中的 UID
+字节，保留 Flash 和其余 OTP。已有实例的 UID 保持原值。「更多」菜单提供
+复制 UID 和 LPK 写入入口。
 
 移除实例仅从库中移除记录，不删除磁盘文件。已存在的实例可以重新打开。
 实例的板型或芯片配置与当前版本不兼容时，启动会报错。
@@ -266,6 +273,19 @@ lisem erase INSTANCE_ID
 lisem uid INSTANCE_ID --regenerate
 lisem shutdown INSTANCE_ID
 ```
+
+创建时可用 `--uid` 指定芯片 UID；不使用预设前缀还须显式提供
+`--allow-unprefixed-uid`，该许可仅适用于本次创建，不能绕过格式或重复检查：
+
+```sh
+lisem create --board arcs-mini --uid ff00a37c102d9e65
+lisem create --board arcs-mini --uid 0102a37c102d9e65 --allow-unprefixed-uid
+```
+
+ARCS 的 UID 字符串按 OTP 中的字节顺序显示。例如 `ff00a37c102d9e65`
+写入 OTP 偏移 8–15 字节；小端 word02、word03 分别为 `0x7ca300ff`、
+`0x659e2d10`，作为小端 `uint64_t` 读取为 `0x659e2d107ca300ff`。
+VenusA 的 UID 从其 OTP 偏移 0 开始，使用对应芯片布局。
 
 `button press/release` 是即时手动输入。自动化长按、连按使用一次提交的虚拟时间序列：
 

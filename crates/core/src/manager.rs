@@ -248,10 +248,19 @@ impl Manager {
         }
         if method == "create" {
             let package = params["package"].as_str().map(Path::new);
-            return self.catalog.create(
+            let options = storage::UidOptions {
+                uid: params.get("uid").filter(|value| !value.is_null())
+                    .map(|value| value.as_str().map(str::to_owned)
+                        .context("Chip UID must be a string")).transpose()?,
+                allow_unprefixed_uid: params.get("allow_unprefixed_uid")
+                    .map(|value| value.as_bool().context("allow_unprefixed_uid must be a boolean"))
+                    .transpose()?.unwrap_or(false),
+            };
+            return self.catalog.create_with_uid(
                 params["board"].as_str().context("Board is required")?,
                 package,
                 params["name"].as_str(),
+                &options,
             );
         }
         if method == "board_import" {
@@ -370,7 +379,9 @@ impl Manager {
                 if method == "erase" {
                     storage::erase(&path, &layout)?;
                 } else {
-                    storage::regenerate_uid(&path, &layout)?;
+                    self.catalog.regenerate_uid(
+                        &path, &layout, item["uid"].as_str().context("Chip UID missing")?,
+                    )?;
                 }
                 self.catalog.describe(&path)
             }

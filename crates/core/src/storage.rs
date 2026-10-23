@@ -282,7 +282,81 @@ pub fn uid(path: &Path, layout: &Layout) -> Result<String> {
     ))
 }
 
+/// UID policy for one creation request; permissions are never persisted.
+#[derive(Default)]
+pub struct UidOptions {
+    pub uid: Option<String>,
+    pub allow_unprefixed_uid: bool,
+}
+
+pub fn generate_uid(layout: &Layout) -> Result<String> {
+    ensure!(
+        (2..=16).contains(&layout.uid_bytes),
+        "Unsupported chip UID length"
+    );
+    let mut bytes = vec![0; layout.uid_bytes];
+    getrandom::fill(&mut bytes[2..])?;
+    bytes[..2].copy_from_slice(&[0xff, 0x00]);
+    Ok(hex(&bytes))
+}
+
+pub(crate) fn generate_unique_uid(
+    layout: &Layout,
+    used: &std::collections::BTreeSet<String>,
+) -> Result<String> {
+    unique_uid_with(used, || generate_uid(layout))
+}
+
+fn unique_uid_with(
+    used: &std::collections::BTreeSet<String>,
+    mut generate: impl FnMut() -> Result<String>,
+) -> Result<String> {
+    for _ in 0..128 {
+        let value = generate()?;
+        if !used.contains(&value) {
+            return Ok(value);
+        }
+    }
+    anyhow::bail!("Cannot generate a unique chip UID after 128 attempts")
+}
+
+pub fn parse_uid(layout: &Layout, value: &str, allow_unprefixed: bool) -> Result<Vec<u8>> {
+    ensure!(
+        (2..=16).contains(&layout.uid_bytes),
+        "Unsupported chip UID length"
+    );
+    ensure!(
+        value.len() == layout.uid_bytes * 2 && value.bytes().all(|b| b.is_ascii_hexdigit()),
+        "Chip UID must contain exactly {} hexadecimal characters",
+        layout.uid_bytes * 2
+    );
+    let bytes: Vec<_> = (0..value.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&value[at..at + 2], 16).unwrap())
+        .collect();
+    ensure!(
+        bytes.starts_with(&[0xff, 0x00]) || allow_unprefixed,
+        "Chip UID must use the default prefix (ff00); explicit allow_unprefixed_uid is required otherwise"
+    );
+    Ok(bytes)
+}
+
 pub fn create(path: &Path, layout: &Layout, package: Option<&Path>) -> Result<PathBuf> {
+    create_with_uid(path, layout, package, &UidOptions::default())
+}
+
+pub fn create_with_uid(
+    path: &Path, layout: &Layout, package: Option<&Path>, options: &UidOptions,
+) -> Result<PathBuf> {
+    ensure!(
+        !options.allow_unprefixed_uid || options.uid.is_some(),
+        "UID permission requires a specified UID"
+    );
+    let value = match &options.uid {
+        Some(value) => value.clone(),
+        None => generate_uid(layout)?,
+    };
+    let bytes = parse_uid(layout, &value, options.allow_unprefixed_uid)?;
     ensure!(!path.exists(), "Instance already exists");
     let parent = path.parent().context("Instance needs a parent directory")?;
     fs::create_dir_all(parent)?;
@@ -298,7 +372,7 @@ pub fn create(path: &Path, layout: &Layout, package: Option<&Path>) -> Result<Pa
         layout.uid_bytes <= 16 && layout.uid_offset + layout.uid_bytes <= otp.len(),
         "Invalid chip UID layout"
     );
-    getrandom::fill(&mut otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes])?;
+    otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes].copy_from_slice(&bytes);
     atomic_write(&temporary.path().join("flash.bin"), &flash)?;
     atomic_write(&temporary.path().join("otp.bin"), &otp)?;
     write_json(&temporary.path().join("instance.json"), &manifest(layout))?;
@@ -334,15 +408,27 @@ pub fn write_flash(path: &Path, layout: &Layout, image: &Path, offset: usize) ->
 }
 
 pub fn regenerate_uid(path: &Path, layout: &Layout) -> Result<String> {
+    regenerate_uid_excluding(path, layout, &std::collections::BTreeSet::new(), None)
+}
+
+pub(crate) fn regenerate_uid_excluding(
+    path: &Path,
+    layout: &Layout,
+    used: &std::collections::BTreeSet<String>,
+    expected: Option<&str>,
+) -> Result<String> {
     let _lease = locked(path, layout)?;
     let mut otp = fs::read(path.join("otp.bin"))?;
     let previous = uid(path, layout)?;
-    loop {
-        getrandom::fill(&mut otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes])?;
-        if hex(&otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes]) != previous {
-            break;
-        }
-    }
+    ensure!(
+        expected.is_none_or(|value| value == previous),
+        "Chip UID changed; inspect the instance again"
+    );
+    let mut used = used.clone();
+    used.insert(previous);
+    let value = generate_unique_uid(layout, &used)?;
+    let bytes = parse_uid(layout, &value, false)?;
+    otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes].copy_from_slice(&bytes);
     atomic_write(&path.join("otp.bin"), &otp)?;
     uid(path, layout)
 }
@@ -471,5 +557,60 @@ mod windows_tests {
             "Child lost the instance lease when its owner closed it"
         );
         assert!(Lease::acquire(&path).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod uid_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn generated_collisions_retry_and_exhaustion_is_bounded() {
+        let used = BTreeSet::from(["ff00000000000000".to_owned()]);
+        let mut calls = 0;
+        let uid = unique_uid_with(&used, || {
+            calls += 1;
+            Ok(if calls < 3 {
+                "ff00000000000000"
+            } else {
+                "ff00000000000001"
+            }
+            .into())
+        })
+        .unwrap();
+        assert_eq!(calls, 3);
+        assert_eq!(uid, "ff00000000000001");
+        let mut calls = 0;
+        assert!(
+            unique_uid_with(&used, || {
+                calls += 1;
+                Ok("ff00000000000000".into())
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 128);
+    }
+
+    #[test]
+    fn chip_length_controls_validation_and_generation() {
+        let layout = Layout {
+            chip: "test".into(),
+            board: "test".into(),
+            flash_bytes: 1,
+            otp_bytes: 32,
+            uid_offset: 0,
+            uid_bytes: 12,
+        };
+        assert!(parse_uid(&layout, "ff00a37c102d9e65", false).is_err());
+        assert_eq!(
+            parse_uid(&layout, "ff0000000000000000000001", false)
+                .unwrap()
+                .len(),
+            12
+        );
+        let generated = generate_uid(&layout).unwrap();
+        assert_eq!(generated.len(), 24);
+        assert!(generated.starts_with("ff00"));
     }
 }

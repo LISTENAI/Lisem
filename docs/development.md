@@ -69,6 +69,16 @@ MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 80 ms 按下、80 ms 间隔的三击并检查原始 UART 中的识别结果。固件主动复位
 会取消开机长按；输入完成与后续业务成功分别验证，外设未实现仍使集成失败。
 
+UID 的 OTP 字节和原固件身份读数使用隔离实例验证：
+
+```sh
+python3 tests/run_uid_firmware.py --binary /path/to/lisem --lpk /path/to/original.lpk --output artifacts/verify-uid
+```
+
+此项使用 ARCS Mini 固件的 `device get_device_id` 串口命令，覆盖默认、自定义、
+无预设前缀 UID 的单次许可、冷启动与重新导入保留，以及重新生成后的真实读数。
+Arcs-Mini3 使用 `--board arcs-mini3` 并提供匹配的原始 LPK。
+
 `python3 tests/run_access_point_runtime.py --binary /path/to/lisem` 验证热点可用的
 持久化、当前运行保持、过期请求拒绝和延迟确认恢复；源码运行另加 `--root .`。
 POSIX 使用进程暂停注入控制延迟，不联网，不修改固件或设备身份。

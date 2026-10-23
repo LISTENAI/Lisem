@@ -3,7 +3,7 @@ use crate::storage::{self, Layout, MetadataLease};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -247,12 +247,71 @@ impl Catalog {
     }
 
     pub fn create(&self, board: &str, package: Option<&Path>, name: Option<&str>) -> Result<Value> {
+        self.create_with_uid(board, package, name, &storage::UidOptions::default())
+    }
+
+    fn library_uids(&self) -> Result<BTreeSet<String>> {
+        self.entries()?
+            .iter()
+            .map(|entry| {
+                let path = Path::new(entry["path"].as_str().context("Instance path missing")?);
+                let metadata = self.metadata(path)?;
+                let layout = self.layout(
+                    metadata["hardware"]["board"]["id"]
+                        .as_str()
+                        .context("Board missing")?,
+                )?;
+                storage::uid(path, &layout)
+            })
+            .collect()
+    }
+
+    pub fn regenerate_uid(&self, path: &Path, layout: &Layout, expected: &str) -> Result<String> {
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
+        storage::regenerate_uid_excluding(path, layout, &self.library_uids()?, Some(expected))
+    }
+
+    pub fn create_with_uid(
+        &self,
+        board: &str,
+        package: Option<&Path>,
+        name: Option<&str>,
+        options: &storage::UidOptions,
+    ) -> Result<Value> {
         let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let mut entries = self.entries()?;
         let descriptor = self.boards.get(board).context("Unknown board")?;
-        ensure!(descriptor["runtime"]["available"] != false, "{}",
-            descriptor["runtime"]["unavailable_reason"].as_str().unwrap_or("This board runtime is unavailable"));
+        ensure!(
+            descriptor["runtime"]["available"] != false,
+            "{}",
+            descriptor["runtime"]["unavailable_reason"]
+                .as_str()
+                .unwrap_or("This board runtime is unavailable")
+        );
         let layout = self.layout(board)?;
+        ensure!(
+            !options.allow_unprefixed_uid || options.uid.is_some(),
+            "UID permission requires a specified UID"
+        );
+        let used = self.library_uids()?;
+        let value = if let Some(value) = &options.uid {
+            let value = storage::hex(&storage::parse_uid(
+                &layout,
+                value,
+                options.allow_unprefixed_uid,
+            )?);
+            ensure!(
+                !used.contains(&value),
+                "Another instance has the same chip UID"
+            );
+            value
+        } else {
+            storage::generate_unique_uid(&layout, &used)?
+        };
+        let options = storage::UidOptions {
+            uid: Some(value),
+            allow_unprefixed_uid: options.allow_unprefixed_uid,
+        };
         let id = Uuid::new_v4().simple().to_string();
         let path = self.data.join("devices").join(&id);
         let mut count = 1;
@@ -266,14 +325,31 @@ impl Catalog {
             count += 1;
         }
         let name = valid_name(name.unwrap_or(&format!("{label} {count}")))?;
-        storage::create(&path, &layout, package)?;
+        let parent = path.parent().unwrap();
+        fs::create_dir_all(parent)?;
+        let staging = tempfile::Builder::new()
+            .prefix(".lisem-create-")
+            .tempdir_in(parent)?;
+        let staged = staging.path().join("instance");
+        storage::create_with_uid(&staged, &layout, package, &options)?;
         let metadata = json!({"version":1,"id":id,"name":name,
             "hardware":{"board":crate::board::source(&self.boards[board]),"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
             "host":{"online":true,"sound":true,"microphone":false,"uart":[]}});
-        storage::write_json(&path.join("device.json"), &metadata)?;
+        storage::write_json(&staged.join("device.json"), &metadata)?;
+        let mut result = self.describe(&staged)?;
+        result["path"] = json!(path);
+        ensure!(!path.exists(), "Instance already exists");
+        fs::rename(&staged, &path)?;
+        let previous = entries.clone();
         entries.push(json!({"id":id,"path":path}));
-        self.save(&entries)?;
-        self.describe(&path)
+        if let Err(error) = self.save(&entries) {
+            // The index rename may have completed before its directory sync.
+            self.save(&previous)
+                .context("Cannot restore library index after failed creation")?;
+            fs::remove_dir_all(&path).context("Cannot clean up failed instance creation")?;
+            return Err(error);
+        }
+        Ok(result)
     }
 
     pub fn attach(&self, path: &Path) -> Result<Value> {

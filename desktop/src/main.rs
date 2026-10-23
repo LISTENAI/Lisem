@@ -130,6 +130,7 @@ struct Desktop {
     board_options: Vec<BoardOption>,
     package: Option<PathBuf>,
     name: Entity<InputState>,
+    new_uid: Entity<InputState>,
     title: String,
     camera_select: Entity<SelectState<Vec<CameraOption>>>,
     camera_options: Vec<CameraOption>,
@@ -268,6 +269,7 @@ impl Desktop {
             board_options: Vec::new(),
             package: None,
             name: cx.new(|cx| InputState::new(window, cx).placeholder("实例名称")),
+            new_uid: cx.new(|cx| InputState::new(window, cx).placeholder("留空自动生成")),
             title: String::new(),
             camera_select,
             camera_options: Vec::new(),
@@ -440,6 +442,7 @@ impl Desktop {
                 self.new_board = self.state.data["boards"].as_array()
                     .and_then(|v| v.first()).and_then(|v| v["id"].as_str()).map(str::to_owned);
                 self.name.update(cx, |name, cx| name.set_value("", window, cx));
+                self.new_uid.update(cx, |uid, cx| uid.set_value("", window, cx));
             }
             Action::Cancel => {
                 self.creating = false;
@@ -507,9 +510,30 @@ impl Desktop {
                 self.send("sd_card", params);
             }
             Action::ClearPackage => self.package = None,
-            Action::Create => self.send("create", json!({
-                "name": self.name.read(cx).value(), "board": self.new_board, "package": self.package
-            })),
+            Action::Create => {
+                let uid = self.new_uid.read(cx).value().to_string();
+                let mut params = json!({"name":self.name.read(cx).value(),
+                    "board":self.new_board,"package":self.package,
+                    "uid":if uid.is_empty() { None } else { Some(&uid) }});
+                let chip = self.state.data["boards"].as_array().and_then(|boards| boards.iter()
+                    .find(|board| board["id"].as_str() == self.new_board.as_deref()))
+                    .and_then(|board| board["chip"].as_str());
+                let length = self.state.data["chips"].as_array().and_then(|chips| chips.iter()
+                    .find(|value| value["id"].as_str() == chip))
+                    .and_then(|chip| chip["storage"]["uid_bytes"].as_u64()).unwrap_or(8) as usize;
+                if uid.len() == length * 2 && uid.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !uid.to_ascii_lowercase().starts_with("ff00") {
+                    let detail = format!("本次创建使用芯片 UID {uid}。");
+                    let answer = window.prompt(PromptLevel::Warning, "使用无预设前缀的 UID？",
+                        Some(&detail), &["取消", "使用此 UID"], cx);
+                    cx.spawn(async move |view, cx| {
+                        if answer.await == Ok(1) {
+                            params["allow_unprefixed_uid"] = json!(true);
+                            let _ = view.update(cx, |v, cx| { v.send("create", params); cx.notify(); });
+                        }
+                    }).detach();
+                } else { self.send("create", params); }
+            },
             Action::Start => self.send("start", json!({
                 "id": self.selected,
                 "online": self.device().is_some_and(|d| d.capabilities.wifi),
@@ -587,7 +611,7 @@ impl Desktop {
                 if let Some(d) = self.device() {
                     let (title, detail, confirm, method) = match action {
                         Action::RegenerateUid => (
-                            "重新生成 UID？", "设备 UID 将改变，Flash 和其余 OTP 保留。",
+                            "重新生成 UID？", "将按预设前缀重新生成 UID，保留 Flash 和其余 OTP。",
                             "重新生成", "regenerate_uid"
                         ),
                         Action::Detach => (
@@ -764,6 +788,9 @@ impl Desktop {
             .max_w(px(520.))
             .w_full()
             .child(field("名称", self.name.clone()));
+        form = form.child(div().flex().flex_col().gap_2()
+            .child(field("芯片 UID · 可选", self.new_uid.clone()))
+            .child(caption("留空自动生成 UID（预设前缀：ff00）")));
         form = form.child(div().flex().flex_col().gap_2()
             .child(caption("板型"))
             .child(div().flex().items_center().gap_3()
