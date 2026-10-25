@@ -25,6 +25,11 @@ def verify(binary, python, output, prefix=()):
         if result.returncode != expected:
             (output / 'failed-stdout.bin').write_bytes(result.stdout)
             (output / 'failed-stderr.bin').write_bytes(result.stderr)
+            (output / 'failure.json').write_text(json.dumps({
+                'returncode': result.returncode, 'expected': expected,
+                'stdout': result.stdout.decode(errors='replace')[-6000:],
+                'stderr': result.stderr.decode(errors='replace')[-6000:],
+            }, indent=2) + '\n')
             raise AssertionError(f'Launcher status {result.returncode}, expected {expected}: '
                                  + result.stdout.decode(errors='replace')[-3000:]
                                  + result.stderr.decode(errors='replace')[-3000:])
@@ -70,8 +75,17 @@ def verify(binary, python, output, prefix=()):
     (site / 'lisem').mkdir(); (site / 'lisem/__init__.py').write_text('raise AssertionError("independent SDK shadow")\n')
     old_metadata = site / 'lisem_sdk-0.0.1.dist-info'; old_metadata.mkdir()
     (old_metadata / 'METADATA').write_text('Name: lisem-sdk\nVersion: 0.0.1\n')
+    # Some interpreters provide a system hook before venv site-packages. Preserve
+    # the hook ordinary Python selects, rather than assuming the venv wins.
+    hook_baseline = json.loads(subprocess.check_output([
+        str(dep_python), '-c', 'import json,os,sys;print(json.dumps({"hook":[os.environ.get("LISEM_TEST_SITE_HOOK"),getattr(sys.modules.get("sitecustomize"),"__file__",None)],"sys_path":sys.path}))',
+    ], env=env, cwd=output, text=True))
+    (output / 'startup-baseline.json').write_text(json.dumps(hook_baseline, indent=2) + '\n')
+    original_hook = hook_baseline['hook']
     active = dict(env, VIRTUAL_ENV=str(dependency_env), LISEM_EXECUTABLE='other-native', LISEM_ROOT='other-root')
-    chosen = 'import chosen_dependency,lisem,sys,json,os; assert os.environ["LISEM_TEST_SITE_HOOK"]=="preserved"; print(json.dumps([chosen_dependency.VALUE,sys.prefix,lisem.source_info()]))'
+    chosen = ('import chosen_dependency,lisem,sys,json,os; '
+              f'assert [os.environ.get("LISEM_TEST_SITE_HOOK"),getattr(sys.modules.get("sitecustomize"),"__file__",None)]=={original_hook!r}; '
+              'print(json.dumps([chosen_dependency.VALUE,sys.prefix,lisem.source_info()]))')
     result = call(['python', '--', '-c', chosen], custom=active)
     chosen_result = json.loads(result.stdout)
     assert chosen_result[0] == 47 and Path(chosen_result[1]) == dependency_env
@@ -79,6 +93,15 @@ def verify(binary, python, output, prefix=()):
     # Explicit interpreter wins over the active environment, preserving that venv's dependencies.
     explicit = call(['python', '--interpreter', str(dep_python), '--', '-c', chosen], custom=dict(active, VIRTUAL_ENV='missing-env'))
     assert json.loads(explicit.stdout)[0] == 47
+    startup = output / 'startup with spaces'
+    startup.mkdir()
+    (startup / 'sitecustomize.py').write_text('import os\nos.environ["LISEM_TEST_EXPLICIT_HOOK"]="preserved"\n')
+    explicit_baseline = json.loads(subprocess.check_output([
+        str(dep_python), '-c', 'import json,os,sys;print(json.dumps([os.environ.get("LISEM_TEST_EXPLICIT_HOOK"),getattr(sys.modules.get("sitecustomize"),"__file__",None)]))',
+    ], env=dict(env, PYTHONPATH=str(startup)), cwd=output, text=True))
+    assert explicit_baseline == ['preserved', str(startup / 'sitecustomize.py')]
+    hook_code = 'import os,lisem;assert os.environ["LISEM_TEST_EXPLICIT_HOOK"]=="preserved";assert lisem.source_info()["bundled"]'
+    call(['python', '--interpreter', str(dep_python), '--', '-c', hook_code], custom=dict(active, PYTHONPATH=str(startup)))
     direct = dict(env, PYTHONPATH=info['path'])
     direct_result = subprocess.run([str(dep_python), '-c', code], env=direct, cwd=output,
                                    capture_output=True, timeout=30)
@@ -137,6 +160,8 @@ def verify(binary, python, output, prefix=()):
     assert json.loads(call(['--json', 'python', '--sdk-path']).stdout) == info
     assert not (output / 'untouched-library').exists()
     summary = {'checks': results, 'sdk': info, 'interpreter': loaded,
+               'original_sitecustomize': hook_baseline,
+               'explicit_sitecustomize': explicit_baseline,
                'platform': sys.platform, 'windows_temporary_instances': 'unsupported',
                'python_source_unchanged_by_execution': True}
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')

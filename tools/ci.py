@@ -161,6 +161,11 @@ def sdk_contract(python, target):
     finally:
         destination = ROOT / 'artifacts/ci/sdk-contract'
         destination.mkdir(parents=True, exist_ok=True)
+        # This contract executes only repository-generated scripts and ROM tests;
+        # keep their diagnostics even when initialization fails before JUnit.
+        log = ROOT / 'artifacts/ci/sdk-contract.log'
+        if log.is_file():
+            shutil.copyfile(log, destination / log.name)
         for path in [*output.glob('*.json'), *output.glob('*.xml'), *output.glob('launcher/*.json'), *output.glob('launcher/*.xml')]:
             shutil.copyfile(path, destination / (('launcher-' if path.parent.name == 'launcher' else '') + path.name))
 

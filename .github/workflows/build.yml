@@ -111,6 +111,7 @@ jobs:
           path: |
             artifacts/ci/sdk-contract/*.xml
             artifacts/ci/sdk-contract/*.json
+            artifacts/ci/sdk-contract/*.log
           if-no-files-found: error
           retention-days: 30
   check:
