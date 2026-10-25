@@ -54,3 +54,5 @@ CLI 绝对路径即可。
 `["--data-dir", "/path/to/device-library", "mcp"]`，替换为实际目录。
 连接后调用 `lisem_catalog` 验证，再按返回的工具能力继续任务。
 CLI 与 MCP 均可控制实例，按当前客户端支持的方式选择即可。
+使用脚本或 pytest 时，继续读取 [Python SDK 与 pytest](python-testing.md)，
+选择用户测试环境和匹配版本的 SDK 文档。

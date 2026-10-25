@@ -138,7 +138,7 @@ Lisem 面向应用运行与调试，不能代替真机的电气、射频和精�
 详见[接入说明](docs/agents.md)。
 
 [Lisem skill](skills/lisem/SKILL.md) 提供安装、实例操作、原理图板型配置和
-固件自动回归指导。使用以下命令安装：
+Python SDK / pytest 固件回归指导。使用以下命令安装：
 
 ```sh
 npx skills add LISTENAI/Lisem

@@ -1,13 +1,13 @@
 ---
 name: lisem
-description: 安装和使用 Lisem 模拟器，根据原理图配置板型，运行、交互和调试聆思芯片固件，通过 CLI 或 MCP 管理实例与外设输入。安装配置、自定义板型、日常设备操作及固件自动回归时使用。
+description: 安装和使用 Lisem 模拟器，根据原理图配置板型，通过 CLI/MCP 探索交互，或用 Python SDK 和 pytest 组织固件回归。安装连接、自定义板型、日常设备操作及可重复测试时使用。
 ---
 
 # Lisem
 
-Lisem 在设备实例中运行原始固件。先发现当前版本的板型及工具能力，
-再按任务选择 CLI 或 MCP；参数以本机 `lisem --help`、子命令帮助或
-MCP 工具 schema 为准。
+Lisem 在设备实例中运行固件。先发现当前版本的板型及工具能力：CLI/MCP
+适合探索交互和问题定位，Python SDK 与 pytest 适合可重复的脚本和回归。
+CLI/MCP 参数以本机帮助或工具 schema 为准；SDK 契约查阅与应用匹配的文档。
 
 器件支持范围、信号和板型格式通过 `board-models` / `lisem_catalog` 查询，
 以当前程序返回的信息为准；需要配置板型时再读取详细参数和接线约束。
@@ -41,7 +41,7 @@ MCP 工具 schema 为准。
 
 根据原理图、BOM 或硬件连接说明创建和调整板型时，读取
 [从原理图创建板型](references/board-configuration.md)。该场景涵盖硬件信息
-提取、现有模型匹配、JSON 生成、校验导入及原固件验证。
+提取、现有模型匹配、JSON 生成、校验导入及固件验证。
 
 日常启动、交互及问题定位，使用已发现的工具提供输入并检查状态、UART 和画面。
 长按、连按使用虚拟时钟序列；精确条件触发使用预置动作，不用 RPC 往返耗时
@@ -54,3 +54,5 @@ MCP 工具 schema 为准。
 进行固件功能回归时，读取
 [固件自动回归](references/firmware-regression.md)。该场景覆盖用例准备、
 媒体、存储、信号及升级夹具、长时运行和结果判定。
+使用 Python 脚本或 pytest 时，再读
+[Python SDK 与 pytest](references/python-testing.md)，选择环境和对应版本文档。
