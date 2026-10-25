@@ -9,6 +9,15 @@ Linux 可在解压目录运行 `./install-desktop.sh`，将 Lisem 加入当前�
 「关于 Lisem」中的「检查更新」查询 GitHub 最新正式版。有新版本时，点击
 「查看新版本」打开发布页面，查看说明并下载。
 
+## Python 自动化
+
+脚本与 pytest 使用随应用提供的 [Python SDK](../python/README.md)，经
+`lisem python --` 选择脚本或 `-m pytest`，通过包内
+`lisem` 管理临时设备、运行和外设输入。测试应选择独立设备库，分配 UID、
+可写介质和证据目录；固件业务判据及准备步骤见
+[固件测试示例](../python/examples/README.md)。
+参数、返回值、运行所有权与期限见 [Python API](../python/docs/README.md)。
+
 ## 实例与固件
 
 实例库列出实例名称、板型和运行状态。顶部添加按钮用于新建实例或打开已有

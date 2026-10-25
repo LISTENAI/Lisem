@@ -2,6 +2,7 @@ mod audio;
 mod uart;
 mod mcp;
 mod output;
+mod python;
 use anyhow::{Result, ensure};
 use clap::{Parser, Subcommand};
 use lisem_core::{
@@ -34,6 +35,20 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Show the compiled native identity without opening an instance library.
+    BuildInfo,
+    /// Run a user Python with the SDK bundled with this executable.
+    Python {
+        /// Interpreter executable; defaults to the active environment, then PATH.
+        #[arg(long, conflicts_with="sdk_path")]
+        interpreter: Option<PathBuf>,
+        /// Print the paired SDK import path; --json also includes source and build identity.
+        #[arg(long, conflicts_with="args")]
+        sdk_path: bool,
+        /// Arguments passed unchanged to Python after --.
+        #[arg(last=true)]
+        args: Vec<std::ffi::OsString>,
+    },
     /// Serve versioned native management RPC over standard input/output.
     Rpc,
     /// Serve the Model Context Protocol over standard input/output.
@@ -322,8 +337,25 @@ fn absolute(path: &Path) -> Result<PathBuf> {
 }
 
 fn run() -> Result<i32> {
-    lisem_core::process::init()?;
     let args = Args::parse();
+    match args.command {
+        Action::BuildInfo => {
+            println!("{}", serde_json::to_string(&lisem_core::identity::build())?);
+            return Ok(0);
+        }
+        Action::Python { interpreter, sdk_path, args: python_args } => {
+            ensure!(args.root.is_none() && args.data_dir.is_none(), "Set script libraries with Client(data_dir=...); Python always uses its bundled SDK");
+            if sdk_path {
+                let info = python::sdk_info()?;
+                println!("{}", if args.json { serde_json::to_string(&info)? } else { info["path"].as_str().unwrap().to_owned() });
+                return Ok(0);
+            }
+            ensure!(!args.json, "--json applies to Python SDK path queries only");
+            return python::run(interpreter, python_args);
+        }
+        _ => {}
+    }
+    lisem_core::process::init()?;
     let root = lisem_core::paths::runtime_root(args.root)?;
     let data = args
         .data_dir
@@ -354,6 +386,7 @@ fn run() -> Result<i32> {
     let presentation = output::Output::for_action(&args.command);
     let mut foreground = None;
     let value = match args.command {
+        Action::Python { .. } | Action::BuildInfo => unreachable!(),
         Action::List => json!(manager.catalog.devices()?),
         Action::BoardModels { category, model, details, schema } => {
             let legacy = category.is_none() && model.is_none() && !details && !schema;
@@ -572,6 +605,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn python_arguments_follow_an_explicit_boundary() {
+        let parsed = Args::try_parse_from(["lisem","python","--interpreter","path with spaces/python","--","-m","pytest","-h","--interpreter","test-value"]).unwrap();
+        let Action::Python { interpreter, sdk_path, args } = parsed.command else { panic!() };
+        assert_eq!(interpreter, Some(PathBuf::from("path with spaces/python")));
+        assert!(!sdk_path);
+        assert_eq!(args, ["-m","pytest","-h","--interpreter","test-value"].map(std::ffi::OsString::from));
+        assert!(Args::try_parse_from(["lisem","python","script.py"]).is_err());
+        assert!(Args::try_parse_from(["lisem","python","--sdk-path","--","-c","pass"]).is_err());
+        assert!(Args::try_parse_from(["lisem","python","--sdk-path","--interpreter","python"]).is_err());
+        assert!(Args::try_parse_from(["lisem","--json","python","--sdk-path"]).is_ok());
+    }
 
     #[test]
     fn uid_override_permission_requires_a_uid() {

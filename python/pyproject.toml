@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lisem-sdk"
+dynamic = ["version"]
+description = "Synchronous native RPC client for Lisem firmware regression"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "LISTENAI"}]
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10", "hypothesis>=6,<7"]
+
+[project.entry-points.pytest11]
+lisem = "lisem.pytest_plugin"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "lisem._version.__version__"}
+
+[tool.setuptools.package-data]
+lisem = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

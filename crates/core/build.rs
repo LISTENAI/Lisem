@@ -48,4 +48,25 @@ fn main() {
         "cargo:rustc-env=LISEM_BUILD_TARGET={}",
         env::var("TARGET").unwrap()
     );
+    let mut sdk_files = vec!["python/pyproject.toml".to_owned()];
+    for directory in ["python/src/lisem", "python/bootstrap"] {
+        let directory = root.join(directory);
+        println!("cargo:rerun-if-changed={}", directory.display());
+        for entry in fs::read_dir(directory).expect("Read SDK source directory") {
+            let path = entry.expect("Read SDK source entry").path();
+            if path.is_file() && (path.extension().is_some_and(|s| s == "py")
+                || path.file_name().is_some_and(|s| s == "py.typed")) {
+                sdk_files.push(path.strip_prefix(root).unwrap().to_str().unwrap().replace('\\', "/"));
+            }
+        }
+    }
+    sdk_files.sort();
+    let mut sdk_digest = Sha256::new();
+    for file in sdk_files {
+        println!("cargo:rerun-if-changed={}", root.join(&file).display());
+        let bytes = fs::read(root.join(&file)).expect("Read SDK identity input");
+        sdk_digest.update(file.as_bytes()); sdk_digest.update([0]);
+        sdk_digest.update((bytes.len() as u64).to_le_bytes()); sdk_digest.update(bytes);
+    }
+    println!("cargo:rustc-env=LISEM_PYTHON_SHA256={:x}",sdk_digest.finalize());
 }

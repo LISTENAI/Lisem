@@ -45,7 +45,7 @@ impl Output {
             Action::Send { channel, .. } => Self::Message(format!("Sent to UART {channel}.")),
             Action::Shutdown { id } => Self::Message(format!("Runtime closed: {id}.")),
             Action::Logs { .. } => Self::Raw,
-            Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc => unreachable!(),
+            Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc | Action::Python { .. } | Action::BuildInfo => unreachable!(),
         }
     }
     pub fn render(&self, value: &Value) -> String {

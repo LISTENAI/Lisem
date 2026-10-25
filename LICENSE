@@ -4,7 +4,7 @@ Copyright (c) 2026 LISTENAI
 
 Lisem is distributed under component-specific licenses:
 
-* Independently authored Rust code, desktop assets, tools, tests, hardware
+* Independently authored Rust and Python code, desktop assets, tools, tests, hardware
   descriptions and documentation: MIT (LICENSES/MIT.txt), unless a file
   carries a different license notice.
 * QEMU source additions and patches: GPL-2.0-or-later, except files with

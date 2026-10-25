@@ -112,7 +112,7 @@ CLI 默认不启用宿主网络和音频。使用 `--json` 获取结构化结果
 
 ## 支持范围
 
-可运行 Arcs-Mini 和 Arcs-EVB 原始固件的显示、按键、存储、LUNA 推理和
+可运行 Arcs-Mini 和 Arcs-EVB 应用固件的显示、按键、存储、LUNA 推理和
 语音交互流程。Arcs-EVB 的 ADC 按键通过 `k1`、`k2`、`k3` 控制，三个按键
 共用板上的 ADC 电阻梯。内置芯片 ROM，也支持通过虚拟 UART 执行 ROM
 烧录流程。
@@ -122,6 +122,15 @@ GC0328 摄像头可选图片作为输入，也支持宿主摄像头实时取景�
 
 Windows 的 UART 是 TCP 端点，不能直接交给只接受 COM 串口的烧录工具。
 Lisem 面向应用运行与调试，不能代替真机的电气、射频和精确时序验证。
+
+## Python 自动化
+
+使用随应用交付的 [Python SDK](python/README.md) 编写脚本、pytest 和状态机
+测试，创建临时设备，控制输入并保存观察证据。用 `lisem python -- script.py`
+运行脚本，或指定测试虚拟环境执行 `-m pytest`；依赖安装在用户虚拟环境中。
+接口与 IDE、CI 接入见 [Python API](python/docs/README.md)，固件业务例子见
+[固件测试示例](python/examples/README.md)。临时实例及日记回收需要 POSIX
+文件锁。Windows 支持启动与导入，暂不支持临时实例及日记回收。
 
 ## Coding agent
 

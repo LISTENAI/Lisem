@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 pub fn build() -> Value {
     json!({"version":env!("CARGO_PKG_VERSION"),
         "source_sha256":env!("LISEM_SOURCE_SHA256"),
+        "python_source_sha256":env!("LISEM_PYTHON_SHA256"),
         "target":env!("LISEM_BUILD_TARGET")})
 }
 
