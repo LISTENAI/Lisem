@@ -6,156 +6,113 @@
 
 **在电脑上运行聆思设备固件。**
 
-Lisem 是聆思芯片平台的设备模拟器。导入真机固件，就能在桌面上查看屏幕、
-操作按键、连接串口，并通过电脑的麦克风、扬声器和网络与设备交互。也可以用
-`lisem` 命令管理和运行设备，把固件测试放进脚本或 CI。
+Lisem 是聆思芯片平台的设备模拟器，基于 QEMU 运行受支持芯片与板型的
+原始固件。导入 LPK 后，即可查看固件画面、操作设备按键，并接入电脑的
+麦克风、扬声器、摄像头和网络。
 
-可在 macOS、Windows 和 Linux 上使用，支持 **LS2684（ARCS）** 的
-**Arcs-Mini / Arcs-EVB**、**LS2663（ARCS）** 的 **Arcs-Mini3**，以及
-**CSK7004J8U（VenusA）** 的 **VenusA RD EVB**。
-可导入 JSON 配置内置器件、连线和信号输入，见[自定义板型](docs/boards.md)。
+在桌面上调试交互，通过 Python 和 pytest 编写固件回归测试，或让 coding
+agent 经 MCP 控制设备、读取串口和截图。同一套固件也可以在无头环境中
+运行，接入 CI。
 
-## 开始使用
+[下载应用](https://github.com/LISTENAI/Lisem/releases) ·
+[使用说明](docs/usage.md) · [Python SDK](python/README.md) ·
+[Coding agent 接入](docs/agents.md)
 
-从[下载页面](https://github.com/LISTENAI/Lisem/releases)选择适合操作系统和
-处理器架构的应用包，解压后打开 Lisem。
+<p align="center">
+  <img src="docs/images/arcs-mini.png" width="640"
+       alt="Lisem 的 Arcs-Mini 设备窗口，显示固件画面、功能键和外设入口">
+</p>
 
+## 快速开始
+
+下载对应系统与处理器架构的
+[应用包](https://github.com/LISTENAI/Lisem/releases)，解压后打开应用。
+支持 macOS、Windows 和 Linux，具体平台要求见对应版本的发布说明。
 macOS 也可以通过 Homebrew 安装：
 
 ```sh
 brew install --cask listenai/tap/lisem
+sudo xattr -dr com.apple.quarantine /Applications/Lisem.app
 ```
 
-安装后可打开 Lisem，也可在终端直接使用 `lisem` 命令。
+准备好目标板型的 LPK 固件包后：
 
-### 创建第一台设备
+1. 点击实例库右上角的添加按钮，选择「新建实例…」。
+2. 选择板型，导入 LPK，创建实例。
+3. 双击打开设备并上电；固件若需要长按开机，按住对应的功能键。
 
-1. 打开 Lisem，点击右上角的添加按钮，选择「新建实例…」和对应板型。
-2. 导入对应板型的 LPK 固件包，创建实例。
-3. 双击实例，在右上角上电。固件若需要长按开机，按住对应的功能键。
+固件包需自行准备。当前内置板型如下：
 
-固件包需要自行准备。每台设备的固件、设置和设备身份独立保存，重新打开即可
-继续使用。点击列表中的齿轮按钮可打开设备设置。
+| 芯片 | 平台 | 内置板型 |
+| --- | --- | --- |
+| LS2684 | Arcs | Arcs-Mini、Arcs-EVB |
+| LS2663 | Arcs | Arcs-Mini3 |
+| CSK7004J8U | VenusA | VenusA RD EVB |
 
-![Lisem 实例库](docs/images/library.png)
+关闭窗口或退出应用后，设备继续在后台运行；使用下电按钮停止设备。
+媒体接入、串口连接和固件写入见[使用说明](docs/usage.md)。
 
-### 与设备交互
+## 用 Python 编写固件测试
 
-各操作入口按板型的可用器件显示。
+随应用提供的 Python SDK 支持实例管理、按键、音视频输入，以及 UART、
+截图和数字信号观测。用 pytest 组织回归，或用状态机测试探索输入组合，
+按用例保存日志、截图、音频和动作记录。
 
-- **按键**：鼠标按下与松开分别对应真实按键的按下与松开。
-- **触摸**：Arcs-EVB 支持在屏幕上点击和拖动。
-- **声音**：默认播放设备音频；在麦克风菜单或实例设置中选择「系统麦克风」
-  即可输入，运行中也可切换。
-- **摄像头**：在摄像头菜单选择图片或电脑上的摄像头实时取景。
-- **串口**：先启用 UART 并连接，再上电即可看到启动日志。macOS/Linux 使用
-  picocom 等串口工具，Windows 使用 PuTTY 的 Raw TCP 连接。
-- **SD 卡**：在 SD 卡菜单插入 raw 镜像或弹出，支持运行中更换；分区和文件
-  系统由固件读取，镜像内容会保留设备写入。
-- **信号输入**：从设备窗口的「更多」菜单展开面板，可随时修改板型提供的
-  数字电平和模拟电压。
-- **网络**：默认提供开放热点 `Lisem`。在 Wi-Fi 菜单的「热点设置…」中，
-  可随时添加、修改或移除热点，设置名称、信号强度、信道及 WPA2 密码，查看
-  固件的连接状态。每个热点的「互联网」开关控制外网访问；「热点可用」控制
-  所有热点出现或消失。
+从应用菜单选择「安装命令行工具」，准备 Python 3.10+。以下示例在临时设备
+上运行内置 ROM，并长按功能键一秒。保存为 `example.py`，通过
+`lisem python -- example.py` 运行：
 
-上电、复位、声音和串口入口位于设备窗口右上角。关闭窗口或退出 Lisem 后，
-实例继续在后台运行；需要停止时先下电。更多操作见[使用说明](docs/usage.md)。
+```python
+from lisem import Client
 
-## 命令行
+with Client(data_dir="test-output/library") as client:
+    with client.temporary_instance(board="arcs-mini") as device:
+        with device.start(max_virtual_seconds=10, timeout=30, download=True) as run:
+            result = run.button(hold_ms=1000)
+            print(result.status)
+```
 
-桌面与 CLI 共用实例库。从应用菜单选择「安装命令行工具」，按提示设置
-终端命令。也可直接运行包内 CLI：macOS 位于
-`Lisem.app/Contents/MacOS/lisem`，Windows/Linux 位于解压目录中的
-`lisem.exe` / `lisem`。以下用 `lisem` 表示该命令：
+应用固件的启动、交互与断言用例见[固件测试示例](python/examples/README.md)。
+
+在测试虚拟环境中安装 pytest 后，通过同一入口运行测试：
 
 ```sh
-# 创建实例；INSTANCE_ID 使用创建结果中的 ID
-lisem create --board arcs-mini --name Mini --lpk firmware.lpk
-# Arcs-EVB 使用对应板型的 LPK
-lisem create --board arcs-evb --name EVB --lpk arcs-evb.lpk
-lisem list
-
-# 在前台运行，适合脚本与 CI
-lisem run INSTANCE_ID --seconds 30 --timeout 120
-
-# 后台运行并交互
-lisem start INSTANCE_ID --seconds 120 --timeout 180
-lisem button INSTANCE_ID function press  # Arcs-Mini
-# 按需等待，再松开
-lisem button INSTANCE_ID function release
-lisem screenshot INSTANCE_ID screen.png
-lisem reset INSTANCE_ID
-lisem stop INSTANCE_ID
+lisem python -- -m pytest tests/
 ```
 
-运行中可切换热点可用状态、注入 WAV 或侧录音频：
+SDK 版本与应用配套，无需单独安装。示例使用的临时实例功能目前支持
+macOS 和 Linux。平台支持与 IDE 接入见 [Python SDK](python/README.md)，
+接口与 pytest 集成见 [Python API](python/docs/README.md)。
 
-```sh
-lisem access-point INSTANCE_ID off
-lisem access-point INSTANCE_ID on
-lisem audio-input INSTANCE_ID input.wav
-lisem audio-output INSTANCE_ID --capture output.wav
-```
+## 让 coding agent 操作设备
 
-WAV 输入要求系统麦克风关闭，文件为 16 kHz、单声道 PCM16，最长 24 小时。
-注入按 1:1 实时节拍执行，命令等待输入完成；Ctrl+C 取消剩余输入。侧录持续
-到 Ctrl+C，保存设备的原始音频输出。结束注入或侧录后，设备继续运行。
+通过 MCP 或 CLI，让 agent 启动固件、执行长按与连按、提供音视频输入，
+结合 UART、截图和信号变化定位问题。例如，让 agent 长按设备功能键，
+观察启动日志并返回当前画面，再根据固件输出继续检查。
 
-新实例默认生成带预设前缀的芯片 UID，当前前缀为 `ff00`。
-创建时可指定 UID，不使用预设前缀须单独确认；同一实例库拒绝重复 UID。
-已有实例身份保留。
-
-CLI 默认不启用宿主网络和音频。使用 `--json` 获取结构化结果，使用 `--data-dir`
-指定独立实例库。Flash 导入、擦除、UID 管理及其他命令见
-[CLI 使用说明](docs/usage.md#无头命令行)或 `lisem --help`。
-
-## 支持范围
-
-可运行 Arcs-Mini 和 Arcs-EVB 应用固件的显示、按键、存储、LUNA 推理和
-语音交互流程。Arcs-EVB 的 ADC 按键通过 `k1`、`k2`、`k3` 控制，三个按键
-共用板上的 ADC 电阻梯。内置芯片 ROM，也支持通过虚拟 UART 执行 ROM
-烧录流程。
-
-GC0328 摄像头可选图片作为输入，也支持宿主摄像头实时取景。Linux 需要支持
-未压缩单平面格式的 V4L2 摄像头，详见[使用说明](docs/usage.md#摄像头)。
-
-Windows 的 UART 是 TCP 端点，不能直接交给只接受 COM 串口的烧录工具。
-Lisem 面向应用运行与调试，不能代替真机的电气、射频和精确时序验证。
-
-## Python 自动化
-
-使用随应用交付的 [Python SDK](python/README.md) 编写脚本、pytest 和状态机
-测试，创建临时设备，控制输入并保存观察证据。用 `lisem python -- script.py`
-运行脚本，或指定测试虚拟环境执行 `-m pytest`；依赖安装在用户虚拟环境中。
-接口与 IDE、CI 接入见 [Python API](python/docs/README.md)，固件业务例子见
-[固件测试示例](python/examples/README.md)。临时实例及日记回收需要 POSIX
-文件锁。Windows 支持启动与导入，暂不支持临时实例及日记回收。
-
-## Coding agent
-
-可通过 `lisem mcp` 接入 MCP，也可让 agent 直接使用 CLI，
-详见[接入说明](docs/agents.md)。
-
-[Lisem skill](skills/lisem/SKILL.md) 提供安装、实例操作、原理图板型配置和
-Python SDK / pytest 固件回归指导。使用以下命令安装：
+安装 [Lisem skill](skills/lisem/SKILL.md)，为 agent 提供设备操作、板型配置和
+Python 固件测试指导：
 
 ```sh
 npx skills add LISTENAI/Lisem
 ```
 
-## 参与开发
+MCP 服务由 `lisem mcp` 启动，客户端配置见[接入说明](docs/agents.md)。
 
-构建依赖、源码结构和验证方法分别见[开发说明](docs/development.md)与
-[架构说明](docs/architecture.md)。
+## 文档与开发
 
-```sh
-make build
-make run
-```
+| 文档 | 内容 |
+| --- | --- |
+| [使用说明](docs/usage.md) | 首次运行、桌面操作、外设接入与 CLI |
+| [Python SDK](python/README.md) | 脚本启动、API、pytest 与固件测试示例 |
+| [Coding agent 接入](docs/agents.md) | MCP 配置、工具与 Lisem skill |
+| [自动化运行](docs/automation.md) | 运行期限、动作编排与证据采集 |
+| [自定义板型](docs/boards.md) | 器件能力查询、JSON 格式与接线 |
+| [开发说明](docs/development.md) | 构建、验证与发布 |
+| [架构说明](docs/architecture.md) | 芯片、器件、宿主接口与运行控制 |
 
 问题反馈与功能建议欢迎提交到
 [Issues](https://github.com/LISTENAI/Lisem/issues)。
 
-独立自有源码采用 MIT，QEMU 相关代码保留 GPL；LUNA 静态库与芯片 ROM 以二进制
-形式随仓库提供，使用单独许可。详见 [LICENSE](LICENSE)。
+独立自有源码采用 MIT，QEMU 相关代码保留 GPL；LUNA 静态库与芯片 ROM 使用
+单独许可。详见 [LICENSE](LICENSE)。

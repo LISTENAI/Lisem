@@ -1,355 +1,157 @@
 # 使用说明
 
-解压应用包后，macOS 打开 `Lisem.app`，Windows 打开 `lisem-desktop.exe`，
-Linux 运行 `./lisem-desktop`。每个实例拥有独立 Flash、OTP 和 UID。
+[下载与安装](../README.md#快速开始) · [Python SDK](../python/README.md) ·
+[Coding agent 接入](agents.md) · [自动化运行](automation.md)
 
-Linux 可在解压目录运行 `./install-desktop.sh`，将 Lisem 加入当前用户的应用
-菜单。移动应用目录后重新运行脚本即可更新启动路径。
+## 首次运行
 
-「关于 Lisem」中的「检查更新」查询 GitHub 最新正式版。有新版本时，点击
-「查看新版本」打开发布页面，查看说明并下载。
+解压应用包，macOS 打开 `Lisem.app`，Windows 打开 `lisem-desktop.exe`，
+Linux 运行 `./lisem-desktop`。Linux 可运行包内 `./install-desktop.sh` 添加
+应用菜单入口，移动应用目录后需重新运行。
 
-## Python 自动化
+1. 点击实例库右上角的添加按钮，选择「新建实例…」。
+2. 选择目标板型，导入自行准备的 LPK；也可创建空白 Flash 的实例。
+3. 双击打开设备并上电。部分固件需要长按功能键才能启动应用。
 
-脚本与 pytest 使用随应用提供的 [Python SDK](../python/README.md)，经
-`lisem python --` 选择脚本或 `-m pytest`，通过包内
-`lisem` 管理临时设备、运行和外设输入。测试应选择独立设备库，分配 UID、
-可写介质和证据目录；固件业务判据及准备步骤见
-[固件测试示例](../python/examples/README.md)。
-参数、返回值、运行所有权与期限见 [Python API](../python/docs/README.md)。
+设备窗口提供按键与外设入口，设置在对应设备窗口中打开。窗口宽度不足时，
+部分入口会收进「更多」菜单。Windows/Linux 的应用菜单位于实例库标题栏。
+「关于 Lisem」中的「检查更新」可查看新版本。
 
 ## 实例与固件
 
-实例库列出实例名称、板型和运行状态。顶部添加按钮用于新建实例或打开已有
-实例目录；双击列表项打开设备，点击齿轮按钮打开设备设置。右键菜单和更多
-操作菜单提供打开所在文件夹、移除等操作。Windows/Linux 的应用菜单位于
-添加按钮旁，提供关于、命令行工具安装和退出入口。
+每台实例独立保存 Flash、OTP、UID 和设置。创建时选择板型，也可先
+[导入自定义板型 JSON](boards.md)。
 
-新建设备时选择板型，也可先[导入自定义板型 JSON](boards.md)。创建实例可使用
-空白 Flash 或导入对应芯片的 LPK，板型需手动选择。LPK 内容按包内布局写入
-实例 Flash。芯片 UID 留空时自动生成带预设前缀的 UID（prefixed UID），
-当前前缀为 `ff00`；也可填写芯片要求长度的十六进制 UID，当前板型均为 16 个
-字符。不使用预设前缀须在创建时单独确认。同一实例库拒绝重复 UID。
-实例 ID 与芯片 UID 是独立身份。
+UID 可自行填写，留空时自动生成。
 
-设置的「身份与存储」页提供 UID 重新生成、Flash 清空和 LPK
-写入，修改前须下电。重新生成使用新的带预设前缀的 UID，只修改 OTP 中的 UID
-字节，保留 Flash 和其余 OTP。已有实例的 UID 保持原值。「更多」菜单提供
-复制 UID 和 LPK 写入入口。
+在设置的「身份与存储」页写入 LPK、清空 Flash 或重新生成 UID，操作前须
+下电。清空 Flash 保留 UID 和其它 OTP 内容。移除实例仅移除库中记录，
+磁盘文件可通过添加按钮重新打开。
 
-移除实例仅从库中移除记录，不删除磁盘文件。已存在的实例可以重新打开。
-实例的板型或芯片配置与当前版本不兼容时，启动会报错。
+### 上电、复位与下电
 
-上电后固件执行 ROM 和 Flash；Arcs-Mini 固件可能要求长按功能键才能启动应用。
-按住鼠标就是按住按键，松开即释放。Arcs-EVB 提供 K1、K2、K3 三个 ADC
-按键，支持在屏幕上按下、拖动和松开进行单点触摸操作。
-复位保留 Flash、OTP 和 UART 连接。
-关闭窗口或退出应用后，实例继续在后台运行；需要停止时使用下电按钮。
+按住鼠标即按住设备按键，松开即释放；触摸屏支持按下、拖动和松开的单点
+操作。复位保留 Flash、OTP 和 UART 连接。
 
-桌面单次运行最多 24 小时虚拟时间或 48 小时宿主时间；可随时下电。
-CLI 和 MCP 可为每轮运行指定时间预算。
+**关闭窗口或退出 GUI 后，设备仍在后台运行。** 需要停止设备时使用下电
+按钮。
 
 ### 写入原始二进制
 
-使用原始镜像时，先创建目标板型的空白实例，再将文件写入 Flash：
+先创建目标板型的空白实例，再按发布布局写入镜像：
 
 ```sh
-lisem create --board BOARD_ID --name Test
+lisem create --board arcs-mini --name Test
 lisem write INSTANCE_ID firmware.bin
-lisem start INSTANCE_ID --seconds 30
-lisem logs INSTANCE_ID 0
 ```
 
-`BOARD_ID` 选择固件的目标板型，`INSTANCE_ID` 使用创建结果中的 ID。
-`write` 默认从 Flash 偏移 0 写入，`--offset` 可指定其它字节偏移；写入前须下电。
-多核固件按发布布局准备合并镜像，或将各段写到对应偏移。
-串口、SD 镜像和其它运行设置使用本文对应的操作入口。
+`INSTANCE_ID` 使用创建结果中的 ID。写入须下电，默认 Flash 偏移为 0；
+多段镜像通过 `write --offset` 指定各段偏移。
 
-## 信号输入
+## 麦克风与扬声器
 
-从设备窗口的「更多」菜单展开「信号输入…」面板。数字量可切换高低电平；
-模拟量可拖动滑块或用加减按钮调节；输入精确电压后，按回车或移开焦点
-即可生效。修改时可同时观察设备画面和操作按键。
-「恢复默认」使用板型声明的默认值，设置按实例保存。
+在设备窗口右上角或设置的「连接与媒体」页选择输入与输出。扬声器播放默认
+开启，麦克风可在运行中切换。
+图标亮起反映固件侧音频输入或板级 PA 状态，宿主开关单独显示。
 
-## 数字信号时序
-
-CLI 的 `signal-trace` 和 MCP 的 `lisem_signal_trace` 提供有界边沿采集。
-先查询实例的数字信号源及网络名，再使用当前运行标识开始采集：
-
-```sh
-lisem signal-trace INSTANCE_ID
-lisem signal-trace INSTANCE_ID --run RUN --start SOURCE --capacity 1024
-lisem signal-trace INSTANCE_ID --run RUN --trace CAPTURE --after 0 --limit 128
-lisem signal-trace INSTANCE_ID --run RUN --trace CAPTURE --stop
-```
-
-`RUN` 取自 `--json status` 的运行状态，`SOURCE` 使用查询返回的源 ID 或
-网络名，`CAPTURE` 使用开始采集时返回的标识。事件包含序号、虚拟纳秒时间、
-逻辑电平及 `driven` 驱动状态；`initial=true` 标记采集开始时的状态。
-MCP 对应使用 `list`、`start`、`read`、`stop` 动作。
-
-读取后用 `next_cursor` 作为下一次的 `after`，直到 `has_more=false`。
-最多保留 4096 条事件；`evicted_events` 是累计淘汰数，`lost_events` 表示
-当前游标漏掉的条数。复位或下电会结束采集，结束记录保留到下一次采集或运行。
-`unknown` 须继续查询确认，`interrupted` 表示无法确认结束前的完整记录。
-采集默认关闭，结果仅保存在当前后台的有界内存中，需要时显式保存命令输出。
-
-事件反映器件模型产生的数字变化。未驱动时的逻辑电平不代表实际模拟电压；
-物理引脚波形和模型未生成边沿的总线时序需要相应测量手段验证。
-
-## 音频和网络
-
-右上角分别提供麦克风和扬声器入口。扬声器控制宿主声音输出，默认开启；
-麦克风控制宿主音频输入。图标亮起表示固件侧启用对应输入或板级 PA，
-与宿主开关分别显示。
-
-麦克风可以在运行中开启或关闭。等待切换完成后即可使用；若失败，按提示检查
-系统权限和设备连接。下电时的选择会保存，供下次上电使用。
-Linux 录播需要可用的 PulseAudio 或 PipeWire pulse 服务；不启用音频的无头
-运行没有此要求。自动化测试可通过 CLI/MCP 输入 16 kHz、单声道 PCM16 WAV；
-该输入与宿主麦克风互斥。
-
-摄像头、麦克风、扬声器、网络、SD 卡和串口可在右上角菜单或设置的
-「连接与媒体」页调整。音视频菜单中的勾选表示当前输入或输出，选择「关闭」
-可停用。
-窗口宽度不足时，部分器件入口和指示灯收进「更多」菜单。
-Wi-Fi 菜单与设置中的「热点可用」模拟热点出现或消失，可在运行中切换。
-固件自行检测掉线和重新连接。
-GUI 上电时启用宿主网络桥接；无头 CLI/MCP 通过运行选项显式选择网络。
-
-默认无线环境包含开放热点 `Lisem`。开启宿主网络后，固件连接启用互联网的
-热点即可访问宿主网络。无头运行未启用宿主网络时，逻辑热点仅提供离线连接。
+Linux 录播需要 PulseAudio 或 PipeWire pulse 服务。自动化可注入 16 kHz、
+单声道 PCM16 WAV，与宿主麦克风互斥；录制和注入命令见
+[音频证据](automation.md#wav-注入与音频证据)。
 
 ## Wi-Fi 环境
 
-设备窗口右上角的 Wi-Fi 菜单提供「热点设置…」，可在运行中编辑并保存。
-运行时显示每个热点的 BSSID 和连接状态；WPA2 完成认证后标为「已连接」。
-该状态表示 Wi-Fi 链路建立，不代表互联网或业务服务可达。
-每个实例最多配置 16 个热点，包含名称、RSSI、信道、安全方式、密码和
-「互联网」开关。关闭互联网时仍可扫描、认证、连接和获取 IP，但热点不转发
-外网流量。新增和删除热点模拟热点出现与消失；删除全部热点表示附近没有网络。
-「热点可用」控制整个无线环境的出现与消失。
+桌面上电后，固件可通过默认的开放热点 `Lisem` 访问电脑所在网络。
 
-同名热点可配置为不同信号和信道。调整 RSSI、互联网开关或其它热点时保留
-已有连接；修改热点名称、信道或安全配置时，该热点重新开始认证和关联。
-修改后点击「保存」，等待页面显示「已保存」。
+从 Wi-Fi 菜单打开「热点设置…」，配置开放或 WPA2-Personal 热点，编辑后
+点击「保存」。
 
-命令行读取当前环境或从 JSON 文件保存：
+- 「热点可用」控制整个无线环境的出现或消失。
+- 每个热点的「互联网」控制外网访问，关闭后仍可连接热点。
 
-```sh
-lisem wifi-environment INSTANCE_ID
-lisem wifi-environment INSTANCE_ID --file wifi.json
-```
-
-```json
-{"access_points":[
-  {"ssid":"Lisem","rssi":-45,"channel":1,"internet":true},
-  {"ssid":"Nearby","rssi":-80,"channel":6,"internet":false},
-  {"ssid":"SecureLab","rssi":-50,"channel":11,"internet":true,
-   "security":"wpa2-psk","password":"testing-password"}
-]}
-```
-
-CLI 自动读取当前运行标识，也可用 `--run RUN_ID` 拒绝过期操作。MCP
-的 `lisem_set_wifi_environment` 在运行中更新时须提供当前 `run`。
-
-名称为 1–32 个 UTF-8 字节，RSSI 为 −127–0 dBm，信道为 1–14。
-支持开放热点和 WPA2-Personal（AES-CCMP）。省略 `security` 时为开放热点；
-WPA2 密码需为 8–63 个可打印 ASCII 字符。
-不支持 WPA3、TKIP、企业认证或管理帧保护（PMF）。RSSI 和信道用于模拟扫描
-结果，不模拟射频调谐、干扰或传播衰减。
-
-## USB ADB
-
-固件提供 USB ADB 接口时，可在设备窗口右上角的 USB 菜单或设置的
-「连接与媒体」中开启 ADB 桥接，点击连接地址即可复制。图标亮起表示固件
-USB 已完成配置。也可通过 CLI 开启，再使用宿主安装的 `adb`：
-
-```sh
-lisem usb-adb INSTANCE_ID --enable
-adb connect 127.0.0.1:PORT
-adb -s 127.0.0.1:PORT shell
-```
-
-将示例地址替换为命令返回的 `listen`。仅绑定宿主回环地址；每次开启自动
-分配端口。查询状态使用 `lisem usb-adb INSTANCE_ID`，关闭使用
-`lisem usb-adb INSTANCE_ID --disable`。CLI 自动取得当前运行标识，也可传入
-`--run RUN_ID` 拒绝过期操作。实例下电后桥接关闭，下次运行需重新开启。
-
-`enabled` 表示监听已开启，`connected` 表示 TCP 客户端已连接；固件 USB
-就绪情况见 `status` 和 `error`。用 `adb devices` 确认设备可用后再操作。
-可用的 shell 命令、日志位置和 `adb push` 目标路径取决于固件。
-固件切换 USB 模式时，等待重新枚举，必要时重新执行 `adb connect`。
+CLI 使用 `lisem wifi-environment INSTANCE_ID` 读取配置，将结果保存为 JSON
+并编辑后，可用 `--file wifi.json` 写回。参数见命令的 `--help`。
+无头运行需显式启用宿主网络，见[无头命令行](#无头命令行)。
 
 ## 摄像头
 
-GC0328 可使用本地 PNG、JPEG 或 PNM 图片作为静态场景。在右上角摄像头菜单
-中选择「图片…」，也可运行 `lisem camera INSTANCE_ID image.png`；使用
-`lisem camera INSTANCE_ID --clear` 清除输入。图片按板型的安装方向转换，
-保持比例、居中裁切至 640×480。固件配置镜像、预览方向、输出格式及采集窗口。
-运行中换图从下一帧生效。
-控制暂时繁忙时会显示「正在确认输入切换结果…」，此时不要重复选图；确认成功
-后才保存来源路径。若始终无法确认，运行会停止并明确保留结果未知的状态。
-没有输入时传感器仍可识别和配置，但不生成帧，固件可能因此等待或超时。
+在摄像头菜单或「连接与媒体」中选择 PNG、JPEG、PNM 图片或具体摄像头，
+运行中可切换来源，选择「关闭」停止输入。使用摄像头需授予系统相机权限，
+找不到设备时可点击「刷新设备…」。
 
-实例只保存来源路径，下一次上电重新读取；文件失效会明确报错。图片至多
-32 MiB，宽高各不超过 4096 像素。
-
-在摄像头菜单或实例设置中选择具体设备，或选择「关闭」。「刷新设备…」
-重新查找摄像头，开启采集时需要系统相机权限。实例上电后，
-所选摄像头持续采集画面。下电时的选择会保存，下一次上电使用；运行中可切换
-图片、摄像头或关闭输入。摄像头断开或权限失败时，按提示排除问题后重新选择
-设备即可重试；使用另一只摄像头时需手动选择。
-
-命令行使用 `lisem camera-devices` 列出设备，再运行
-`lisem camera INSTANCE_ID --device DEVICE_ID` 选择来源；`--clear` 同样可关闭
-实时输入。MCP 对应 `lisem_camera_devices` 和 `lisem_camera_input` 的 `device_id`。
-图片与实时取景均按板型配置的安装方向转换，固件负责镜像。Lisem 不自动录制
-摄像头画面；拍照操作取决于所运行的固件。Linux 需要有访问权限的 V4L2
-单平面流式设备，支持 YUYV、UYVY、RGB24 和 BGR24，不支持压缩帧或多平面格式。
-
-下电或关闭输入会释放摄像头；仅关闭 GUI 窗口会保留后台实例和采集。
-视频文件及 GC0328 的光学和模拟 ISP 效果尚不支持。
+实例记住所选来源，下次上电重新打开；使用图片时需保留原文件。
+图片规格、Linux 设备要求和 CLI 操作见[摄像头输入](automation.md#摄像头输入)。
 
 ## SD 卡
 
-在右上角 SD 卡菜单或设置的「连接与媒体」页选择「插入镜像…」，打开已准备的
-可写 raw 镜像；「弹出」模拟拔卡。菜单显示当前镜像文件名，运行中可直接切换。
-镜像路径按实例保存，上电时重新打开原文件；固件写入直接保存在镜像中。
+在 SD 卡菜单或「连接与媒体」中选择「插入镜像…」或「弹出」，运行中可
+切换。使用 8 MiB～32 GiB、大小为二次幂的可写 raw 镜像，先准备固件支持的
+分区和文件系统；固件写入直接保存到镜像。
 
-镜像大小、文件系统准备与 CLI 用法见[SD 卡镜像](automation.md#sd-卡镜像)。
+镜像路径按实例保存，同一镜像不能同时由多个实例或宿主工具写入。传输中
+弹出可能损坏文件系统。准备方法和 CLI 用法见
+[SD 卡镜像](automation.md#sd-卡镜像)。
 
 ## UART
 
-右上角串口菜单直接启用或关闭各路 UART；「连接信息…」显示已启用端口的
-连接路径，并提供「复制路径」。设置的「连接与媒体」页也可启用端口和复制路径。
-先打开所需 UART，再连接端点，最后上电即可看到完整启动日志。
-macOS/Linux 使用 PTY，可使用支持 TTY 路径的终端或串口工具，例如：
+在串口菜单启用所需通道，通过「连接信息…」复制路径。先连接端点再上电，
+即可接收完整启动日志。macOS/Linux 使用 PTY，例如：
 
 ```sh
 picocom --baud 115200 --imap lfcrlf /dev/ttysXXX
 ```
 
-`--imap lfcrlf` 是 picocom 的显示选项，用于固件只输出 LF 的日志；模拟器
-保留原始字节。Linux 的端口通常形如 `/dev/pts/3`。Windows 显示
-`tcp://127.0.0.1:PORT`，可用支持原始 TCP 的终端工具连接，例如 PuTTY 的
-**Raw** 模式；不要使用 Telnet 模式。
-复位、上下电和退出 GUI 均保留端点，关闭该路 UART 或执行 `lisem shutdown` 才释放。
+替换为界面显示的路径；Linux 通常形如 `/dev/pts/3`。`--imap lfcrlf` 用于
+显示只输出 LF 的日志。Windows 使用 `tcp://127.0.0.1:PORT`，可用 PuTTY
+的 **Raw** 模式连接。
+复位、上下电及退出 GUI 均保留端点，关闭通道或 `lisem shutdown` 才释放。
 
-## 串口烧录
+## USB ADB
 
-启用 UART0，在复位菜单中进入烧录模式，再运行支持不复位策略的 cskburn：
+固件提供 ADB 时，在 USB 菜单开启桥接并复制连接地址，使用宿主安装的 adb：
 
 ```sh
-cskburn -C arcs -b 230400 -s /dev/ttysXXX --chip-id --reset-strategy none
+adb connect 127.0.0.1:PORT
+adb devices
+adb -s 127.0.0.1:PORT shell
 ```
 
-具体擦写和 LPK 参数按当前 cskburn 帮助使用。不要同时让 picocom 和烧录
-工具读取同一端口。macOS 虚拟 PTY 不传 DTR/RTS，因此烧录工具不能自动
-控制板级 BOOT/RESET；烧录结束后从桌面正常复位。
-Windows 的 TCP 端点不是 COM 串口，要求串口设备路径的 cskburn 不能直接
-连接；可使用实例菜单或 CLI 导入 LPK。
+地址使用界面显示值。CLI 可通过 `lisem usb-adb INSTANCE_ID --enable` 开启，
+返回 `listen` 地址；`--disable` 关闭。下电后桥接关闭，下次运行需重新开启。
+用 `adb devices` 确认可用后再操作；固件切换 USB 模式后可能需要重新连接。
+
+## 信号输入
+
+从「更多」菜单打开「信号输入…」，切换数字电平或调整电压。精确电压输入
+在回车或移开焦点后生效；「恢复默认」恢复板型默认值。设置按实例保存。
+CLI 操作见[信号输入](automation.md#信号输入)。
+
+## 数字信号时序
+
+通过 CLI 或 MCP 采集数字信号变化及虚拟时间，步骤见
+[数字信号时序](automation.md#数字信号时序)。
+Python 的采集接口见[数字信号](../python/docs/observations.md#数字信号)。
 
 ## 无头命令行
 
-从应用菜单选择「安装命令行工具」，即可设置终端命令。macOS 创建
-`/usr/local/bin/lisem` 链接；Linux 创建 `~/.local/bin/lisem` 链接，若该目录
-尚未在 PATH 中，按界面提示加入。Windows 将应用目录加入当前用户 PATH，
-重新打开终端后生效。移动应用后重新安装命令可更新路径。
-
-也可直接运行包内 CLI：macOS 为 `Contents/MacOS/lisem`，Windows/Linux
-为包根目录的 `lisem.exe` / `lisem`。以下 `INSTANCE_ID` 取自创建结果：
+在应用菜单选择「安装命令行工具」，按提示设置 PATH；Windows 需重新打开
+终端，移动应用后需重新安装命令。也可直接运行包内 CLI：macOS 为
+`Contents/MacOS/lisem`，Windows/Linux 为包根目录的 `lisem.exe` / `lisem`。
 
 ```sh
-lisem create --board arcs-mini --name "Mini" --lpk firmware.lpk
-lisem create --board arcs-evb --name "EVB" --lpk arcs-evb.lpk
+lisem create --board arcs-mini --name Mini --lpk firmware.lpk
 lisem list
-lisem uid INSTANCE_ID
-lisem uart INSTANCE_ID 0
-lisem start INSTANCE_ID --seconds 120 --timeout 180
-lisem button INSTANCE_ID function press
-lisem button INSTANCE_ID function release
-# Arcs-EVB 的三个 ADC 按键
-lisem button INSTANCE_ID k1 press
-lisem button INSTANCE_ID k1 release
-lisem screenshot INSTANCE_ID screen.png
-lisem logs INSTANCE_ID 0
-lisem reset INSTANCE_ID
-lisem stop INSTANCE_ID
-lisem import INSTANCE_ID firmware.lpk
-lisem erase INSTANCE_ID
-lisem uid INSTANCE_ID --regenerate
-lisem shutdown INSTANCE_ID
+lisem run INSTANCE_ID --seconds 30 --timeout 120
 ```
 
-创建时可用 `--uid` 指定芯片 UID；不使用预设前缀还须显式提供
-`--allow-unprefixed-uid`，该许可仅适用于本次创建，不能绕过格式或重复检查：
+`INSTANCE_ID` 使用创建结果中的 ID。`run` 在前台运行，Ctrl+C 停止本轮；
+`start` 在后台运行，配合 `status`、`stop` 控制，`shutdown` 还释放 UART
+端点。无头运行默认离线且不打开宿主音频；添加 `--network` 启用宿主上联，
+`--audio` 播放声音，`--microphone` 同时采集。
 
-```sh
-lisem create --board arcs-mini --uid ff00a37c102d9e65
-lisem create --board arcs-mini --uid 0102a37c102d9e65 --allow-unprefixed-uid
-```
+用 `lisem --help` 或 `lisem COMMAND --help` 查询命令与参数。
+`--json` 输出结构化结果；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
+长按、连按和条件动作使用虚拟时间编排，见[自动化运行](automation.md)。
 
-ARCS 的 UID 字符串按 OTP 中的字节顺序显示。例如 `ff00a37c102d9e65`
-写入 OTP 偏移 8–15 字节；小端 word02、word03 分别为 `0x7ca300ff`、
-`0x659e2d10`，作为小端 `uint64_t` 读取为 `0x659e2d107ca300ff`。
-VenusA 的 UID 从其 OTP 偏移 0 开始，使用对应芯片布局。
-
-`button press/release` 是即时手动输入。自动化长按、连按使用一次提交的虚拟时间序列：
-
-```sh
-lisem button-sequence INSTANCE_ID function --run RUN_ID --count 3 --hold-ms 80 --gap-ms 80
-lisem button-sequence-status INSTANCE_ID SEQUENCE_ID --run RUN_ID
-lisem button-sequence-status INSTANCE_ID SEQUENCE_ID --run RUN_ID --cancel
-```
-
-`RUN_ID` 从 `lisem --json status INSTANCE_ID` 的 `runtime.session.output` 获取，
-`SEQUENCE_ID` 由提交结果返回。次数为 1–32，总时长至多 60 秒，按模拟器的
-虚拟时间执行，最后自动松开。即时手动输入取消当前序列并接管按键；复位、下电
-终止序列。返回 `completed` 只表示输入完成，不保证固件业务成功。
-`reset --download` 进入 ROM 烧录模式；`write --offset` 写入原始二进制。
-`send INSTANCE_ID 0 TEXT` 向 UART 发送 UTF-8 字节，`--hex` 发送二进制。
-默认输出列表、状态和操作结果；`--json` 输出结构化数据，供脚本读取；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
-
-运行中可以通过 CLI 操作热点和音频：
-
-```sh
-lisem access-point INSTANCE_ID off
-lisem access-point INSTANCE_ID on
-lisem audio-input INSTANCE_ID input.wav
-lisem audio-output INSTANCE_ID --capture output.wav
-```
-
-`access-point` 设置热点是否可用，配置会保存。
-可加 `--run RUN_ID` 拒绝过期运行，否则自动读取当前运行标识。下电也可配置。
-返回 `pending` 时需查询状态确认，不能当作已经切换成功。
-
-`audio-input` 接受最长 24 小时的 16 kHz 单声道 PCM16 WAV，要求系统麦克风关闭。
-按 1:1 实时速度注入；模拟器运行速度不足或固件暂停采样可能延长等待。
-命令阻塞至实际消耗完毕，Ctrl+C 取消剩余输入，设备继续运行。默认宿主等待
-上限 90 秒，可用 `--timeout` 调整；超时取消剩余输入并返回错误。返回的
-`completed` 仅表示音频输入完成，不表示业务识别成功。
-
-`audio-output --capture` 显式开启侧录，Ctrl+C 结束并封好 WAV，设备继续运行。
-录制原始 DAC 输出，独立于宿主静音和板级 PA 开关；按虚拟时间补齐 DAC 停止
-期间的静音。既有输出文件不会覆盖。录制期间采样率变化、读取积压、运行结束
-或重置会中断录制并报错，已写入的 WAV 尽可能保留。录制命令异常退出后，
-侧录在 5 秒内停止。
-
-前台 `run` 有明确虚拟时间和宿主时间上限，Ctrl-C 停止本轮运行；失败返回
-非零退出码。后台 `start` 在 CLI 返回后继续运行，`stop` 保留 UART 端点，
-`shutdown` 同时关闭运行时和 UART 端点。每个实例独立，可以分别启动和控制。
-
-CLI 默认离线、无宿主音频；`--network` 启用宿主上联，`--audio` 用于
-播放、`--microphone` 同时采集，`--mute` 仅静音实际输出。无头模式不要求
-DISPLAY、麦克风或声音设备，适合文本终端和 CI。
-
-正常运行不保存录音、画面、UART 或网络包的归档。需要排查问题时，显式使用
-`lisem run INSTANCE_ID --capture DIRECTORY`；诊断内容保存在指定目录，
-可能包含原始语音和固件日志，由调用方管理。
-
-开发时 `make headless` 只构建 Rust CLI；从源码目录运行还需
-`make qemu-build`，启用网络另需 `python3 tools/build_network.py`。
-
-MCP 的接入方式见 [Coding agent 接入](agents.md)。
+需要诊断记录时，为 `run` 添加 `--capture DIRECTORY`。
+脚本与 pytest 见 [Python SDK](../python/README.md)，agent 配置见
+[MCP 接入](agents.md)。

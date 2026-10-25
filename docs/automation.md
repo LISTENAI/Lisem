@@ -12,6 +12,7 @@ CLI 和 MCP 共用实例、运行标识和状态。自动化测试应使用独�
 上电时可指定 5～86400 秒的虚拟时长和 1～172800 秒的宿主期限。
 虚拟时长控制固件可执行的时间，宿主期限限制本次运行的实际耗时。
 两者任一到期都会结束运行；主动下电也可提前结束。
+桌面上电使用 24 小时虚拟时间、48 小时宿主时间的上限。
 
 ```sh
 lisem start DEVICE --seconds 28800 --timeout 36000
@@ -62,6 +63,65 @@ MCP 的 `lisem_audio_input` 返回注入标识；通过状态中的 `audio_input
 `audio_output` 状态包含样本数、非零样本数、峰值、最后样本及最后非零样本
 的虚拟时刻，以及 PA 状态。这些数据用于定位播放活动；语音内容和音质须
 分析录制文件，不能仅凭计数判定。长录音宜按用例分段，保留输入及输出证据。
+
+## 摄像头输入
+
+使用图片作为传感器场景，或查询并选择宿主摄像头：
+
+```sh
+lisem camera DEVICE image.png
+lisem camera-devices
+lisem camera DEVICE --device DEVICE_ID
+lisem camera DEVICE --clear
+```
+
+`DEVICE_ID` 使用设备查询返回的标识。MCP 对应 `lisem_camera_devices` 和
+`lisem_camera_input`，Python 接口见[输入与外设](../python/docs/inputs.md#sd-与摄像头)。
+
+图片支持 PNG、JPEG、PNM，至多 32 MiB，宽高各不超过 4096 像素。图片与
+实时画面均按板型安装方向转换，等比居中裁剪至 640×480。
+Linux 摄像头需为可访问的 V4L2 单平面流式设备，支持 YUYV、UYVY、RGB24、
+BGR24 格式。
+
+## 长按与连按
+
+自动化按键使用虚拟时间序列，一次提交完整的按下与松开动作：
+
+```sh
+lisem button-sequence DEVICE function --run RUN --count 3 --hold-ms 80 --gap-ms 80
+lisem button-sequence-status DEVICE SEQUENCE --run RUN
+lisem button-sequence-status DEVICE SEQUENCE --run RUN --cancel
+```
+
+`RUN` 取自 `lisem --json status DEVICE` 的 `runtime.session.output`，
+`SEQUENCE` 使用提交返回的标识。次数为 1～32，总时长至多 60 秒，须在剩余
+运行预算内。手动按键接管时取消序列；复位、下电会终止序列并释放按键。
+`completed` 表示输入完成，固件是否识别需观察实际输出。
+
+## 数字信号时序
+
+先查询可用源，再携带当前运行标识开始采集：
+
+```sh
+lisem signal-trace DEVICE
+lisem signal-trace DEVICE --run RUN --start SOURCE --capacity 1024
+lisem signal-trace DEVICE --run RUN --trace CAPTURE --after 0 --limit 128
+lisem signal-trace DEVICE --run RUN --trace CAPTURE --stop
+```
+
+`RUN` 同上，`SOURCE` 使用查询返回的源 ID 或网络名，`CAPTURE` 使用开始
+采集返回的标识。事件包含序号、虚拟纳秒时间、逻辑电平和 `driven` 驱动状态，
+`initial=true` 表示初始状态。MCP 对应 `lisem_signal_trace` 的 `list`、
+`start`、`read`、`stop` 动作。
+
+读取后用 `next_cursor` 作为下一次的 `after`，直到 `has_more=false`。
+最多保留 4096 条事件，`evicted_events` 为累计淘汰数，`lost_events` 为当前
+游标漏掉的条数。复位或下电结束采集，记录保留到下一次采集或运行。
+`unknown` 须继续查询，`interrupted` 表示无法确认完整结束记录。
+采集默认关闭，仅保存在有界内存中，需要时显式保存命令输出。
+
+事件反映器件模型的数字变化；未驱动时的逻辑电平不代表实际模拟电压，
+物理引脚波形及模型未生成边沿的总线时序仍需真机测量。
 
 ## 预置动作
 
