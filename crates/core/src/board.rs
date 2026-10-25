@@ -488,7 +488,8 @@ impl Board {
             for port in ["SCK", "SDI", "CS", "DC", "RESET", "TE"] {
                 pads.insert(port, self.chip_pad(&format!("{lcd_id}.{port}"))?);
             }
-            plan["panel"] = json!({"pads":pads,"width":p.viewport.width,"height":p.viewport.height,
+            plan["panel"] = json!({"id":screen_id,"controller_id":lcd_id,"backlight_id":bl_id,
+                "pads":pads,"width":p.viewport.width,"height":p.viewport.height,
                 "x_offset":p.viewport.x,"y_offset":p.viewport.y,"rotation":p.rotation_clockwise,
                 "inverted":controller.panel_inverted,"backlight_pad":self.chip_pad(&format!("{bl_id}.EN"))?,
                 "backlight_active":backlight.active_level});

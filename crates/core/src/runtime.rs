@@ -1488,6 +1488,11 @@ impl Runtime {
             .map(|s| s.state.clone())
             .unwrap_or_else(|| self.last_state.clone());
         if let Some(object) = state.as_object_mut() {
+            let run = object.get("output").cloned().unwrap_or(Value::Null);
+            if let Some(display) = object.get_mut("display").filter(|v| v.is_object()) {
+                display["run"] = run;
+                display["instance_id"] = json!(self.id);
+            }
             object.remove("signal_trace_context");
             if let Some(trace) = object.get_mut("signal_trace").and_then(Value::as_object_mut) {
                 trace.remove("events");
@@ -1613,6 +1618,12 @@ impl Runtime {
     }
 
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value> {
+        if let Some(worker) = params.get("worker").filter(|v| !v.is_null()) {
+            ensure!(*worker == self.identity["id"], "The request belongs to another worker");
+        }
+        let mut params = params.clone();
+        if let Some(object) = params.as_object_mut() { object.remove("worker"); }
+        let params = &params;
         let _board_change = if method == "start" {
             Some(crate::storage::MetadataLease::acquire(&self.catalog.data.join("library.lock"))?)
         } else { None };
@@ -1626,7 +1637,7 @@ impl Runtime {
                     .map(|s| json!(s.output))
                     .unwrap_or_else(|| self.last_state["output"].clone())
                     == *run,
-                "The request belongs to an earlier run"
+                crate::rpc::StaleRun
             );
         }
         let board = self.catalog.device(&self.id)?;
@@ -1637,7 +1648,7 @@ impl Runtime {
             "sd_card" => capabilities.sd,
             "camera" => capabilities.camera,
             "audio" | "audio_record" | "audio_cancel" | "microphone" | "sound" => capabilities.audio,
-            "access_point" | "wifi_environment" => capabilities.wifi,
+            "access_point" | "wifi_environment" | "wifi_status" => capabilities.wifi,
             "signals" if params.get("changes").is_some() => capabilities.signals,
             "signal_trace" => capabilities.signal_trace,
             "events" => capabilities.events,
@@ -1651,6 +1662,7 @@ impl Runtime {
             ensure!(channel < 256 && capabilities.uart_channels.contains(&(channel as u8)), "UART channel is unavailable on this board");
         }
         match method {
+            "hello" => Ok(crate::rpc::hello()),
             "status" => self.status(),
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
@@ -2377,6 +2389,32 @@ impl Runtime {
                     .map(|p| json!(p.path))
                     .unwrap_or(Value::Null))
             }
+            "wifi_status" => {
+                ensure!(params["run"].is_string(), "Wi-Fi observation requires a run identifier");
+                let session = self.session.as_mut().filter(|s| !s.finished)
+                    .context("Instance is not running")?;
+                let raw = session.qmp.get("x-lisem-wifi-status", &mut session.uart)?;
+                let mut value: Value = serde_json::from_str(raw.as_str().context("Invalid Wi-Fi observation")?)?;
+                ensure!(value.is_object() && value["sampled_virtual_ns"].is_u64()
+                    && value["present"].is_boolean() && value["access_points"].is_array(),
+                    "Invalid Wi-Fi observation");
+                value["run"] = json!(session.output);
+                value["instance_id"] = json!(self.id);
+                Ok(value)
+            }
+            "display_status" => {
+                ensure!(params["run"].is_string(), "Display observation requires a run identifier");
+                let session = self.session.as_mut().filter(|s| !s.finished)
+                    .context("Instance is not running")?;
+                let raw = session.qmp.get("x-lisem-display-status", &mut session.uart)?;
+                let mut value: Value = serde_json::from_str(raw.as_str().context("Invalid display observation")?)?;
+                ensure!(value.is_object() && value["sampled_virtual_ns"].is_u64()
+                    && value["displays"].is_object(), "Invalid display observation");
+                value["run"] = json!(session.output);
+                value["instance_id"] = json!(self.id);
+                session.state["display"] = value.clone();
+                Ok(value)
+            }
             "screenshot" => {
                 let path = params["path"].as_str().map(Path::new);
                 let deadline = Instant::now() + Duration::from_secs(1);
@@ -2412,6 +2450,10 @@ impl Runtime {
                 Ok(json!(path))
             }
             "shutdown" => {
+                if params["expected_idle"] == true {
+                    ensure!(self.session.as_ref().is_none_or(|s| s.finished),
+                        "Cannot shut down a worker with an active run");
+                }
                 self.call("stop", &json!({}))?;
                 self.shutdown = true;
                 Ok(json!(true))
@@ -2629,7 +2671,7 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
                         );
                         let reply = match result {
                             Ok(value) => json!({"result":value}),
-                            Err(error) => json!({"error":error.to_string()}),
+                            Err(error) => json!({"error":error.to_string(),"error_kind":crate::rpc::error_kind(&error)}),
                         };
                         connection.output = serde_json::to_vec(&reply)?;
                         connection.output.push(b'\n');

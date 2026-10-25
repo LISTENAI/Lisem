@@ -278,6 +278,21 @@ impl Catalog {
         name: Option<&str>,
         options: &storage::UidOptions,
     ) -> Result<Value> {
+        self.create_owned(board, package, name, options, None)
+    }
+
+    pub fn create_temporary(
+        &self, board: &str, package: Option<&Path>, name: Option<&str>,
+        options: &storage::UidOptions, owner: &str,
+    ) -> Result<Value> {
+        ensure!(Uuid::parse_str(owner)?.simple().to_string() == owner, "Invalid temporary owner");
+        self.create_owned(board, package, name, options, Some(owner))
+    }
+
+    fn create_owned(
+        &self, board: &str, package: Option<&Path>, name: Option<&str>,
+        options: &storage::UidOptions, owner: Option<&str>,
+    ) -> Result<Value> {
         let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let mut entries = self.entries()?;
         let descriptor = self.boards.get(board).context("Unknown board")?;
@@ -336,6 +351,9 @@ impl Catalog {
             "hardware":{"board":crate::board::source(&self.boards[board]),"chip":self.chips[self.boards[board]["chip"].as_str().unwrap()]},
             "host":{"online":true,"sound":true,"microphone":false,"uart":[]}});
         storage::write_json(&staged.join("device.json"), &metadata)?;
+        if let Some(owner) = owner {
+            storage::write_json(&staged.join("sdk-owner.json"), &json!({"version":1,"owner":owner}))?;
+        }
         let mut result = self.describe(&staged)?;
         result["path"] = json!(path);
         ensure!(!path.exists(), "Instance already exists");
@@ -350,6 +368,31 @@ impl Catalog {
             return Err(error);
         }
         Ok(result)
+    }
+
+    /// Retire only an explicitly owned, stopped temporary instance. Holding both
+    /// leases prevents deleting storage still used by a worker or QEMU child.
+    pub fn remove_temporary(&self, id: &str, owner: &str) -> Result<Value> {
+        let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
+        let item = self.device(id)?;
+        let path = Path::new(item["path"].as_str().context("Instance path missing")?);
+        ensure!(path == self.data.join("devices").join(id), "Temporary instance is outside this library");
+        let marker = storage::read_json(&path.join("sdk-owner.json"))?;
+        ensure!(marker["version"] == 1 && marker["owner"] == owner, "Temporary instance ownership mismatch");
+        let _runtime = storage::Lease::acquire(&path.join("runtime.lock"))?;
+        let _storage = storage::locked(path, &self.layout(item["board"].as_str().unwrap())?)?;
+        let retired = self.data.join(format!(".sdk-retired-{id}"));
+        ensure!(!retired.exists(), "Previous temporary retirement needs recovery");
+        fs::rename(path, &retired).context("Cannot retire temporary instance; storage retained")?;
+        let previous = self.entries()?;
+        let entries: Vec<_> = previous.iter().filter(|v| v["id"] != id).cloned().collect();
+        if let Err(error) = self.save(&entries) {
+            fs::rename(&retired, path).context("Cannot restore temporary instance path")?;
+            self.save(&previous).context("Cannot restore temporary instance index")?;
+            return Err(error);
+        }
+        fs::remove_dir_all(&retired).with_context(|| format!("Temporary storage retained at {}", retired.display()))?;
+        Ok(json!({"removed":true,"id":id}))
     }
 
     pub fn attach(&self, path: &Path) -> Result<Value> {

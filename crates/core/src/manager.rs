@@ -235,7 +235,22 @@ impl Manager {
         }
     }
     pub fn call(&mut self, method: &str, params: Value) -> Result<Value> {
-        if matches!(method, "status" | "create" | "start" | "board_import") {
+        if method == "hello" { return Ok(crate::rpc::hello()); }
+        if method == "catalog" {
+            return self.catalog.model_catalog(&crate::board::ModelQuery::default());
+        }
+        if method == "find_temporary" {
+            let owner = params["owner"].as_str().context("Temporary owner is required")?;
+            let mut matches = Vec::new();
+            for item in self.catalog.devices()? {
+                if let Some(path) = item["path"].as_str()
+                    && storage::read_json(&Path::new(path).join("sdk-owner.json"))
+                        .ok().is_some_and(|v| v["owner"] == owner)
+                { matches.push(item); }
+            }
+            return Ok(json!(matches));
+        }
+        if matches!(method, "status" | "create" | "create_temporary" | "start" | "board_import") {
             self.catalog.reload_hardware()?;
         }
         if method == "status" {
@@ -246,7 +261,7 @@ impl Manager {
                 &self.catalog.root,
             )?);
         }
-        if method == "create" {
+        if matches!(method, "create" | "create_temporary") {
             let package = params["package"].as_str().map(Path::new);
             let options = storage::UidOptions {
                 uid: params.get("uid").filter(|value| !value.is_null())
@@ -256,6 +271,13 @@ impl Manager {
                     .map(|value| value.as_bool().context("allow_unprefixed_uid must be a boolean"))
                     .transpose()?.unwrap_or(false),
             };
+            if method == "create_temporary" {
+                return self.catalog.create_temporary(
+                    params["board"].as_str().context("Board is required")?, package,
+                    params["name"].as_str(), &options,
+                    params["owner"].as_str().context("Temporary owner is required")?,
+                );
+            }
             return self.catalog.create_with_uid(
                 params["board"].as_str().context("Board is required")?,
                 package,
@@ -285,6 +307,17 @@ impl Manager {
         let layout = self.catalog.layout(item["board"].as_str().unwrap())?;
         self.selected = Some(id.clone());
         match method {
+            "connect" => {
+                let value = self.worker(&id)?.call("status", json!({}))?;
+                // A preflight probe races another client's worker creation.
+                // Only the child actually spawned by this manager is owned.
+                let started = self.owned.get(&id).is_some_and(|child|
+                    value["worker"]["pid"].as_u64() == Some(child.id() as u64));
+                Ok(json!({"device":item, "endpoint":storage::read_json(&path.join("runtime.json"))?,
+                    "worker":value["worker"], "started_worker":started}))
+            }
+            "remove_temporary" => self.catalog.remove_temporary(&id,
+                params["owner"].as_str().context("Temporary owner is required")?),
             "inspect" => {
                 let runtime = Client::status_at(&path).unwrap_or(Value::Null);
                 let client_build = crate::identity::build();
@@ -508,13 +541,21 @@ impl Drop for Manager {
 }
 
 pub fn bridge(mut manager: Manager) -> Result<()> {
-    let result = serve_bridge(&mut manager);
+    let result = serve_bridge(&mut manager, true);
     manager.disown();
     result
 }
 
-fn serve_bridge(manager: &mut Manager) -> Result<()> {
-    if let Err(error) = manager.restore_ports() {
+/// SDK sessions discover only explicitly requested workers. Opening a session
+/// must not restore UART endpoints or touch unrelated instances.
+pub fn rpc(mut manager: Manager) -> Result<()> {
+    let result = serve_bridge(&mut manager, false);
+    manager.disown();
+    result
+}
+
+fn serve_bridge(manager: &mut Manager, restore_ports: bool) -> Result<()> {
+    if restore_ports && let Err(error) = manager.restore_ports() {
         // A device failure must not prevent the library or other devices from
         // receiving controls. Per-instance observation reports worker errors.
         eprintln!("{error:#}");
@@ -531,7 +572,7 @@ fn serve_bridge(manager: &mut Manager) -> Result<()> {
         );
         let reply = match result {
             Ok(value) => json!({"id":request["id"],"result":value}),
-            Err(error) => json!({"id":request["id"],"error":error.to_string()}),
+            Err(error) => json!({"id":request["id"],"error":error.to_string(),"error_kind":crate::rpc::error_kind(&error)}),
         };
         writeln!(stdout, "{reply}")?;
         stdout.flush()?;

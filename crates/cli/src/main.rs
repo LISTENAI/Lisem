@@ -34,6 +34,8 @@ struct Args {
 }
 #[derive(Subcommand)]
 enum Action {
+    /// Serve versioned native management RPC over standard input/output.
+    Rpc,
     /// Serve the Model Context Protocol over standard input/output.
     Mcp,
     /// List device instances.
@@ -345,6 +347,10 @@ fn run() -> Result<i32> {
         manager::bridge(manager)?;
         return Ok(0);
     }
+    if matches!(args.command, Action::Rpc) {
+        manager::rpc(manager)?;
+        return Ok(0);
+    }
     let presentation = output::Output::for_action(&args.command);
     let mut foreground = None;
     let value = match args.command {
@@ -500,7 +506,7 @@ fn run() -> Result<i32> {
         )?,
         Action::Logs { id, channel, cursor, limit } => manager.call("uart_read", json!({"id":id,"channel":channel,"cursor":cursor,"limit":limit}))?,
         Action::Shutdown { id } => manager.call("shutdown", json!({"id": id}))?,
-        Action::Runtime { .. } | Action::Bridge | Action::Mcp => unreachable!(),
+        Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc => unreachable!(),
     };
     if let Some((id, timeout)) = foreground {
         let item = manager.catalog.device(&id)?;
