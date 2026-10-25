@@ -16,6 +16,7 @@ def plan():
             {'id': 'aux', 'pad': 36, 'pressed_level': 1, 'released_level': 0},
         ],
         'panel': {
+            'id': 'visor', 'controller_id': 'pixel-driver', 'backlight_id': 'lamp',
             'pads': {'SCK': 35, 'SDI': 33, 'CS': 37, 'DC': 0, 'RESET': 41, 'TE': 27},
             'width': 240, 'height': 240, 'x_offset': 0, 'y_offset': 0,
             'rotation': 0, 'inverted': True, 'backlight_pad': 21, 'backlight_active': 1,
@@ -68,6 +69,44 @@ def screen_and_buttons():
         command(0x2a, [0, 0, 0, 0]); command(0x2b, [0, 0, 0, 0])
         command(0x2c); m.write(0x46700030, 1); send([0xf8, 0])
         assert pixel() == bytes([255, 0, 0])
+        def observe():
+            return json.loads(m.qmp_command('qom-get', {'path': '/machine',
+                               'property': 'x-lisem-display-status'}))
+        initial = observe()
+        panel = initial['displays']['visor']
+        assert initial['available'] and panel['available'] and panel['enabled']
+        assert panel['controller_id'] == 'pixel-driver'
+        assert panel['backlight'] == {'device_id': 'lamp', 'available': True,
+            'unit': 'ratio', 'drive_duty': 1, 'effective_duty': 1}
+        before = [m.read(0x4b200004), m.read(0x46800020), m.read(spi + 0x3c)]
+        for _ in range(100): assert observe() == initial
+        assert before == [m.read(0x4b200004), m.read(0x46800020), m.read(spi + 0x3c)]
+        # Display blanking gates the existing backlight without changing PWM.
+        command(0x28)
+        off = observe()['displays']['visor']
+        assert not off['enabled'] and off['backlight']['drive_duty'] == 1
+        assert off['backlight']['effective_duty'] == 0
+        command(0x29)
+        matrix = []
+        for bit6 in (0, 64):
+            control = (1 << 18) | bit6
+            m.write(0x47300028, control)
+            actual = observe()['displays']['visor']['backlight']['drive_duty']
+            assert actual == bool(bit6)
+            matrix.append({'running': False, 'control': control, 'bit6': bool(bit6),
+                           'actual_duty': actual, 'expected_duty': int(bool(bit6))})
+            for high, low in [(20, 80), (80, 20)]:
+                reload = ((high - 1) << 16) | (low - 1)
+                control = (1 << 19) | bit6 | 3
+                m.write(0x47300048, reload)
+                m.write(0x47300028, control)
+                actual = observe()['displays']['visor']['backlight']['drive_duty']
+                expected = high / (high + low)
+                assert abs(actual - expected) < 1e-9
+                matrix.append({'running': True, 'control': control, 'reload': reload,
+                               'bit6': bool(bit6), 'actual_duty': actual, 'expected_duty': expected})
+        (m.directory / 'pwm-matrix.json').write_text(json.dumps(matrix, indent=2))
+        m.write(0x47300028, (1 << 18) | 64)  # Restore constant active output.
         # Removing the selected physical clock prevents LCD delivery, while
         # the controller still completes its own transfer and interrupt.
         m.write(0x47500000 + 4 * 35, 0)
@@ -106,6 +145,9 @@ def chip_variants():
         m = Machine(OUTPUT / chip, board='arcs-board', assembly=p)
         try:
             base = 0x47b00000
+            observed = json.loads(m.qmp_command('qom-get', {'path': '/machine',
+                                  'property': 'x-lisem-display-status'}))
+            assert observed['available'] and observed['displays'] == {}
             mr2 = m.read(base + 0x808)
             assert mr2 == identity, (chip, hex(mr2), hex(identity))
             assert {3: 8 << 20, 5: 16 << 20}[mr2 & 7] == size
@@ -163,6 +205,10 @@ def venusa_screen():
                 m.write(0x43600030, 1 << 2); send(data)
 
         for op in (0x11, 0x21, 0x29): command(op)
+        observed = json.loads(m.qmp_command('qom-get', {'path': '/machine',
+                              'property': 'x-lisem-display-status'}))
+        assert observed['available'] and observed['displays']['visor']['enabled']
+        assert observed['displays']['visor']['backlight']['effective_duty'] == 1
         command(0x3a, [5]); command(0x2a, [0, 0, 0, 0]); command(0x2b, [0, 0, 0, 0])
         command(0x2c, [0xf8, 0])
         m.command('clock_step 40000000')

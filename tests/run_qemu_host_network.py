@@ -28,8 +28,8 @@ def ethernet_capture(path):
 
 
 class Station:
-    def __init__(self,name,loopback=True,budget=90000000000):
-        self.m=Machine(OUTPUT/name,budget_ns=budget,network=True,loopback=loopback)
+    def __init__(self,name,loopback=True,budget=90000000000,**machine_options):
+        self.m=Machine(OUTPUT/name,budget_ns=budget,network=True,loopback=loopback,**machine_options)
         self.budget=budget;self.frames=[];self.mac=None
         setup(self.m);associate(self.m)
 

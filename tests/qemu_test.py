@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
                  network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
-                 board='arcs-mini', sd_image=None, sd_slot=False, assembly=None, ble_capture=True):
+                 board='arcs-mini', sd_image=None, sd_slot=False, assembly=None, ble_capture=True,
+                 wifi_capture=True, network_capture=True):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -64,10 +65,13 @@ class Machine:
             suffix = 'dylib' if sys.platform == 'darwin' else 'so'
             env['ARCS_QEMU_NETWORK_LIBRARY'] = str(ROOT / '.tools/network' / ('libarcs_slirp.' + suffix))
             env['ARCS_QEMU_NETWORK_LOOPBACK'] = '1' if loopback else '0'
-            env['ARCS_QEMU_NETWORK_CAPTURE'] = str(directory / 'host-network.pcap')
+            if network_capture:
+                env['ARCS_QEMU_NETWORK_CAPTURE'] = str(directory / 'host-network.pcap')
 
         env['ARCS_QEMU_AUDIO_OUTPUT'] = str(directory / 'audio.wav')
-        env['ARCS_QEMU_WIFI_CAPTURE'] = str(directory / 'wifi-tx.pcap')
+        env.pop('ARCS_QEMU_WIFI_CAPTURE', None)
+        if wifi_capture:
+            env['ARCS_QEMU_WIFI_CAPTURE'] = str(directory / 'wifi-tx.pcap')
         if ble_capture:
             env['ARCS_QEMU_BLE_CAPTURE'] = str(directory / 'ble-tx.jsonl')
         if audio is not None:
