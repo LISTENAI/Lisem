@@ -9,12 +9,31 @@ import sys
 from build_qemu import current_build
 from build_audio import current_build as current_audio_build, build as build_audio
 from build_camera import current_build as current_camera_build, build as build_camera
+import sdk_package
+import tempfile
+import shutil
 if sys.platform == 'darwin':
     from package_macos import package
 else:
     from package_portable import package
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def prepare_sdk():
+    destination = ROOT / 'artifacts/sdk'
+    try:
+        sdk_package.verify(destination)
+        return
+    except (OSError, ValueError, StopIteration):
+        pass
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='sdk-build-', dir=destination.parent) as directory:
+        stage = Path(directory) / 'sdk'
+        sdk_package.build(stage)
+        if destination.exists():
+            destination.rename(Path(directory) / 'previous')
+        stage.rename(destination)
 
 
 def rust_environment(target):
@@ -72,6 +91,7 @@ def main():
     if args.component == 'package':
         if not current_build() or not current_audio_build() or not current_camera_build():
             parser.error('Native components do not match this checkout')
+        prepare_sdk()
         package(bundle, target / 'release')
         print(bundle)
         return
@@ -84,6 +104,7 @@ def main():
             build_camera()
         subprocess.run([sys.executable, str(ROOT / 'tools/build_network.py')], check=True, timeout=600)
         build_rust(target)
+        prepare_sdk()
         package(bundle, target / 'release')
     if not bundle.exists():
         parser.error('Desktop app is missing; run without --no-build')

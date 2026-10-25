@@ -10,6 +10,8 @@ import re
 import subprocess
 import sys
 import tarfile
+import tempfile
+import shutil
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -132,16 +134,50 @@ def native_build(python, system, arch):
         run('jit-state', [python, 'tests/run_qemu_jit_state.py'])
 
 
+def sdk_contract(python, target):
+    source = ROOT / 'artifacts/native-package'
+    metadata = json.loads((source / 'build.json').read_text())
+    if metadata['commit'] != commit_id() or metadata['target'] != target:
+        raise ValueError('Native SDK contract input does not match the source commit and target')
+    archive = source / metadata['archive']
+    if archive.parent != source or hashlib.sha256(archive.read_bytes()).hexdigest() != metadata['sha256']:
+        raise ValueError('Native SDK contract archive checksum mismatch')
+    stage = Path(tempfile.mkdtemp(prefix='lisem-sdk-ci-'))
+    if archive.suffix == '.zip':
+        with zipfile.ZipFile(archive) as package:
+            package.extractall(stage)
+    else:
+        with tarfile.open(archive) as package:
+            package.extractall(stage, filter='data')
+    envdir = stage / 'environment'
+    run('sdk-venv', [python, '-m', 'venv', str(envdir)])
+    interpreter = envdir / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    # Test dependencies belong to the selected user venv. The SDK comes only from the application.
+    run('sdk-test-dependencies', [str(interpreter), '-m', 'pip', 'install', 'pytest>=8,<10', 'hypothesis>=6,<7'])
+    bundle = stage / ('Lisem.app' if sys.platform == 'darwin' else 'Lisem')
+    output = stage / 'contract'
+    try:
+        run('sdk-contract', [str(interpreter), 'tests/run_python_sdk.py', '--bundle', str(bundle), '--output', str(output)], timeout=900)
+    finally:
+        destination = ROOT / 'artifacts/ci/sdk-contract'
+        destination.mkdir(parents=True, exist_ok=True)
+        for path in [*output.glob('*.json'), *output.glob('*.xml'), *output.glob('launcher/*.json'), *output.glob('launcher/*.xml')]:
+            shutil.copyfile(path, destination / (('launcher-' if path.parent.name == 'launcher' else '') + path.name))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
-    parser.add_argument('--phase', choices=('all', 'tests', 'native', 'rust', 'package'), default='all')
+    parser.add_argument('--phase', choices=('all', 'tests', 'native', 'rust', 'package', 'sdk'), default='all')
     args = parser.parse_args()
     system = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
     arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'amd64': 'x86_64',
             'x86_64': 'x86_64'}[platform.machine().lower()]
     assert args.target == f'{system}-{arch}', 'Native runner does not match package target'
     python = sys.executable
+    if args.phase == 'sdk':
+        sdk_contract(python, args.target)
+        return
     if args.phase in ('all', 'tests'):
         unit_tests(python)
         if args.phase == 'tests':

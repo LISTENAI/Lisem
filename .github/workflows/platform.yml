@@ -152,6 +152,10 @@ jobs:
         with:
           name: component-${{ inputs.target }}-rust
           path: artifacts/components/rust
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: lisem-sdk
+          path: artifacts/sdk
       - name: Package and verify
         if: runner.os != 'Windows'
         env:

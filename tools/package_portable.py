@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 from build_qemu import chip_rom_manifests
+from sdk_package import bundle_sdk
 
 ROOT = Path(__file__).resolve().parents[1]
 WINDOWS = os.name == 'nt'
@@ -122,6 +123,7 @@ def package(bundle, target):
             shutil.copy2(source, destination)
         for directory in ('boards', 'chips'):
             shutil.copytree(ROOT / directory, runtime / directory)
+        bundle_sdk(runtime, target / ('lisem' + SUFFIX), '../../lisem' + SUFFIX)
         if not WINDOWS:
             assets = ROOT / 'desktop/assets'
             applications = staged / 'share/applications'

@@ -9,6 +9,8 @@ import subprocess
 import tempfile
 
 from build_qemu import chip_rom_manifests
+from version import product_version
+from sdk_package import bundle_sdk
 
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_PREFIXES = ('/System/Library/', '/usr/lib/')
@@ -128,6 +130,7 @@ def package(bundle, target):
             destination.chmod(0o755)
         for directory in ('boards', 'chips'):
             shutil.copytree(ROOT / directory, runtime / directory)
+        bundle_sdk(runtime, target / 'lisem', '../../../MacOS/lisem')
         shutil.copy2(ROOT / 'desktop/assets/app/lisem.icns', resources / 'Lisem.icns')
         shutil.copytree(ROOT / 'LICENSES', resources / 'LICENSES')
         shutil.copy2(ROOT / 'LICENSE', resources / 'LICENSES' / 'Lisem.txt')
@@ -153,8 +156,8 @@ def package(bundle, target):
         (contents / 'Info.plist').write_bytes(plistlib.dumps({
             'CFBundleIdentifier': 'com.listenai.emulator', 'CFBundleName': 'Lisem',
             'CFBundleDisplayName': 'Lisem', 'CFBundleExecutable': 'lisem-desktop',
-            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': '1.0.0',
-            'CFBundleVersion': '1.0.0', 'NSHighResolutionCapable': True,
+            'CFBundlePackageType': 'APPL', 'CFBundleShortVersionString': product_version(),
+            'CFBundleVersion': product_version(), 'NSHighResolutionCapable': True,
             'CFBundleIconFile': 'Lisem.icns',
             'LSMinimumSystemVersion': minimum,
             'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。',

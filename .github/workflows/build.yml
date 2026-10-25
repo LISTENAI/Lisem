@@ -12,6 +12,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 jobs:
   platform:
+    needs: [sdk-distribution]
     strategy:
       fail-fast: false
       matrix:
@@ -44,13 +45,86 @@ jobs:
       msystem: ${{ matrix.msystem || '' }}
       prefix: ${{ matrix.prefix || '' }}
       directory: ${{ matrix.directory || '' }}
+  sdk-distribution:
+    name: Internal SDK build input
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build wheel, sdist, API docs and examples
+        run: |
+          python3 -m venv "$RUNNER_TEMP/sdk-build"
+          "$RUNNER_TEMP/sdk-build/bin/python" -m pip install 'build>=1,<2'
+          "$RUNNER_TEMP/sdk-build/bin/python" tools/sdk_package.py build --output artifacts/sdk
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lisem-sdk
+          path: artifacts/sdk/*
+          if-no-files-found: error
+          retention-days: 1
+  sdk-contract:
+    name: Bundled SDK (${{ matrix.target }})
+    needs: [platform]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: darwin-aarch64
+          - runner: macos-15-intel
+            target: darwin-x86_64
+          - runner: ubuntu-24.04-arm
+            target: linux-aarch64
+          - runner: ubuntu-24.04
+            target: linux-x86_64
+          - runner: windows-11-arm
+            target: windows-aarch64
+          - runner: windows-2022
+            target: windows-x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: Lisem-${{ matrix.target }}
+          path: artifacts/native-package
+      - name: Verify the bundled SDK outside the checkout
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python3 tools/ci.py --target "$TARGET" --phase sdk
+      - name: Verify the bundled SDK (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+        run: python tools/ci.py --target $env:TARGET --phase sdk
+      - name: Upload contract results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-contract-${{ matrix.target }}
+          path: |
+            artifacts/ci/sdk-contract/*.xml
+            artifacts/ci/sdk-contract/*.json
+          if-no-files-found: error
+          retention-days: 30
   check:
     name: All checks passed
-    needs: [platform]
+    needs: [platform, sdk-distribution, sdk-contract]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - name: Require every platform and phase
         env:
           RESULT: ${{ needs.platform.result }}
-        run: test "$RESULT" = success
+          SDK_DISTRIBUTION: ${{ needs.sdk-distribution.result }}
+          SDK_CONTRACT: ${{ needs.sdk-contract.result }}
+        run: |
+          test "$RESULT" = success
+          test "$SDK_DISTRIBUTION" = success
+          test "$SDK_CONTRACT" = success

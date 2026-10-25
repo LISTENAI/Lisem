@@ -27,11 +27,11 @@ QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库�
 `make qemu-camera qemu-camera-capture qemu-camera-input` 验证 GC0328 SCCB 的重复起始、FIFO
 背压与取消，并核对静态图片经 DVP FIFO/GPDMA 写入 RAM 的字节、内存边界、
 帧快照、SOF/EOF 中断及复位取消。共享输入另覆盖连续发布、代际隔离、SOF
-锁存、丢帧／重复计数和断开／重连。原固件拍照还需通过原 LPK 的业务入口验证。
+锁存、丢帧／重复计数和断开／重连。固件拍照还需通过原 LPK 的业务入口验证。
 `make qemu-wifi-wpa2 qemu-hsu` 验证 EAPOL 密钥确认、CCMP 独立向量、GTK
-广播 DHCP、MIC/PN 拒绝、取消和密钥替换边界。原固件使用
+广播 DHCP、MIC/PN 拒绝、取消和密钥替换边界。固件使用
 `python3 tests/run_wifi_wpa2_firmware.py --lpk firmware.lpk` 验证正确密码取得
-DHCP（包含原固件获 IP 回调）与错误密码实际 MIC 失败且未授权；此测试
+DHCP（包含固件获 IP 回调）与错误密码实际 MIC 失败且未授权；此测试
 不连接外网、不保存 UART 或密码。
 SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC 回归另外
 覆盖 SHA1/224/256 独立摘要、分段、HCLK 有理分频切换、门控与复位；真机观测
@@ -41,7 +41,7 @@ SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC
 应用固件只作为外部测试输入，不提交其源码、微程序或实例副本。
 
 `python3 tests/run_camera_recovery.py --binary /path/to/lisem` 在 POSIX 上用独立
-原 ROM 实例注入 QEMU 暂停，验证图片输入待确认后的恢复、松键、序列取消、
+内置 ROM 实例注入 QEMU 暂停，验证图片输入待确认后的恢复、松键、序列取消、
 过期序列拒绝、待确认时下电和产品共享映射清理。`--root` 可指定运行资源目录；测试不联网。
 
 `python3 tests/run_host_camera_runtime.py --binary /path/to/lisem` 在 macOS/Linux 上复制
@@ -69,7 +69,7 @@ MCP 控制与观察使用 `python3 tests/run_mcp.py`；加 `--lpk firmware.lpk`
 80 ms 按下、80 ms 间隔的三击并检查原始 UART 中的识别结果。固件主动复位
 会取消开机长按；输入完成与后续业务成功分别验证，外设未实现仍使集成失败。
 
-UID 的 OTP 字节和原固件身份读数使用隔离实例验证：
+UID 的 OTP 字节和固件身份读数使用隔离实例验证：
 
 ```sh
 python3 tests/run_uid_firmware.py --binary /path/to/lisem --lpk /path/to/original.lpk --output artifacts/verify-uid
@@ -93,7 +93,8 @@ Flash；测试只写新建实例，不改输入镜像。固件应在开机后启
 ## 平台工具链
 
 共同依赖 Rust 1.95、Python 3.10+、C 编译器、Ninja、Meson、pkg-config、
-Git 和 libjpeg-turbo。Python 仅参与构建与验证，不随运行产品启动。
+Git 和 libjpeg-turbo。原生应用运行不需要 Python；构建工具与独立安装的
+Python 自动化 SDK 分别使用其声明的 Python 版本。
 
 macOS 使用 Xcode Command Line Tools，以及 GLib、Pixman 和 libslirp 的构建依赖。
 Linux 使用 Clang/GCC（含 C++17）、GLib、Pixman、PulseAudio 开发包、patchelf，以及 GPUI
@@ -117,7 +118,7 @@ Windows 和 Linux 的产物为 `artifacts/desktop/Lisem/`，分别运行
 Windows VC 运行库随应用本地部署，不依赖开发机安装目录。
 
 修改 Windows/Linux 音频端点时运行
-`python tests/run_host_audio_endpoint.py`，并验证原固件连续音频、显示及网络。
+`python tests/run_host_audio_endpoint.py`，并验证固件连续音频、显示及网络。
 每个声明支持的平台与架构须完成原生构建和运行验证。虚拟机未暴露麦克风或
 摄像头时，记录该项限制，并在具有相应设备的系统补充物理采集验证。
 
@@ -126,7 +127,7 @@ Windows VC 运行库随应用本地部署，不依赖开发机安装目录。
 `.github/workflows/build.yml` 在推送、Pull Request 和手动触发时，对 macOS、
 Windows、Ubuntu 24.04 的 ARM64/x86_64 进行原生构建。`tools/ci.py` 运行
 Rust/Python 测试、适用的平台端点测试，并在移出的应用包中验证无头 CLI、
-空白实例、原始 ROM UART 握手及存储不变。Linux x86_64 另运行完整芯片回归。
+空白实例、芯片 ROM UART 握手及存储不变。Linux x86_64 另运行完整芯片回归。
 这些检查不需要应用固件、平台凭据、图形会话或真实音频设备。
 
 每个平台的原生组件、Rust release 构建和 debug 测试在独立 job 中并行运行。
@@ -142,9 +143,38 @@ artifact 上传不代表发布验收通过；任何构建、测试或打包失�
 总检查 `All checks passed` 均不能成功。发布必须使用整次工作流成功的产物。
 新增自动发布 job 应依赖总检查；独立发布工作流还须核对源 run 的成功状态和提交。
 
+SDK 内部构建 job 用 `tools/sdk_package.py` 构建并核对 wheel、sdist、文档和
+示例。wheel 仅为跨 job 的打包输入；各平台应用将 SDK、标准 dist-info 与配套
+构建清单安装到 `runtime/python/`，SDK 使用标准 zipimport，离线 API 文档和示例位于
+`runtime/python-docs/`。SDK 版本跟随根 Cargo 产品版本，构建核对版本一致；
+原生编译身份包含 SDK 源码哈希，打包拒绝不配套的 SDK 输入。
+
+`tests/run_python_sdk.py` 从实际原生归档迁出应用，通过包内 `lisem python`
+指定测试 venv，验证来源、元数据、插件、参数、I/O、退出与信号。六个平台均
+验证启动和导入，四个 POSIX 目标追加完整临时实例契约，要求零跳过。Windows
+临时实例仍不支持，不在其契约中伪造成功。全部结果纳入 `All checks passed`。
+
+本地构建需要在开发环境安装 `build`；`tools/desktop.py` 会准备或重建内部
+SDK 输入。测试依赖由独立 venv 提供，契约输出须在源码树外：
+
+```sh
+python -m pip install build
+python tools/desktop.py --build-only
+python -m venv /tmp/lisem-sdk-test
+/tmp/lisem-sdk-test/bin/python -m pip install pytest hypothesis
+/tmp/lisem-sdk-test/bin/python tests/run_python_sdk.py \
+  --bundle "$LISEM_BUNDLE" --output "$CONTRACT_OUTPUT"
+```
+
+[Python API](../python/docs/README.md) 记录公共接口、IDE 与 Notebook 接入。
+SDK、原生 CLI 与 QEMU 的实际身份分别记录在来源信息、原生握手及运行状态中。
+
+CI 下载须指定仓库、run ID 和 artifact 名称，核对同一提交及归档哈希；
+业务回归所需 LPK、WAV 和平台准备由测试工程的 CI 自动获取与执行。
+
 macOS/Linux 使用保留执行权限的 tar.gz，Windows 使用 zip。正式发布采用
 通过 CI 的归档，不用本地构建替换。LUNA 与 ROM 直接使用仓库随附字节。
-原始固件业务和声学效果仍按下面的步骤独立验收，不能由 CI 握手测试替代。
+应用固件业务和声学效果仍按下面的步骤独立验收，不能由 CI 握手测试替代。
 
 发布时使用版本标签对应的成功 CI 产物，将六个平台的归档和各自的 SHA-256
 文件附到同一 GitHub Release。核对包内版本、标签和构建提交一致；macOS
@@ -195,7 +225,8 @@ brew upgrade --cask listenai/tap/lisem
 附件使用 `Lisem-<system>-<arch>.tar.gz`（macOS/Linux）或
 `Lisem-<system>-<arch>.zip`（Windows）；`system` 为 `darwin`、`linux`、
 `windows`，`arch` 为 `aarch64`、`x86_64`。每份归档附同名 `.sha256` 文件，
-六个平台共十二个附件。先创建草稿并上传，核对附件完整性及 GitHub 资产摘要
+六个平台共十二个原生附件；SDK、API 文档与示例均在应用归档内。内部 wheel
+和 sdist 不作为用户安装前置条件。先创建草稿并上传，核对附件完整性及 GitHub 资产摘要
 与本地 SHA-256 一致后公开；正式稳定版设为 Latest。
 
 公开后触发 tap 的现有更新流程，仅指定 `lisem`：
@@ -207,7 +238,7 @@ gh workflow run bump.yml --repo LISTENAI/homebrew-tap -f project=lisem
 等待工作流成功，再核对 `Casks/lisem.rb` 的版本及两种架构的 SHA-256 与
 Release 一致，才报告 Homebrew 更新完成；托管 cask 不手工改写发布版本。
 
-## 原固件验证
+## 固件验证
 
 使用实际发布 LPK；与独立指令探针和测试图分别记录结果。以下测试创建
 独立实例，不使用日常设备库。桌面测试默认使用 `make build` 生成的
@@ -244,17 +275,17 @@ python3 tests/run_usb_adb_firmware.py \
 此测试需要外部固件资源，不包含在 `make check-qemu` 中。
 
 Wi-Fi 主动断开使用 `make qemu-wifi-disconnect` 验证两核的去认证、解除关联、
-MAC ACK、待发响应取消和重新关联。原固件支持五击重新配网、八击恢复出厂时，运行：
+MAC ACK、待发响应取消和重新关联。固件支持五击重新配网、八击恢复出厂时，运行：
 
 ```sh
 python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --output artifacts/verify-disconnect --binary /path/to/lisem --product-id TEST_PRODUCT_ID
 ```
 
-该测试将新建的测试 UID 绑定到指定的 ling 应用，通过原固件串口配置凭据，
+该测试将新建的测试 UID 绑定到指定的 ling 应用，通过固件串口配置凭据，
 在正常联网业务状态下五击进入配网，并在另一实例中八击验证清除热点和重启。
 `--counts 8` 可单独离线运行，无需 `--product-id`；源码 CLI 另加 `--root .`。
 测试显式保存诊断到输出目录，联网用例仅导出筛选后的串口标记；应用凭据
-由原固件写入独立测试实例。
+由固件写入独立测试实例。
 它验证断网及固件动作，不代表手机小程序或 BLE 配网交互已经通过。
 
 `make qemu-wifi-doze` 验证 Beacon/DTIM 相位、休眠与唤醒中断、接收隔离及
@@ -265,11 +296,11 @@ python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --outp
 python3 tests/run_wifi_power_save_firmware.py --cli /path/to/lisem --data-dir /path/to/test-library --id DEVICE_ID --output artifacts/verify-standby --network
 ```
 
-测试等待原固件自然待机，十五秒后按键唤醒，并查询固件恢复状态；结束后
+测试等待固件自然待机，十五秒后按键唤醒，并查询固件恢复状态；结束后
 下电。输出目录保留原始 UART 与显式诊断归档；实例持久存储保留。
 
 修改相关链路须验证 ROM 身份、完整 LPK 烧录/回读、Flash 持久化、UART
-预连接/复位/上下电和实例隔离。错误必须来自原固件或模型的可观测状态，
+预连接/复位/上下电和实例隔离。错误必须来自固件或模型的可观测状态，
 不能把进程存活或计时完成当作业务成功。
 
 已配置实例可用以下入口创建受锁保护的独立副本，验证显示、连续音频和网络：
@@ -282,14 +313,14 @@ python3 tests/run_desktop_media.py --instance /path/to/device --output artifacts
 麦克风进行可重复的语音测试。声学 AEC 验收需要实际播放及麦克风，不能用
 文件输入或静音运行替代。
 
-原固件语音验收同时开启画面、连续录播和网络，检查麦克风唤醒、云端识别、
+固件语音验收同时开启画面、连续录播和网络，检查麦克风唤醒、云端识别、
 回复播放、ADC 缺样、宿主欠载及队列积压。原始 DAC 不裁剪静音；与实际
 网络回复独立解码对照。宿主队列消费不等于声学播放验证。
 
 ## 数值与性能
 
 LUNA 二进制组件的更新与验收见 [LUNA 接口](luna.md)。公开测试验证资产完整性
-和接入行为；原固件推理、连续音频和网络用于产品链路验收。
+和接入行为；固件推理、连续音频和网络用于产品链路验收。
 
 `tools/qemu_benchmark.py` 以相同输入按 ABBA 串行比较运行时，并核对完整
 报告、指令数、画面、WAV、UART 与报文输出。测量期间不并行构建或跑回归。
@@ -317,7 +348,7 @@ GUI/CLI 从可执行文件位置发现运行资源；启动时校验包内资产
 系统媒体权限仍由 macOS 根据应用身份和签名管理，不随设备库隔离。
 
 发布前将包搬到仓库外，禁止子进程访问源码、Homebrew 与 Cargo 目录，验证
-原固件启动、UART、画面、音频和网络：
+固件启动、UART、画面、音频和网络：
 
 ```sh
 python3 tests/run_macos_bundle.py --lpk /path/to/firmware.lpk --output /tmp/lisem-bundle-check
