@@ -19,6 +19,7 @@ from ._bundle import source_info
 from ._rpc import Management, Worker
 from ._wait import ObservationDeadline
 from .peripherals import Wifi, Inputs, SD, Camera, USBADB
+from .ble import BLE
 from .errors import (LisemError, CleanupError, CompatibilityError, DeliveryUnknown, HistoryLost,
                      OperationTimeout, Rejected, RunEnded, StaleRun, preserve_exception)
 
@@ -473,6 +474,7 @@ class Run(AbstractContextManager):
         self.sd = SD(instance, self)
         self.camera = Camera(instance, self)
         self.usb_adb = USBADB(instance, self)
+        self.ble = BLE(self)
         self._last_evidence = None
 
     def __enter__(self):

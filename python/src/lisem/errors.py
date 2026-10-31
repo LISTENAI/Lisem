@@ -55,3 +55,13 @@ def preserve_exception(original, cleanup):
     else:
         import warnings
         warnings.warn(f"Lisem cleanup: {cleanup}", RuntimeWarning)
+
+
+class ATTError(LisemError):
+    """An actual peer ATT Error Response, preserving opcode, handle and code."""
+    def __init__(self, result):
+        super().__init__(result.get("error", "ATT request failed"))
+        self.result = result
+        self.opcode = result["att_error"]["opcode"]
+        self.handle = result["att_error"]["handle"]
+        self.code = result["att_error"]["code"]
