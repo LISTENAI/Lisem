@@ -24,7 +24,10 @@ class Distribution(unittest.TestCase):
         self.contents = {
             'src/lisem/_version.py': '__version__ = "0.1.0"\n',
             'src/lisem/__init__.py': 'from ._version import __version__\n',
-            'src/lisem/py.typed': '', 'README.md': 'Installation\n',
+            'src/lisem/py.typed': '',
+            'README.md': ('Installation\n\n[API](docs/README.md)\n'
+                          '[Examples](examples/README.md)\n'
+                          '[Lifecycle](docs/lifecycle.md#lifecycle)\n'),
             'LICENSE': 'MIT\n', 'pyproject.toml': '[project]\nname="lisem-sdk"\n',
             'examples/README.md': 'Run smoke.py\n', 'examples/smoke.py': 'pass\n',
             'docs/README.md': '[Lifecycle](lifecycle.md)\n', 'docs/lifecycle.md': '# Lifecycle\n',
@@ -101,10 +104,60 @@ class Distribution(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'heading'):
             sdk_package.verify(self.output)
 
-    def test_relative_long_description_link(self):
+    def test_relative_readme_navigation(self):
+        self.assertEqual(sdk_package.check_reference_links(), 4)
+        self.assertEqual(len(sdk_package.verify(self.output)), 3)
+
+    def test_readme_content_must_still_match_wheel_metadata(self):
         (self.source / 'README.md').write_text('[API](docs/README.md)\n')
-        with self.assertRaisesRegex(ValueError, 'absolute HTTPS'):
+        with self.assertRaisesRegex(ValueError, 'long description differs'):
             sdk_package.verify(self.output)
+
+    def test_missing_readme_link_target_and_heading(self):
+        for target, error in [('docs/missing.md', 'link target'),
+                              ('docs/lifecycle.md#missing', 'heading')]:
+            with self.subTest(target=target):
+                (self.source / 'README.md').write_text(f'[API]({target})\n')
+                with self.assertRaisesRegex(ValueError, error):
+                    sdk_package.check_reference_links()
+
+    def test_relative_links_must_stay_inside_the_bundled_reference_set(self):
+        (self.source.parent / 'outside.md').write_text('# Outside\n')
+        (self.source / 'notes.txt').write_text('Not an offline reference\n')
+        targets = [('../outside.md', 'escapes'), ('%2e%2e/outside.md', 'escapes'),
+                   ('notes.txt', 'not bundled'), ('src/lisem/_version.py', 'not bundled'),
+                   ('/README.md', 'escapes'), ('docs\\lifecycle.md', 'escapes')]
+        for target, error in targets:
+            with self.subTest(target=target):
+                (self.source / 'README.md').write_text(f'[API]({target})\n')
+                with self.assertRaisesRegex(ValueError, error):
+                    sdk_package.check_reference_links()
+
+    def test_parent_relative_links_resolve_within_offline_references(self):
+        (self.source / 'docs/README.md').write_text(
+            '[Install](../README.md)\n[Example](../examples/smoke.py)\n')
+        self.assertEqual(sdk_package.check_reference_links(), 5)
+
+    def test_https_navigation_and_matching_version_targets(self):
+        (self.source / 'README.md').write_text(
+            '[External](https://example.com/guide#remote)\n'
+            '[API](https://github.com/LISTENAI/Lisem/blob/v0.1.0/python/docs/lifecycle.md#lifecycle)\n')
+        self.assertEqual(sdk_package.check_reference_links(), 2)
+        for target, error in [('missing.md', 'link target'),
+                              ('lifecycle.md#missing', 'heading')]:
+            with self.subTest(target=target):
+                (self.source / 'README.md').write_text(
+                    '[API](https://github.com/LISTENAI/Lisem/blob/v0.1.0/python/docs/'
+                    + target + ')\n')
+                with self.assertRaisesRegex(ValueError, error):
+                    sdk_package.check_reference_links()
+
+    def test_non_https_urls_do_not_bypass_local_link_validation(self):
+        for target in ['file:///README.md', '//example.com/guide']:
+            with self.subTest(target=target):
+                (self.source / 'README.md').write_text(f'[API]({target})\n')
+                with self.assertRaisesRegex(ValueError, 'HTTPS or relative'):
+                    sdk_package.check_reference_links()
 
 
 if __name__ == '__main__':

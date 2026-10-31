@@ -5,6 +5,7 @@ import ast
 from email.parser import BytesParser
 import hashlib
 import json
+import posixpath
 import re
 import shutil
 from pathlib import Path
@@ -27,22 +28,40 @@ def reference_files():
 
 def check_reference_links():
     links = 0
-    for source in reference_files():
+    references = reference_files()
+    bundled = {p.relative_to(SOURCE).as_posix() for p in references}
+    source_root = SOURCE.resolve()
+    for source in references:
+        if not source.resolve().is_relative_to(source_root):
+            raise ValueError(f'Documentation reference escapes SDK source: {source}')
         if source.suffix != '.md':
             continue
         text = source.read_text(encoding='utf-8')
         for value in re.findall(r'(?<!!)\[[^\]\n]+\]\(([^)]+)\)', text):
             url = urlsplit(value)
-            if source == SOURCE / 'README.md' and url.scheme != 'https':
-                raise ValueError('Wheel long description requires absolute HTTPS navigation')
             prefix = f'/LISTENAI/Lisem/blob/v{product_version()}/'
-            if url.scheme:
+            if url.scheme or url.netloc:
+                if url.scheme != 'https' or not url.netloc:
+                    raise ValueError(f'Expected HTTPS or relative documentation link: {value}')
                 if url.netloc != 'github.com' or not url.path.startswith(prefix):
                     continue
                 name = unquote(url.path[len(prefix):])
-                target = SOURCE / name[7:] if name.startswith('python/') else ROOT / name
+                base, name = (SOURCE, name[7:]) if name.startswith('python/') else (ROOT, name)
+                target = (base / name).resolve()
+                if not target.is_relative_to(base.resolve()):
+                    raise ValueError(f'Documentation link escapes source: {value}')
             else:
-                target = (source.parent / unquote(url.path)).resolve() if url.path else source
+                path = unquote(url.path)
+                if path.startswith('/') or '\\' in path:
+                    raise ValueError(f'Documentation link escapes SDK source: {value}')
+                name = source.relative_to(SOURCE).as_posix()
+                if path:
+                    name = posixpath.normpath(posixpath.join(posixpath.dirname(name), path))
+                target = (SOURCE / name).resolve()
+                if not target.is_relative_to(source_root):
+                    raise ValueError(f'Documentation link escapes SDK source: {value}')
+                if target.is_file() and name not in bundled:
+                    raise ValueError(f'Documentation link target is not bundled: {value}')
             if not target.is_file():
                 raise ValueError(f'Missing documentation link target: {value}')
             if url.fragment:
