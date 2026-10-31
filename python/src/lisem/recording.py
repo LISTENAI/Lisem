@@ -95,6 +95,8 @@ class AudioRecording(AbstractContextManager):
         self._raw = streams[1]
         streams[2].close()
         self._stop = threading.Event()
+        self._stop_lock = threading.Lock()
+        self._stop_requested_at = None
         self._done = threading.Event()
         self._error = None
         self._error_reported = self._released = False
@@ -186,10 +188,20 @@ class AudioRecording(AbstractContextManager):
                     break
                 if not stopping and packet.get("active") is not True:
                     raise RunEnded("Audio recording ended unexpectedly")
-                if not stopping and (self._stop.is_set() or time.monotonic() >= self.deadline):
-                    expired = not self._stop.is_set()
+                with self._stop_lock:
+                    stop_requested_at = self._stop_requested_at
+                    now = time.monotonic()
+                if not stopping and (
+                    stop_requested_at is not None or now >= self.deadline
+                ):
+                    # Judge the first request, even if this pump observes it
+                    # after an RPC or scheduling delay. A late stop cannot
+                    # replace an expired deadline with successful completion.
+                    expired = (
+                        stop_requested_at is None or stop_requested_at >= self.deadline
+                    )
                     stopping = True
-                    drain_deadline = time.monotonic() + 8
+                    drain_deadline = now + 8
                     packet = self._call("stop")
                 else:
                     if stopping and time.monotonic() >= drain_deadline:
@@ -233,7 +245,10 @@ class AudioRecording(AbstractContextManager):
         from .client import Delivery
         if not isinstance(timeout, (int, float)) or not 0 < timeout <= 60:
             raise ValueError("timeout must be >0 and <=60 seconds")
-        self._stop.set()
+        with self._stop_lock:
+            if self._stop_requested_at is None:
+                self._stop_requested_at = time.monotonic()
+            self._stop.set()
         if not self._done.wait(timeout):
             raise DeliveryUnknown("Audio recording stop remains unconfirmed; do not start another recording")
         if self._thread is not None:
