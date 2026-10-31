@@ -37,6 +37,13 @@ SET_NETWORK/PBKDF2 超时会明确失败，不能替代密码错误验收。HMAC
 覆盖 SHA1/224/256 独立摘要、分段、HCLK 有理分频切换、门控与复位；真机观测
 包络与按块功能推导的边界见架构文档。
 
+`make qemu-ble-central qemu-bluetooth-aes` 验证虚拟中心端的扫描、连接、
+链路 ACK、L2CAP 分片通知、真实对端终止、重复断开及取消/复位；DM AES 使用
+独立标准向量核对输出字节、延迟写回、完成 IRQ/W1C 和复位取消。
+`cargo test -p lisem-core --lib ble::` 覆盖 ATT 编解码、长属性、异步操作、
+所有权、过期标识与远端结束竞争。随包 SDK 测试另覆盖观察期限、事件分页、
+清理及原异常保留，通过迁出应用包的 `lisem python` 运行。
+
 运行 CPU 探针需要 RISC-V bare-metal GCC，`CROSS_COMPILE` 指定工具链前缀。
 应用固件只作为外部测试输入，不提交其源码、微程序或实例副本。
 
@@ -286,7 +293,26 @@ python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --outp
 `--counts 8` 可单独离线运行，无需 `--product-id`；源码 CLI 另加 `--root .`。
 测试显式保存诊断到输出目录，联网用例仅导出筛选后的串口标记；应用凭据
 由固件写入独立测试实例。
-它验证断网及固件动作，不代表手机小程序或 BLE 配网交互已经通过。
+此工具覆盖断网、清除保存热点及固件按键入口。BLE 链路与 GATT 使用下面的
+专用工具验证；应用配网由对应固件测试核对实际通知及网络结果。
+
+BLE 原固件验证使用支持开机长按、五击广播及测试所需标准 GATT 属性的
+Arcs-Mini 固件，通过配套 SDK 运行：
+
+```sh
+lisem python -- tests/run_ble_firmware.py --binary /path/to/lisem --lpk /path/to/firmware.lpk --output artifacts/verify-ble
+```
+
+此工具在临时实例中验证真实广播与连接、动态属性发现、标准属性读写、CCCD
+回读、ATT 权限错误、Python/CLI/MCP 一致读取，以及断开、重新进入广播、
+重连和旧连接拒绝。它使用标准 Battery 与 Client Supported Features 属性；
+输入 LPK 只读，诊断保存到新建输出目录，结束后确认自有实例回收。
+
+应用通知、分片业务、配网及云端结果由对应固件测试工程维护。重连前按固件
+要求进入广播，建立新连接并重新发现、订阅；结合实际通知、UART、Wi-Fi
+关联/授权和 IP 判定业务结果。原始链路证据由调用方显式启用并持续读取，
+检查 HistoryLost、运行身份及最终清理结果。Python 接口见
+[BLE API](../python/docs/ble.md)。
 
 `make qemu-wifi-doze` 验证 Beacon/DTIM 相位、休眠与唤醒中断、接收隔离及
 取消。Mini 固件提供 `power_policy status` 且配置五分钟待机时，可准备一个

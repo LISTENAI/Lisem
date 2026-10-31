@@ -39,14 +39,15 @@ with Client(data_dir="test-output/library") as client:
 ## API、IDE 与 CI
 
 参数、返回值与所有权见
-[API 总览](https://github.com/LISTENAI/Lisem/blob/v1.1.0/python/docs/README.md)，
+[API 总览](docs/README.md)，
 固件脚本与状态机见
-[测试示例](https://github.com/LISTENAI/Lisem/blob/v1.1.0/python/examples/README.md)。
+[测试示例](examples/README.md)。
 文档和示例也位于应用的 `runtime/python-docs/`（macOS 在 Contents/Resources 下）。
 
 `lisem python --sdk-path` 查询随包 SDK zip 路径；IDE、Notebook 和已有启动流程
-的接入方式见 API 生命周期页。`lisem --json python --sdk-path` 给出 SDK 来源及
-配套原生构建信息。CI 固定原生归档版本、架构和哈希，再指定测试 venv 解释器。
+的接入方式见 [API 生命周期页](docs/lifecycle.md#启动器ide-与-notebook)。
+`lisem --json python --sdk-path` 给出 SDK 来源及配套原生构建信息。CI 固定
+原生归档版本、架构和哈希，再指定测试 venv 解释器。
 
 ## 运行条件
 

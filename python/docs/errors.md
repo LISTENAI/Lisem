@@ -12,7 +12,8 @@
 | `CompatibilityError` | 协议、构建、能力或平台不匹配，选择匹配应用 |
 | `ProtocolError` | 响应格式错误或超限，保留协议现场 |
 | `Rejected` | 后端明确拒绝，修正前置条件 |
-| `StaleRun` | 旧启动轮次，使用新启动或复位返回的 Run |
+| `StaleRun` | 运行或连接标识过期，使用当前 Run 及其新连接 |
+| `ATTError` | 固件返回 ATT 错误，检查 `opcode`、`handle`、`code` 和 `result`，见 [BLE](ble.md) |
 | `RunEnded` | 预期完成前运行结束，检查预算及固件输出 |
 | `ObservationTimeout` | 总观察期限耗尽，检查 observation 和 cause |
 | `OperationTimeout` | RPC 或有界等待失败，检查期限、条件及取消结果 |

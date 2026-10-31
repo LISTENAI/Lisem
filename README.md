@@ -55,8 +55,9 @@ sudo xattr -dr com.apple.quarantine /Applications/Lisem.app
 ## 用 Python 编写固件测试
 
 随应用提供的 Python SDK 支持实例管理、按键、音视频输入，以及 UART、
-截图和数字信号观测。用 pytest 组织回归，或用状态机测试探索输入组合，
-按用例保存日志、截图、音频和动作记录。
+截图和数字信号观测。还可作为虚拟蓝牙中心端，与 Arcs 固件进行 GATT
+读写和通知交互。用 pytest 组织回归，或用状态机测试探索输入组合，按用例
+保存日志、截图、音频和动作记录。
 
 从应用菜单选择「安装命令行工具」，准备 Python 3.10+。以下示例在临时设备
 上运行内置 ROM，并长按功能键一秒。保存为 `example.py`，通过
@@ -72,7 +73,8 @@ with Client(data_dir="test-output/library") as client:
             print(result.status)
 ```
 
-应用固件的启动、交互与断言用例见[固件测试示例](python/examples/README.md)。
+应用固件的启动、交互与断言用例见[固件测试示例](python/examples/README.md)，
+蓝牙扫描、属性发现与通知订阅见 [BLE 接口](python/docs/ble.md)。
 
 在测试虚拟环境中安装 pytest 后，通过同一入口运行测试：
 

@@ -72,6 +72,56 @@ CLI 使用 `lisem wifi-environment INSTANCE_ID` 读取配置，将结果保存�
 并编辑后，可用 `--file wifi.json` 写回。参数见命令的 `--help`。
 无头运行需显式启用宿主网络，见[无头命令行](#无头命令行)。
 
+## BLE
+
+通过 Python SDK、CLI 或 MCP，以虚拟蓝牙中心端与 Arcs 固件通信。
+固件作为蓝牙外设运行，可扫描其广播、建立连接、发现 GATT 服务与特征、
+读写属性并订阅通知。入口位于自动化接口中。
+
+先让固件进入广播模式，再扫描和连接；广播的开启、关闭及断开后的恢复
+由固件决定。重新连接后重新发现属性并订阅通知。
+
+当前支持单连接、legacy 广播和 1M PHY，链路使用明文，ATT MTU 为 23。
+SMP 配对与链路加密尚未提供。Python 接口与示例见
+[BLE 中心端](../python/docs/ble.md)，MCP 操作见
+[agent 接入说明](agents.md#ble)。
+
+### BLE 命令行
+
+使用 `lisem ble INSTANCE_ID --run RUN --request JSON` 操作当前运行。
+`RUN` 取自 `lisem --json status INSTANCE_ID` 的 `runtime.session.output`。
+先查询能力并打开中心端：
+
+```sh
+lisem --json ble INSTANCE_ID --run RUN --request '{"action":"capabilities"}'
+lisem --json ble INSTANCE_ID --run RUN --request '{"action":"open"}'
+```
+
+`open` 返回 `peer`，后续请求携带它。使用 `scan` 开始扫描，通过 `events`
+读取广播，按返回的 `address` 和 `address_type` 提交 `connect`。连接提交返回
+`connection` 和 `operation`；用 `operation` 动作查询结果，直到其 status
+不再为 `pending`。查询请求例如：
+
+```json
+{"action":"operation","peer":"PEER","connection":"CONNECTION","operation":"OPERATION"}
+```
+
+将示例标识换成本次返回值，作为 `--request` 参数。属性操作及 `disconnect`
+携带当前 `connection`；`operation` 和 `cancel` 还携带目标操作标识。
+先用 `discover` 动态发现 services、characteristics 和 descriptors，再将
+实际句柄交给 `read`、`write` 或 `subscribe`。二进制 `value` 为十六进制
+字符串；`subscribe` 的 `handle` 为 CCCD 句柄，`value="0100"` 订阅通知，
+`"0200"` 订阅 indication。写确认表示 ATT 响应或链路交付，业务结果另行观察。
+
+`events` 使用 `after`、`limit` 分页，按返回的 `cursor` 续读，并检查 `lost`；
+每页最多 128 条，历史容量为 512 条。`status` 查询当前链路与操作，`cancel`
+确认取消待完成操作，`disconnect` 确认断开。操作的 `timeout_ms` 为
+1～120000 宿主毫秒；观察时持续读取事件，超时后核对取消及链路状态。
+
+`trace` 的 `enabled=true` 显式把原始双向 PDU 加入有界内存事件，需要保存时
+由调用方写入文件。原始值可能包含凭据，正常运行不自动保存链路归档。
+单次 CLI 命令退出后保留中心端；完成后显式 `close`，或结束自有运行。
+
 ## 摄像头
 
 在摄像头菜单或「连接与媒体」中选择 PNG、JPEG、PNM 图片或具体摄像头，

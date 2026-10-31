@@ -55,6 +55,16 @@ lisem python -- -m pytest test_wifi_presence_firmware.py -q --basetemp ./wifi-pr
 lisem python -- -m pytest test_boot_inputs_firmware.py -q --basetemp ./boot-inputs-result
 ```
 
+## BLE 属性探索
+
+[ble.py](ble.py) 提供 `inspect_peripheral(run)`，在已启动的 Arcs 固件运行中
+扫描广播、建立连接、发现服务和特征，并读取声明可读的属性。调用前由测试
+工程执行固件需要的开机与广播入口；函数返回属性元数据及 bytes 值，连接
+和中心端随上下文退出清理。
+
+写入、CCCD 订阅及通知观察见 [BLE API](../docs/ble.md)。应用协议的报文构造
+和业务结果断言放在调用工程中。
+
 ## 状态机与重放
 
 状态机在每次尝试中重建固定 UID、指定 LPK 的临时实例，检查 UID 响应、

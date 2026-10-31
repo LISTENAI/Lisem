@@ -7,6 +7,7 @@ SDK 为同步接口；同一实例的操作顺序执行，多实例使用独立�
 | --- | --- |
 | [生命周期](lifecycle.md) | Client、临时与既有实例、启动、复位、关闭 |
 | [输入与外设](inputs.md) | 按键、板型输入、Wi-Fi、SD、摄像头、ADB、动作任务 |
+| [BLE 中心端](ble.md) | 扫描连接、属性读写、通知、操作期限与清理 |
 | [观测与采集](observations.md) | UART、截图、显示、信号、WAV 输入、DAC 录制 |
 | [错误与清理](errors.md) | 期限、异常、显式证据、失败保留、回收 |
 | [pytest 集成](pytest.md) | fixture、命令行选项、失败归属 |

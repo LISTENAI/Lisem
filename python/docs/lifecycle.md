@@ -98,13 +98,12 @@ device.start(
 `lisem python [--interpreter PATH] -- <Python 参数>` 原样传递脚本、`-m`、`-c`
 和帮助参数。默认沿用活动 venv/Conda，否则在 PATH 查找（POSIX 先 python3，
 Windows 先 python）。活动环境缺少解释器时明确报错，可显式选择其他环境。
-启动器只调整本次进程的 SDK 搜索路径与配套 CLI，正常原生
-CLI、GUI 和 QEMU 运行独立于 Python。
+启动器只调整子进程的 SDK 搜索路径与配套 CLI，保留父进程环境。
 
 `lisem python --sdk-path` 输出 SDK zip 路径，`lisem --json python --sdk-path`
-还给出版本、实际编译身份、CLI 路径和 SDK 清单哈希。`lisem build-info` 仅查询
-原生编译身份；这些查询不打开设备库。既有独立安装 SDK 或当前目录同名模块
-不能覆盖启动器选择的 SDK；冲突的启动配置会明确报错。
+还给出版本、实际编译身份、CLI 路径和 SDK 清单哈希；这些查询不打开设备库。
+既有独立安装 SDK 或当前目录同名模块不能覆盖启动器选择的 SDK；冲突的启动
+配置会明确报错。
 
 Notebook 在首次导入前设置路径与字节码选项：
 
@@ -122,7 +121,6 @@ print(source_info())
 Python zipimport 读取，pytest 可发现插件，普通导入不会在应用内生成字节码缓存。`-E`、`-I`、`-S` 禁用
 环境或 site 初始化，启动器会拒绝；需要这些模式时由外部解释器自行配置路径。
 
-POSIX 直接 exec Python，保持 PID 和信号语义；Windows 等待同控制台 Python，
-保留其退出状态，Ctrl+C 交给 Python；异常退出时约束直接 Python，后台子进程
-保留原有 CLI 所有权和生命周期。
+启动器保留 Python 的标准输入输出、退出状态和 Ctrl+C 处理。测试通过上下文
+管理器清理自己创建的运行；异常退出后的回收见[错误与清理](errors.md)。
 其他调用者已运行的实例由其所有者管理。

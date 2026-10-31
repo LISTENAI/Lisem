@@ -1,10 +1,11 @@
-# 自动化运行
+# 命令行自动化
 
-CLI 和 MCP 共用实例、运行标识和状态。自动化测试应使用独立设备库，
-运行前核对构建身份；所有输入及运行控制均针对取得的当前运行标识。
+使用独立设备库执行命令行自动化，运行前核对构建身份；所有输入及运行控制
+均针对取得的当前运行标识。基础用法与 BLE 操作见[使用说明](usage.md)，
+MCP 工具调用见[agent 接入](agents.md)。
 
-普通脚本和 pytest 可使用随应用提供的 [Python SDK](../python/README.md)，通过
-[原生 RPC](native-rpc.md) 创建临时实例、等待输入确认和保存失败证据。
+普通脚本和 pytest 可使用随应用提供的 [Python SDK](../python/README.md)，
+通过上下文创建临时实例、等待输入确认和保存失败证据。
 固定 UID 与 LPK 的试跑入口见 [固件测试示例](../python/examples/README.md)。
 
 ## 运行期限
@@ -20,8 +21,6 @@ lisem status DEVICE
 lisem stop DEVICE
 ```
 
-MCP 使用 `lisem_power_on` 的 `seconds`、`timeout` 参数，
-通过 `lisem_status` 观察，通过携带 `run` 的 `lisem_power_off` 结束。
 `runtime.session.budget` 给出已配置的期限及最近一次采样的剩余时间。
 `runtime_active` 表示运行进程是否存在，`power_hold` 表示板级电源保持
 信号是否有效；未驱动或板型未定义该信号时为 `null`。固件的开关机行为
@@ -38,12 +37,6 @@ lisem uart-receive DEVICE 0 --capture uart0.bin --timeout 36000
 Ctrl+C 结束接收，设备继续运行。该命令启用对应 UART 端点，接收已有积压
 及后续字节；接收期间不要再用其他终端读取同一端点。文件已存在则拒绝覆盖。
 
-MCP 先用 `lisem_uart` 启用端点，再调用 `lisem_uart_capture`：
-`action=start` 指定 `path` 和宿主 `timeout`，返回独立的 `capture` 标识；
-`action=status` 或 `stop` 携带该标识。状态包含接收字节数及错误。
-`lisem_uart_read` 是不消费端点的旁路观察，历史溢出时报告 `lost`，
-不能代替持续接收。此前运行的积压按原顺序保留，可通过接收归档排空。
-
 ## WAV 注入与音频证据
 
 输入为 16000 Hz、单声道 PCM16 WAV，最长 24 小时。文件在注入期间应保持
@@ -57,8 +50,6 @@ lisem audio-output DEVICE --capture speaker.wav
 
 音频输出命令持续侧录原始 DAC 样本，Ctrl+C 结束侧录。侧录独立于宿主播放，
 不会因扬声器静音而丢失 DAC 数据；缓冲溢出、采样率变化和运行中断明确报错。
-MCP 的 `lisem_audio_input` 返回注入标识；通过状态中的 `audio_input` 观察，
-用 `lisem_audio_input_cancel` 携带运行及注入标识取消。
 
 `audio_output` 状态包含样本数、非零样本数、峰值、最后样本及最后非零样本
 的虚拟时刻，以及 PA 状态。这些数据用于定位播放活动；语音内容和音质须
@@ -75,8 +66,7 @@ lisem camera DEVICE --device DEVICE_ID
 lisem camera DEVICE --clear
 ```
 
-`DEVICE_ID` 使用设备查询返回的标识。MCP 对应 `lisem_camera_devices` 和
-`lisem_camera_input`，Python 接口见[输入与外设](../python/docs/inputs.md#sd-与摄像头)。
+`DEVICE_ID` 使用设备查询返回的标识。
 
 图片支持 PNG、JPEG、PNM，至多 32 MiB，宽高各不超过 4096 像素。图片与
 实时画面均按板型安装方向转换，等比居中裁剪至 640×480。
@@ -111,8 +101,7 @@ lisem signal-trace DEVICE --run RUN --trace CAPTURE --stop
 
 `RUN` 同上，`SOURCE` 使用查询返回的源 ID 或网络名，`CAPTURE` 使用开始
 采集返回的标识。事件包含序号、虚拟纳秒时间、逻辑电平和 `driven` 驱动状态，
-`initial=true` 表示初始状态。MCP 对应 `lisem_signal_trace` 的 `list`、
-`start`、`read`、`stop` 动作。
+`initial=true` 表示初始状态。
 
 读取后用 `next_cursor` 作为下一次的 `after`，直到 `has_more=false`。
 最多保留 4096 条事件，`evicted_events` 为累计淘汰数，`lost_events` 为当前
@@ -128,7 +117,6 @@ lisem signal-trace DEVICE --run RUN --trace CAPTURE --stop
 `lisem events DEVICE plan.json --run RUN` 在当前运行中布置一组动作，返回
 程序标识。`lisem events-status DEVICE SEQUENCE --run RUN` 查询状态，
 加 `--cancel` 可取消待执行动作及该程序仍持有的按键或音频输入。
-MCP 对应 `lisem_events` 的 `arm`、`status`、`cancel`。
 
 以下程序等待 UART 0 后续出现 `ready` 的原始字节，随后延迟 250 ms 按键：
 
@@ -159,7 +147,7 @@ UART 条件；若程序还包含音频动作，须保证动作执行时 ADC 输�
 
 ## SD 卡镜像
 
-通过 CLI 或 `lisem_sd_card` 挂载可写 raw 镜像，可在运行中插入和弹出：
+挂载可写 raw 镜像，可在运行中插入和弹出：
 
 ```sh
 lisem sd-card DEVICE --image card.img
@@ -172,14 +160,14 @@ lisem sd-card DEVICE --eject
 未格式化介质。卡识别、文件系统挂载、文件读取及播放分别由固件完成。
 
 挂载路径按实例保存，上电时重新打开原文件。运行中变更在当前运行确认后
-保存；MCP 须携带 `run`，CLI 也可用 `--run` 明确指定。若返回 `pending`，
+保存；也可用 `--run` 明确指定当前运行。若返回 `pending`，
 查询状态中的 `sd_change` 直到确认或报错。固件直接写回镜像，同一镜像不能
 由多个实例或宿主工具同时写入。弹出会让固件看到卡移除，未完成的文件系统
 写入可能使镜像损坏；需要可重复试验时使用镜像副本。
 
 ## 信号输入
 
-`lisem signals` 和 `lisem_signals` 枚举板型提供的输入，包括类型、单位、范围、
+`lisem signals` 枚举板型提供的输入，包括类型、单位、范围、
 默认值和当前值。数字量使用布尔值表示高低电平，电压使用整数毫伏：
 
 ```sh
@@ -189,9 +177,9 @@ lisem signals DEVICE --set '{"usb_det":null}'
 ```
 
 按输入 ID 更新，`null` 恢复该输入的板型默认值。设置按实例保存，可在运行中
-修改。CLI 自动取得当前运行标识，也可显式传入 `--run`；MCP 修改运行中输入
-须携带 `run`。返回 `pending` 时，继续查询并核对 `change.request`，直到状态为
-`applied`、`rejected` 或 `unknown`；后两者及 `error` 均须检查，不能当作完成。
+修改。命令自动取得当前运行标识，也可显式传入 `--run`。返回 `pending` 时，
+继续查询并核对 `change.request`，直到 `applied`、`rejected` 或 `unknown`；
+后两者及 `error` 均须检查，不能当作完成。
 
 Arcs-Mini 的 `usb_det` 连接 PB0；高低电平含义由固件
 解释。`battery_voltage` 经 2/5 分压接入 PB5/VIN3，固件从 ADC 读取电压。

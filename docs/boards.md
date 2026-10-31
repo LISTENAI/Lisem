@@ -17,8 +17,8 @@ lisem board-import board.json
 lisem create --board my-board
 ```
 
-MCP 对应 `lisem_board_validate` 和 `lisem_board_import`。校验只检查配置，
-导入后板型保存在实例库中，创建的实例具有独立的 Flash、OTP 和设备身份。
+校验只检查配置；导入后板型保存在实例库中，创建的实例具有独立的 Flash、
+OTP 和设备身份。通过 MCP 管理板型见[agent 接入](agents.md#板型与器件)。
 固件文件、宿主摄像头、音频来源、SD 镜像和 Wi-Fi 热点在实例中配置。
 
 ## JSON 结构
@@ -87,10 +87,6 @@ lisem board-models --schema
 `wiring` 提供芯片引脚、I²C、ADC 和 SD 路由；`boards` 中的 `definition` 是
 可用于编辑的参考板型 JSON。JSON Schema 检查结构与参数，完整接线和跨参数
 条件由 `board-validate` 校验。
-
-MCP 的 `lisem_catalog` 接受对应的 `category`、`model`、`details`、`schema`
-参数；无筛选时保留完整模型、芯片和板型信息。例如查询摄像头类别使用
-`{"category":"camera"}`，查询型号使用 `{"model":"GC0328"}`。
 
 `nets` 的键是网络名。`endpoints` 采用 `器件ID.端口`，例如 `key.OUT`；
 芯片引脚以 `chip.PA0`、`chip.PB4` 等名称表示，扩展器引脚可写为 `extio.PC2`。
