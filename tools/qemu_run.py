@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--virtual-ns', type=int, default=1000000)
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--qmp-socket', type=Path, help='Local QMP Unix socket for an explicit logical radio peer')
+    parser.add_argument('--control-directory', type=Path,
+                        help='Explicit live-control workspace for virtual-time input sequences')
     parser.add_argument('--uart-socket', nargs=2, action='append', default=[], metavar=('PORT', 'PATH'),
                         help='Expose UART 0..2 through a local Unix socket; retain raw TX logfile')
     parser.add_argument('--luna-safe-reads', action='store_true',
@@ -96,6 +98,8 @@ def main():
     if args.allow_host_loopback and not args.host_network:
         parser.error('--allow-host-loopback requires --host-network')
     if args.power_button_ns:
+        if args.control_directory:
+            parser.error('Live input control cannot share a scheduled power button')
         at, duration = args.power_button_ns
         if not 0 <= at < at + duration < args.virtual_ns:
             parser.error('Power button press/release must be within the virtual run duration')
@@ -160,6 +164,10 @@ def run(args, parser, instance_directory=None, lock_fd=None):
         env['ARCS_QEMU_BOOT_RELEASE_NS'] = str(args.boot_release_ns)
         manifest['boot_release_ns'] = args.boot_release_ns
     env.pop('ARCS_QEMU_DESKTOP', None)
+    if args.control_directory:
+        control = args.control_directory.resolve()
+        control.mkdir(parents=True, exist_ok=True)
+        env['ARCS_QEMU_DESKTOP'] = str(control)
     env.update(ARCS_QEMU_BOOT_HART=str(args.boot_hart),
                ARCS_QEMU_BUDGET_NS=str(args.virtual_ns),
                ARCS_QEMU_REPORT=str(output / 'report.json'))

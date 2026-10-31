@@ -122,6 +122,47 @@ struct ButtonSequence {
     /// Released interval in virtual milliseconds; positive for repeated presses.
     gap_ms: u64,
 }
+
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Ble {
+    id: String,
+    run: String,
+    /// Generic operation; business protocols belong to the caller.
+    action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    peer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    operation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    handle: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    start: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    end: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: Option<bool>,
+    /// Raw binary value encoded as hexadecimal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    value: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    after: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<u64>,
+}
+
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct UsbAdb {
@@ -457,6 +498,8 @@ fn tools() -> Vec<Tool> {
             "Enumerate or edit typed external board inputs. Digital values drive GPIO levels; voltage values pass through the board divider and ADC. Changes are saved per instance after runtime confirmation and survive reset. A pending response is not confirmation: poll this tool until change.request matches and status is applied or rejected. Firmware interprets inputs; inspect its response separately.", false),
         definition::<lisem_core::signal_trace::Request>("lisem_signal_trace",
             "List digital sources and board net aliases, or start/read/stop a bounded transition capture. Controls require the current run; read/stop also require the returned capture ID. Events contain drive enable, logical level and virtual_ns from device transitions; initial=true marks the starting state. Read after=0 initially, then use next_cursor. lost_events reports cursor overflow; interrupted/unknown is not confirmed completion. Capture stops on reset or power-off; stopped events remain readable until the next capture/run. No capture is active by default.", false),
+        definition::<Ble>("lisem_ble",
+            "Generic virtual BLE central. Require current run. Actions: capabilities; open (returns peer); scan; connect(address XX:XX:XX:XX:XX:XX, address_type public/random, returns connection/operation); discover(kind services/characteristics/descriptors, start/end); read(handle); write(handle,value hex,response default true); subscribe(handle=CCCD,value hex); disconnect; operation(operation ID); events(after/limit, reports lost); cancel(operation ID); trace(enabled, explicit raw link capture in bounded memory); close. All owned controls require peer; GATT and disconnect require current connection. Operations are asynchronous: poll operation until terminal. Write response confirms ATT only; write commands confirm link delivery. Plaintext legacy 1M, MTU23, long reads/writes <=512 bytes; required security is reported as interruption, never bypassed. Normal operation does not pause VM or save trace. Values may contain credentials; save evidence only explicitly.", false),
         definition::<UsbAdb>("lisem_usb_adb",
             "Inspect or enable the running instance's USB ADB bridge. Returns enabled, listen (127.0.0.1:port), connected, status and error. Use host adb connect with listen, then adb -s ADDRESS shell or push. The firmware must expose a USB ADB interface; TCP listening alone does not confirm firmware readiness. Enabling is explicit and lasts for this run; disabling disconnects clients. USB re-enumeration may require adb connect again. Requires current run for changes.", false),
         definition::<SdCard>("lisem_sd_card",
@@ -587,6 +630,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
         "lisem_signal_trace" => call(manager, "signal_trace", arguments::<lisem_core::signal_trace::Request>(value)?)?,
         "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,
+        "lisem_ble" => call(manager, "ble", arguments::<Ble>(value)?)?,
         "lisem_usb_adb" => call(manager, "usb_adb", arguments::<UsbAdb>(value)?)?,
         "lisem_sd_card" => {
             let request: SdCard = arguments(value)?;

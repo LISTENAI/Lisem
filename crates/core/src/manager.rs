@@ -31,6 +31,7 @@ pub struct Manager {
     executable: PathBuf,
     owned: BTreeMap<String, Child>,
     runs: BTreeMap<String, Value>,
+    ble_peers: BTreeMap<String, (Value, Value)>,
     selected: Option<String>,
     available_qemu_sha256: Option<String>,
     observed: std::sync::Mutex<Observations>,
@@ -42,6 +43,7 @@ impl Manager {
             executable: executable.to_owned(),
             owned: BTreeMap::new(),
             runs: BTreeMap::new(),
+            ble_peers: BTreeMap::new(),
             selected: None,
             observed: std::sync::Mutex::new(Observations::default()),
             available_qemu_sha256: crate::assets::Assets::new(root)
@@ -124,8 +126,23 @@ impl Manager {
     pub fn disown(&mut self) {
         self.owned.clear();
         self.runs.clear();
+        self.ble_peers.clear();
     }
     pub fn stop_owned(&mut self) {
+        for (id, (run, peer)) in std::mem::take(&mut self.ble_peers) {
+            if let Ok(item) = self.catalog.device(&id)
+                && let Ok(client) = Client::connect(Path::new(item["path"].as_str().unwrap()))
+            {
+                let _ = client.call(
+                    "ble",
+                    json!({
+                        "action": "close",
+                        "run": run,
+                        "peer": peer
+                    })
+                );
+            }
+        }
         for (id, run) in std::mem::take(&mut self.runs) {
             if let Ok(item) = self.catalog.device(&id)
                 && let Ok(client) = Client::connect(Path::new(item["path"].as_str().unwrap()))
@@ -365,6 +382,7 @@ impl Manager {
             | "signals"
             | "signal_trace"
             | "sd_card"
+            | "ble"
             | "usb_adb"
             | "events"
             | "uart_capture"
@@ -373,7 +391,22 @@ impl Manager {
             | "button_sequence_cancel"
             | "touch"
             | "camera" => {
-                let value = self.worker(&id)?.call(method, params)?;
+                let value = self.worker(&id)?.call(method, params.clone())?;
+                if method == "ble" {
+                    if params["action"] == "open" {
+                        self.ble_peers.insert(
+                            id.clone(),
+                            (params["run"].clone(), value["peer"].clone())
+                        );
+                    } else if params["action"] == "close"
+                        && self
+                            .ble_peers
+                            .get(&id)
+                            .is_some_and(|(_, peer)| *peer == params["peer"])
+                    {
+                        self.ble_peers.remove(&id);
+                    }
+                }
                 if ["reset", "reset_download"].contains(&method) {
                     self.runs.insert(id, value["session"]["output"].clone());
                 }

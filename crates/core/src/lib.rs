@@ -1,6 +1,7 @@
 //! Instance storage and runtime control shared by the CLI and desktop.
 //! No window system or host audio device is required by this crate.
 pub mod assets;
+pub mod ble;
 pub mod board;
 mod camera;
 mod camera_capture;

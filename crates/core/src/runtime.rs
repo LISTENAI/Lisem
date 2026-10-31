@@ -410,6 +410,7 @@ impl Audio {
 }
 
 pub struct Session {
+    ble: crate::ble::Central,
     process: Process,
     qmp: Qmp,
     camera: Option<crate::camera_input::Input>,
@@ -664,6 +665,7 @@ impl Session {
             pending_releases: BTreeMap::new(),
             pending_cancel: false,
             pending_event_cancel: false,
+            ble: crate::ble::Central::default(),
             qmp,
             camera,
             camera_capture: None,
@@ -770,6 +772,27 @@ impl Session {
         }
         Ok(state)
     }
+
+    fn ble_transport(qmp: &mut Qmp, uart: &mut [Uart], request: &Value) -> Result<Value> {
+        qmp.set("x-lisem-ble-central", json!(request.to_string()), uart)?;
+        let value = qmp.get("x-lisem-ble-central", uart)?;
+        Ok(serde_json::from_str(
+            value.as_str().context("Invalid BLE response")?
+        )?)
+    }
+
+    fn ble_poll(&mut self) -> Result<()> {
+        if self.finished {
+            self.ble.ended();
+            return Ok(());
+        }
+        if self.ble.active() && self.qmp.pending_id().is_none() {
+            self.ble
+                .poll(|p| Self::ble_transport(&mut self.qmp, &mut self.uart, p))?;
+        }
+        Ok(())
+    }
+
     fn tick(&mut self) -> Result<()> {
         if self.finished {
             return Ok(());
@@ -1338,6 +1361,7 @@ impl Runtime {
             }
             Self::tick_camera(&self.catalog, &self.id, &mut self.pending_camera, session)?;
             session.tick()?;
+            session.ble_poll()?;
             if session.finished && let Some((_, request, _)) = self.pending_signals.take() {
                 session.state["signal_change"] = json!({"request":request,"status":"unknown",
                     "error":"Runtime ended before input change was confirmed"});
@@ -1805,6 +1829,41 @@ impl Runtime {
                     self.catalog.update(Path::new(item["path"].as_str().unwrap()), &json!({"inputs":values}))?;
                     Ok(json!({"request":request,"status":"saved"}))
                 }
+            }
+            "ble" => {
+                ensure!(
+                    params["run"].is_string(),
+                    "BLE controls require a run identifier"
+                );
+                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(
+                    session.backend.environment_prefix == "ARCS_QEMU_",
+                    "BLE is unavailable on this chip"
+                );
+                ensure!(
+                    !session.finished
+                        || matches!(
+                            params["action"].as_str(),
+                            Some("status" | "events" | "operation" | "close")
+                        ),
+                    "Instance is not running"
+                );
+                if session.finished {
+                    session.ble.ended();
+                }
+                let mut value = session.ble.call(
+                    params,
+                    |p| Session::ble_transport(&mut session.qmp, &mut session.uart, p)
+                )?;
+                value["run"] = json!(session.output);
+                value["instance"] = json!(self.id);
+                if let Some(events) = value["events"].as_array_mut() {
+                    for event in events {
+                        event["run"] = json!(session.output);
+                        event["instance"] = json!(self.id);
+                    }
+                }
+                Ok(value)
             }
             "usb_adb" => {
                 let session = self.session.as_mut().context("Instance is not running")?;

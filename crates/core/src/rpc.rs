@@ -25,7 +25,7 @@ pub fn hello() -> Value {
         "build":crate::identity::build(),
         "features":["explicit_uid", "worker_endpoint", "temporary_instances",
             "run_identity", "uart_history", "signal_trace", "virtual_events",
-            "display_observation", "wifi_observation"]})
+            "display_observation", "wifi_observation", "ble_central"]})
 }
 
 #[cfg(test)]

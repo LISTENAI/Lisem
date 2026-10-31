@@ -172,6 +172,15 @@ enum Action {
         #[arg(long, requires="trace", conflicts_with="stop")] after: Option<u64>,
         #[arg(long, requires="trace", conflicts_with="stop")] limit: Option<usize>,
     },
+    /// Operate a generic virtual BLE central using a run-bound JSON request.
+    Ble {
+        id: String,
+        #[arg(long)]
+        run: String,
+        /// Generic BLE request JSON: action, peer, connection and operation fields.
+        #[arg(long)]
+        request: String,
+    },
     /// Inspect or enable a loopback TCP bridge to the firmware USB ADB interface.
     UsbAdb {
         id: String,
@@ -473,6 +482,13 @@ fn run() -> Result<i32> {
             let request = Request { id, run, action, capture: trace, sources: start, capacity, after, limit };
             request.validate()?;
             manager.call("signal_trace", serde_json::to_value(request)?)?
+        }
+        Action::Ble { id, run, request } => {
+            let mut params: serde_json::Value = serde_json::from_str(&request)?;
+            anyhow::ensure!(params.is_object(), "BLE request must be a JSON object");
+            params["id"] = json!(id);
+            params["run"] = json!(run);
+            manager.call("ble", params)?
         }
         Action::UsbAdb { id, enable, disable, run } => {
             let mut params = json!({"id":id,"run":run});
