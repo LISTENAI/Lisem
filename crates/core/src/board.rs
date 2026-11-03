@@ -152,6 +152,18 @@ const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
     ("ls2684", 33, 32, 1),
 ];
 
+fn spi_routes(chip: &str) -> &'static [(u64, u64)] {
+    if chip == "venusa" {
+        &[(1 << 16, 1 << 19), (1 << 22, 1 << 23)]
+    } else {
+        &[
+            (0x28202208208, 0x14101104104),
+            (0x802020820, 0x28201208208),
+            (0x14102104104, 0x2004082082),
+        ]
+    }
+}
+
 fn sd_pads(chip: &str) -> [u8; 6] {
     if chip == "venusa" {
         [42, 43, 44, 45, 46, 47]
@@ -396,7 +408,7 @@ impl Board {
                 target.model == "display-panel"
                     && matches!(
                         (source.model.as_str(), signal, input),
-                        ("st7789", "pixels", "pixels") | ("backlight", "brightness", "brightness")
+                        ("st7789" | "jd79651c", "pixels", "pixels") | ("backlight", "brightness", "brightness")
                     ),
                 "Incompatible device link: {} -> {}",
                 link.from,
@@ -499,18 +511,36 @@ impl Board {
         }
         plan["pulls"] = json!(pulls);
         if let Some((screen_id, screen)) = self.single("display-panel")? {
-            let (lcd_id, lcd) = self
-                .single("st7789")?
-                .context("Display panel requires an LCD controller")?;
-            let (bl_id, bl) = self
-                .single("backlight")?
-                .context("Display panel requires a backlight")?;
+            let lcd = self.single("st7789")?;
+            let epd = self.single("jd79651c")?;
             ensure!(
-                self.linked(&format!("{screen_id}.pixels"))? == format!("{lcd_id}.pixels")
-                    && self.linked(&format!("{screen_id}.brightness"))?
-                        == format!("{bl_id}.brightness"),
-                "Display panel links do not match its controller and backlight"
+                lcd.is_some() != epd.is_some(),
+                "Display panel requires exactly one controller"
             );
+            let (lcd_id, lcd) = lcd.or(epd).unwrap();
+            let epaper = lcd.model == "jd79651c";
+            ensure!(
+                self.linked(&format!("{screen_id}.pixels"))? == format!("{lcd_id}.pixels"),
+                "Display panel pixel source does not match its controller"
+            );
+            let light = self.single("backlight")?;
+            if epaper {
+                ensure!(
+                    light.is_none()
+                        && !self
+                            .links
+                            .iter()
+                            .any(|link| link.to == format!("{screen_id}.brightness")),
+                    "Electronic paper cannot have a backlight or brightness link"
+                );
+            } else {
+                let (bl_id, _) = light.context("Display panel requires a backlight")?;
+                ensure!(
+                    self.linked(&format!("{screen_id}.brightness"))? == format!("{bl_id}.brightness"),
+                    "Display panel brightness source does not match its backlight"
+                );
+            }
+            let (ram_width, ram_height) = if epaper { (176, 296) } else { (240, 320) };
             let p: Panel = serde_json::from_value(screen.parameters.clone())?;
             ensure!(
                 p.viewport.width > 0
@@ -518,40 +548,95 @@ impl Board {
                     && p.viewport
                         .x
                         .checked_add(p.viewport.width)
-                        .is_some_and(|end| end <= 240)
+                        .is_some_and(|end| end <= ram_width)
                     && p.viewport
                         .y
                         .checked_add(p.viewport.height)
-                        .is_some_and(|end| end <= 320),
+                        .is_some_and(|end| end <= ram_height),
                 "Display viewport is outside controller RAM"
             );
             ensure!(
                 ROTATIONS.contains(&p.rotation_clockwise),
                 "Invalid display rotation"
             );
-            let controller: Controller = serde_json::from_value(lcd.parameters.clone())?;
-            let backlight: Active = serde_json::from_value(bl.parameters.clone())?;
-            ensure!(backlight.active_level <= 1, "Invalid backlight polarity");
+            let mut properties = json!({});
+            if epaper {
+                let parameters: Epaper = serde_json::from_value(lcd.parameters.clone())?;
+                if let Some(luts) = parameters.otp_luts {
+                    ensure!(
+                        luts.len() == 5
+                            && luts
+                                .iter()
+                                .zip([56, 42, 42, 42, 42])
+                                .all(|(lut, size)| lut.len() == size),
+                        "OTP LUT sizes must be 56,42,42,42,42 bytes"
+                    );
+                    properties["otp_luts"] = json!(
+                        luts.iter()
+                            .flatten()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
+                    );
+                }
+            } else {
+                let controller: Controller = serde_json::from_value(lcd.parameters.clone())?;
+                properties["inverted"] = json!(controller.panel_inverted);
+                let (bl_id, bl) = light.unwrap();
+                let backlight: Active = serde_json::from_value(bl.parameters.clone())?;
+                ensure!(backlight.active_level <= 1, "Invalid backlight polarity");
+                properties["backlight_id"] = json!(bl_id);
+                properties["backlight_pad"] = json!(self.chip_pad(&format!("{bl_id}.EN"))?);
+                properties["backlight_active"] = json!(backlight.active_level);
+            }
             let (width, height) = if p.rotation_clockwise % 180 == 0 {
                 (p.viewport.width, p.viewport.height)
             } else {
                 (p.viewport.height, p.viewport.width)
             };
             compiled["screen"] = json!({"width":width,"height":height,
-                "label":screen.label.as_deref().unwrap_or("屏幕")});
+                    "label":screen.label.as_deref().unwrap_or("屏幕")});
             let mut pads = BTreeMap::new();
-            for port in ["SCK", "SDI", "CS", "DC", "RESET", "TE"] {
+            for port in [
+                "SCK",
+                "SDI",
+                "CS",
+                "DC",
+                "RESET",
+                if epaper { "BUSY" } else { "TE" },
+            ] {
                 pads.insert(port, self.chip_pad(&format!("{lcd_id}.{port}"))?);
             }
-            plan["panel"] = json!({"id":screen_id,"controller_id":lcd_id,"backlight_id":bl_id,
-                "pads":pads,"width":p.viewport.width,"height":p.viewport.height,
-                "x_offset":p.viewport.x,"y_offset":p.viewport.y,"rotation":p.rotation_clockwise,
-                "inverted":controller.panel_inverted,"backlight_pad":self.chip_pad(&format!("{bl_id}.EN"))?,
-                "backlight_active":backlight.active_level});
+            if epaper {
+                ensure!(
+                    pads.values().copied().collect::<BTreeSet<_>>().len() == 6,
+                    "Electronic paper signal pads must be distinct"
+                );
+                let routes = spi_routes(&self.chip);
+                let clock = pads["SCK"];
+                let data = pads["SDI"];
+                ensure!(
+                    clock < 64
+                        && data < 64
+                        && routes
+                            .iter()
+                            .any(|(clocks, data_pads)| clocks & (1u64 << clock) != 0
+                                && data_pads & (1u64 << data) != 0),
+                    "Unsupported electronic-paper SPI pad route"
+                );
+            }
+            plan["panel"] = json!({"id":screen_id,"controller_id":lcd_id,
+                    "model":lcd.model,"pads":pads,"width":p.viewport.width,"height":p.viewport.height,
+                    "x_offset":p.viewport.x,"y_offset":p.viewport.y,"rotation":p.rotation_clockwise});
+            plan["panel"]
+                .as_object_mut()
+                .unwrap()
+                .extend(properties.as_object().unwrap().clone());
         } else {
             ensure!(
-                self.single("st7789")?.is_none() && self.single("backlight")?.is_none(),
-                "LCD controller and backlight require a display panel"
+                self.single("st7789")?.is_none()
+                    && self.single("jd79651c")?.is_none()
+                    && self.single("backlight")?.is_none(),
+                "Display controller and backlight require a display panel"
             );
         }
         if let Some((id, camera)) = self.single("gc0328")? {
@@ -877,6 +962,7 @@ impl Board {
         let used_models = [
             "spi-nor",
             "st7789",
+            "jd79651c",
             "backlight",
             "button",
             "quadrature-encoder",
@@ -1024,6 +1110,13 @@ struct Controller {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct Epaper {
+    #[serde(default)]
+    #[schemars(length(min = 5, max = 5))]
+    otp_luts: Option<Vec<Vec<u8>>>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Active {
     #[schemars(range(max = 1))]
     active_level: u8,
@@ -1124,6 +1217,75 @@ pub fn trace_sources(compiled: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn epaper_board() -> Value {
+        json!({
+            "schema_version":1,"id":"paper-test","name":"Paper test","chip":"ls2684",
+            "storage":{"flash_bytes":16777216},
+            "devices":{
+                "driver":{"model":"jd79651c","parameters":{}},
+                "paper":{"model":"display-panel","parameters":{
+                    "viewport":{"x":0,"y":0,"width":16,"height":8},"rotation_clockwise":90}}
+            },
+            "nets":{
+                "SCK":{"endpoints":["chip.PA25","driver.SCK"]},
+                "SDI":{"endpoints":["chip.PA24","driver.SDI"]},
+                "CS":{"endpoints":["chip.PA22","driver.CS"]},
+                "DC":{"endpoints":["chip.PA23","driver.DC"]},
+                "RESET":{"endpoints":["chip.PB9","driver.RESET"]},
+                "BUSY":{"endpoints":["chip.PA27","driver.BUSY"]}
+            },
+            "links":[{"from":"driver.pixels","to":"paper.pixels"}]
+        })
+    }
+
+    #[test]
+    fn epaper_assembly_has_real_busy_and_no_backlight() {
+        let raw = epaper_board();
+        let board = compile(&raw).unwrap();
+        assert_eq!(board["screen"]["width"], 8);
+        assert_eq!(board["screen"]["height"], 16);
+        let plan = &board["assembly"]["panel"];
+        assert_eq!(plan["model"], "jd79651c");
+        assert_eq!(plan["pads"]["BUSY"], 27);
+        assert!(plan["backlight_pad"].is_null());
+        assert!(plan["otp_luts"].is_null());
+        let mut raw = raw.clone();
+        raw["devices"]["driver"]["parameters"]["otp_luts"] =
+            json!([vec![0u8;56],vec![0u8;42],vec![0u8;42],vec![0u8;42],vec![0u8;42]]);
+        assert_eq!(compile(&raw).unwrap()["assembly"]["panel"]["otp_luts"]
+            .as_str().unwrap().len(), 448);
+        raw["devices"]["driver"]["parameters"]["otp_luts"][0] = json!([0]);
+        assert!(compile(&raw).is_err());
+        for chip in ["ls2663", "venusa"] {
+            let mut raw = epaper_board();
+            raw["chip"] = json!(chip);
+            if chip == "venusa" {
+                raw["nets"]["SCK"]["endpoints"][0] = json!("chip.PA16");
+                raw["nets"]["SDI"]["endpoints"][0] = json!("chip.PA19");
+            }
+            assert!(compile(&raw).is_ok());
+        }
+    }
+
+    #[test]
+    fn epaper_rejects_unwired_busy_mixed_controllers_and_wrong_spi() {
+        let mut raw = epaper_board();
+        raw["nets"].as_object_mut().unwrap().remove("BUSY");
+        assert!(compile(&raw).is_err());
+        let mut raw = epaper_board();
+        raw["nets"]["SCK"]["endpoints"][0] = json!("chip.PA0");
+        assert!(compile(&raw).is_err());
+        let mut raw = epaper_board();
+        raw["devices"]["lamp"] = json!({"model":"backlight","parameters":{"active_level":1}});
+        assert!(compile(&raw).is_err());
+        let mut raw = epaper_board();
+        raw["devices"]["lcd"] = json!({"model":"st7789","parameters":{}});
+        assert!(compile(&raw).is_err());
+        let mut raw = epaper_board();
+        raw["devices"]["paper"]["parameters"]["viewport"]["width"] = json!(177);
+        assert!(compile(&raw).is_err());
+    }
 
     fn example() -> Value {
         serde_json::from_str(include_str!("../../../examples/boards/mini-custom.json")).unwrap()

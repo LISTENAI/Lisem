@@ -58,6 +58,12 @@ const MODELS: &[Model] = &[
         ports: &["SCK", "SDI", "CS", "DC", "RESET", "TE"],
     },
     Model {
+        id: "jd79651c",
+        category: "display",
+        description: "Four-wire SPI monochrome electronic-paper controller with active-low BUSY",
+        ports: &["SCK", "SDI", "CS", "DC", "RESET", "BUSY"],
+    },
+    Model {
         id: "display-panel",
         category: "display",
         description: "Visible display area and physical installation orientation",
@@ -160,6 +166,7 @@ fn parameter_schema(id: &str) -> Value {
         "spi-nor" => schema!(SerialNor),
         "fs1815cn-v1" | "ls8500" => schema!(Nor),
         "st7789" => schema!(Controller),
+        "jd79651c" => schema!(Epaper),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
         "gc0328" => schema!(Camera),
@@ -209,6 +216,7 @@ fn example(id: &str) -> Value {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
         "fs1815cn-v1" | "ls8500" => json!({}),
         "st7789" => json!({"panel_inverted":true}),
+        "jd79651c" => json!({}),
         "display-panel" => {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
         }
@@ -235,6 +243,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
             | ("quadrature-encoder", "A" | "B")
             | ("st7789", "TE")
+            | ("jd79651c", "BUSY")
             | ("cst328" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
             | (
@@ -279,7 +288,7 @@ fn links(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"inputs":["bus"],"sources":["chip.flash.data"]}),
         "fs1815cn-v1" => json!({"inputs":["analog"],"sources":["chip.codec.dac"]}),
-        "st7789" => json!({"outputs":["pixels"]}),
+        "st7789" | "jd79651c" => json!({"outputs":["pixels"]}),
         "backlight" => json!({"outputs":["brightness"]}),
         "display-panel" => json!({"inputs":["pixels","brightness"]}),
         "husb320-ba" => json!({"inputs":["partner"],"sources":["chip.usb0.host"]}),
@@ -313,10 +322,21 @@ fn constraints(id: &str) -> Value {
             "Positive rotation follows AB=11,01,00,10,11. Phase survives reset; pending motion is cancelled.",
             "Ideal digital contacts only; mechanical bounce and analog RC waveforms are not modeled."
         ]),
-        "st7789" | "backlight" | "display-panel" => json!([
+        "st7789" | "backlight" => json!([
             "One controller, one panel and one backlight must be connected together.",
             "Connect controller.pixels to panel.pixels and backlight.brightness to panel.brightness.",
             "Viewport must fit 240x320 controller RAM; width and height must be positive."
+        ]),
+        "display-panel" => json!([
+            "One pixel source is required; ST7789 requires a backlight, JD79651C forbids a brightness link.",
+            "Viewport must fit the selected controller RAM; rotation describes physical mounting."
+        ]),
+        "jd79651c" => json!([
+            "One display controller per board; connect pixels to a display-panel without a backlight.",
+            "Four-wire 8-bit SPI, BS strapped low; BUSY is low while an operation is active.",
+            "Monochrome, 176x296 RAM, byte-aligned full and partial transfers; firmware sets resolution and PinMux.",
+            "Refresh deadlines are estimates; missing OTP LUTs use three PLL scan frames. Optional otp_luts has 56,42,42,42,42 bytes.",
+            "Three-wire SPI, color, OTP programming, external temperature sensing and cascade are rejected."
         ]),
         "gc0328" => json!([
             "One camera per board; SCCB slave address is fixed at 0x21.",
@@ -455,13 +475,13 @@ fn data_signals(id: &str) -> Value {
         "fs1815cn-v1" => json!([{"name":"analog","direction":"input",
             "kind":"analog-audio","required":true,"sources":["chip.codec.dac"],
             "chips":["ls2663","ls2684"]}]),
-        "st7789" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
+        "st7789" | "jd79651c" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
         "backlight" => {
             json!([{"name":"brightness","direction":"output","kind":"brightness","required":true}])
         }
         "display-panel" => json!([
             {"name":"pixels","direction":"input","kind":"pixels","required":true},
-            {"name":"brightness","direction":"input","kind":"brightness","required":true}]),
+            {"name":"brightness","direction":"input","kind":"brightness","required":false}]),
         "husb320-ba" => {
             json!([{"name":"partner","direction":"input","kind":"usb-host-partner","required":false,
             "sources":["chip.usb0.host"],"chips":["ls2663","ls2684"]}])
@@ -488,7 +508,7 @@ fn interfaces(id: &str) -> Value {
         }
         "spi-nor" => json!([{"protocol":"spi-memory","bus":"bus","select":"CS",
             "capacity_parameter":"capacity_bytes","select_parameter":"chip_select"}]),
-        "st7789" => json!([{"protocol":"spi","clock":"SCK","data":"SDI","select":"CS"}]),
+        "st7789" | "jd79651c" => json!([{"protocol":"spi","clock":"SCK","data":"SDI","select":"CS"}]),
         _ => json!([]),
     }
 }
@@ -516,7 +536,12 @@ pub fn wiring(chip: &str) -> Value {
         .into_iter()
         .zip(sd_pads(chip).into_iter().map(endpoint))
         .collect();
-    json!({"pads":pads,"i2c":i2c,"adc":adc,"sd":sd,
+    let spi: Vec<_> = spi_routes(chip).iter().enumerate().map(|(controller, (clocks, data))| {
+        let pins = |mask: u64| (0..64).filter(|pin| mask & (1u64 << pin) != 0)
+            .map(endpoint).collect::<Vec<_>>();
+        json!({"controller":controller,"SCK":pins(*clocks),"SDI":pins(*data)})
+    }).collect();
+    json!({"pads":pads,"i2c":i2c,"spi":spi,"adc":adc,"sd":sd,
         "nor":{"model":"spi-nor","capacity_min_bytes":65536,"capacity_max_bytes":16777216,
             "capacity_power_of_two":true,"chip_selects":if chip == "venusa" {json!([0])} else {json!([0,1])}},
         "controller_sd_detect":chip!="venusa","usb_host_partner":chip!="venusa",
