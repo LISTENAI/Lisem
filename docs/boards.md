@@ -21,7 +21,7 @@ lisem create --board my-board
 ```
 
 校验只检查配置；导入后板型保存在实例库中，创建的实例具有独立的 Flash、
-OTP 和设备身份。通过 MCP 管理板型见[agent 接入](agents.md#板型与器件)。
+OTP 和设备身份。通过 MCP 管理板型见[工具参考](mcp.md#板型与器件)。
 固件文件、宿主摄像头、音频来源、SD 镜像和 Wi-Fi 热点在实例中配置。
 
 ## JSON 结构

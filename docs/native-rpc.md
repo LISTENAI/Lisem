@@ -1,5 +1,8 @@
 # 原生 RPC v1
 
+本文供维护 SDK 与原生管理入口的贡献者核对协议。编写固件测试使用
+[Python SDK](../python/README.md)；MCP 调用见[工具参考](mcp.md)。
+
 `lisem --data-dir LIBRARY rpc` 提供以标准输入输出传输的原生管理会话。
 每行一个 UTF-8 JSON 请求或响应；标准输出不混入诊断。Python SDK 通过
 该入口创建实例并发现 worker，运行中的控制和观察直接调用 worker，

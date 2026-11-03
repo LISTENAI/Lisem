@@ -1,7 +1,7 @@
 # 使用说明
 
 [下载与安装](../README.md#快速开始) · [Python SDK](../python/README.md) ·
-[Coding agent 接入](agents.md) · [自动化运行](automation.md)
+[AI 接入](agents.md) · [命令行自动化](automation.md)
 
 ## 首次运行
 
@@ -83,44 +83,8 @@ CLI 使用 `lisem wifi-environment INSTANCE_ID` 读取配置，将结果保存�
 
 当前支持单连接、legacy 广播和 1M PHY，链路使用明文，ATT MTU 为 23。
 SMP 配对与链路加密尚未提供。Python 接口与示例见
-[BLE 中心端](../python/docs/ble.md)，MCP 操作见
-[agent 接入说明](agents.md#ble)。
-
-### BLE 命令行
-
-使用 `lisem ble INSTANCE_ID --run RUN --request JSON` 操作当前运行。
-`RUN` 取自 `lisem --json status INSTANCE_ID` 的 `runtime.session.output`。
-先查询能力并打开中心端：
-
-```sh
-lisem --json ble INSTANCE_ID --run RUN --request '{"action":"capabilities"}'
-lisem --json ble INSTANCE_ID --run RUN --request '{"action":"open"}'
-```
-
-`open` 返回 `peer`，后续请求携带它。使用 `scan` 开始扫描，通过 `events`
-读取广播，按返回的 `address` 和 `address_type` 提交 `connect`。连接提交返回
-`connection` 和 `operation`；用 `operation` 动作查询结果，直到其 status
-不再为 `pending`。查询请求例如：
-
-```json
-{"action":"operation","peer":"PEER","connection":"CONNECTION","operation":"OPERATION"}
-```
-
-将示例标识换成本次返回值，作为 `--request` 参数。属性操作及 `disconnect`
-携带当前 `connection`；`operation` 和 `cancel` 还携带目标操作标识。
-先用 `discover` 动态发现 services、characteristics 和 descriptors，再将
-实际句柄交给 `read`、`write` 或 `subscribe`。二进制 `value` 为十六进制
-字符串；`subscribe` 的 `handle` 为 CCCD 句柄，`value="0100"` 订阅通知，
-`"0200"` 订阅 indication。写确认表示 ATT 响应或链路交付，业务结果另行观察。
-
-`events` 使用 `after`、`limit` 分页，按返回的 `cursor` 续读，并检查 `lost`；
-每页最多 128 条，历史容量为 512 条。`status` 查询当前链路与操作，`cancel`
-确认取消待完成操作，`disconnect` 确认断开。操作的 `timeout_ms` 为
-1～120000 宿主毫秒；观察时持续读取事件，超时后核对取消及链路状态。
-
-`trace` 的 `enabled=true` 显式把原始双向 PDU 加入有界内存事件，需要保存时
-由调用方写入文件。原始值可能包含凭据，正常运行不自动保存链路归档。
-单次 CLI 命令退出后保留中心端；完成后显式 `close`，或结束自有运行。
+[BLE 中心端](../python/docs/ble.md)，CLI 操作见
+[BLE 命令行](automation.md#ble)，MCP 操作见 [BLE 工具参考](mcp.md#ble)。
 
 ## 摄像头
 
@@ -200,8 +164,8 @@ lisem run INSTANCE_ID --seconds 30 --timeout 120
 
 用 `lisem --help` 或 `lisem COMMAND --help` 查询命令与参数。
 `--json` 输出结构化结果；`--data-dir` 或 `LISEM_DATA_DIR` 选择独立实例库。
-长按、连按和条件动作使用虚拟时间编排，见[自动化运行](automation.md)。
+长按、连按和条件动作使用虚拟时间编排，见[命令行自动化](automation.md)。
 
 需要诊断记录时，为 `run` 添加 `--capture DIRECTORY`。
-脚本与 pytest 见 [Python SDK](../python/README.md)，agent 配置见
-[MCP 接入](agents.md)。
+脚本与 pytest 见 [Python SDK](../python/README.md)，AI 工具配置见
+[AI 接入](agents.md)。

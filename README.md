@@ -16,7 +16,7 @@ agent 经 MCP 控制设备、读取串口和截图。同一套固件也可以在
 
 [下载应用](https://github.com/LISTENAI/Lisem/releases) ·
 [使用说明](docs/usage.md) · [Python SDK](python/README.md) ·
-[Coding agent 接入](docs/agents.md)
+[AI 接入](docs/agents.md)
 
 <p align="center">
   <img src="docs/images/arcs-mini.png" width="640"
@@ -101,18 +101,33 @@ npx skills add LISTENAI/Lisem
 
 MCP 服务由 `lisem mcp` 启动，客户端配置见[接入说明](docs/agents.md)。
 
-## 文档与开发
+## 文档
+
+### 使用指南
 
 | 文档 | 内容 |
 | --- | --- |
 | [使用说明](docs/usage.md) | 首次运行、桌面操作、外设接入与 CLI |
-| [Python SDK](python/README.md) | 脚本启动、API、pytest 与固件测试示例 |
-| [Coding agent 接入](docs/agents.md) | MCP 配置、工具与 Lisem skill |
-| [自动化运行](docs/automation.md) | 运行期限、动作编排与证据采集 |
+| [AI 接入](docs/agents.md) | 配置 MCP、验证连接与安装 Lisem skill |
 | [自定义板型](docs/boards.md) | 器件能力查询、JSON 格式与接线 |
+
+### 接口参考
+
+| 文档 | 内容 |
+| --- | --- |
+| [命令行自动化](docs/automation.md) | CLI 参数、运行期限、动作与采集 |
+| [MCP 工具参考](docs/mcp.md) | 工具调用、返回状态与清理语义 |
+| [Python SDK](python/README.md) | 脚本启动、API、pytest 与固件测试示例 |
+
+### 贡献与维护
+
+| 文档 | 内容 |
+| --- | --- |
+| [架构说明](docs/architecture.md) | 芯片、器件、宿主接口与运行控制 |
 | [外设开发与接入](docs/peripherals.md) | 新增模型、能力目录、板型装配与验证 |
 | [开发说明](docs/development.md) | 构建、验证与发布 |
-| [架构说明](docs/architecture.md) | 芯片、器件、宿主接口与运行控制 |
+| [原生 RPC](docs/native-rpc.md) | SDK 与原生管理入口的协议维护 |
+| [LUNA 组件](docs/luna.md) | 二进制组件、ABI 与更新验收 |
 
 问题反馈与功能建议欢迎提交到
 [Issues](https://github.com/LISTENAI/Lisem/issues)。
