@@ -110,6 +110,7 @@ MCP 服务由 `lisem mcp` 启动，客户端配置见[接入说明](docs/agents.
 | [Coding agent 接入](docs/agents.md) | MCP 配置、工具与 Lisem skill |
 | [自动化运行](docs/automation.md) | 运行期限、动作编排与证据采集 |
 | [自定义板型](docs/boards.md) | 器件能力查询、JSON 格式与接线 |
+| [外设开发与接入](docs/peripherals.md) | 新增模型、能力目录、板型装配与验证 |
 | [开发说明](docs/development.md) | 构建、验证与发布 |
 | [架构说明](docs/architecture.md) | 芯片、器件、宿主接口与运行控制 |
 
