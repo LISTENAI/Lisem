@@ -27,18 +27,19 @@ use std::{
 };
 use uuid::Uuid;
 
-fn qemu_failure(errors: &str) -> String {
-    let failure: String = errors
-        .lines()
-        .rev()
-        .find(|line| line.contains("ARCS") || line.contains("VenusA unsupported "))
-        .unwrap_or("QEMU failed")
+fn qemu_failure(errors: &str) -> Option<String> {
+    let mut diagnostics = errors.lines().rev().map(str::trim_start).filter(|line| {
+        !line.splitn(3, ": ").take(2).any(|part| matches!(part, "warning" | "info"))
+    });
+    let failure: String = diagnostics
+        .clone()
+        .find(|line| line.contains("ARCS") || line.contains("VenusA unsupported "))?
         .chars()
         .take(2048)
         .collect();
     // TX emits a fixed model reason before the generic MMIO location.
     // Preserve it without forwarding arbitrary stderr or guest data.
-    let tx_reason = errors.lines().rev().find_map(|line| {
+    let tx_reason = diagnostics.find_map(|line| {
         ["ARCS Wi-Fi AC1: ", "ARCS Wi-Fi AC3: "]
             .iter()
             .find_map(|prefix| line.find(prefix).map(|at| &line[at..]))
@@ -46,9 +47,9 @@ fn qemu_failure(errors: &str) -> String {
     match tx_reason {
         Some(reason) if !failure.contains(reason) => {
             let reason: String = reason.chars().take(512).collect();
-            format!("{reason}; {failure}")
+            Some(format!("{reason}; {failure}"))
         }
-        _ => failure,
+        _ => Some(failure),
     }
 }
 
@@ -72,7 +73,7 @@ fn startup_diagnostic(errors: &str) -> String {
             return reason.to_owned();
         }
     }
-    qemu_failure(errors)
+    qemu_failure(errors).unwrap_or_else(|| "QEMU failed".to_owned())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -839,10 +840,13 @@ impl Session {
                 self.state["ap_exceptions"] = report["cores"][0]["exceptions"].clone();
                 self.state["exceptions"] = report["cores"][1]["exceptions"].clone();
                 self.state["machine_status"] = report["status"].clone();
-                if ![Some("budget-complete"), Some("probe-pass"), Some("power-off")]
-                    .contains(&report["status"].as_str())
-                {
-                    self.state["error"] = json!(qemu_failure(&errors));
+                let machine_status = report["status"].as_str();
+                if !matches!(machine_status, Some("budget-complete" | "probe-pass" | "power-off")) {
+                    let diagnostic = qemu_failure(&errors).unwrap_or_else(|| match machine_status {
+                        Some(reason) => format!("QEMU exited with {status} ({reason})"),
+                        None => format!("QEMU exited with {status}; report status missing"),
+                    });
+                    self.state["error"] = json!(diagnostic);
                 }
             } else if !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!("QEMU exited without a readable report");
@@ -2769,20 +2773,32 @@ mod tests {
             super::qemu_failure(&format!(
                 "private guest output\nqemu: {reason}\nqemu: {mmio}"
             )),
-            format!("{reason}; qemu: {mmio}")
+            Some(format!("{reason}; qemu: {mmio}"))
         );
         assert_eq!(
             super::qemu_failure(&format!("private guest output\n{mmio}")),
-            mmio
+            Some(mmio.to_owned())
         );
-        assert_eq!(super::qemu_failure("private guest output"), "QEMU failed");
-        assert_eq!(super::qemu_failure(reason), reason);
+        assert_eq!(super::qemu_failure("private guest output"), None);
+        assert_eq!(super::qemu_failure(reason).as_deref(), Some(reason));
         let long = format!(
             "ARCS Wi-Fi AC3: {}\nARCS {}",
             "x".repeat(4000),
             "界".repeat(4000)
         );
-        assert_eq!(super::qemu_failure(&long).chars().count(), 512 + 2 + 2048);
+        assert_eq!(super::qemu_failure(&long).unwrap().chars().count(), 512 + 2 + 2048);
+    }
+
+    #[test]
+    fn qemu_warning_is_not_a_failure_diagnostic() {
+        let warning = "qemu-system-riscv32: warning: ARCS RTC calibration has no analog effect; result registers unsupported";
+        let fault = "qemu-system-riscv32: ARCS unsupported write hart=1 pc=0x30600000 address=0x46400004 size=4 value=0x2";
+        assert_eq!(super::qemu_failure(warning), None);
+        assert_eq!(super::startup_diagnostic(warning), "QEMU failed");
+        assert_eq!(
+            super::qemu_failure(&format!("{fault}\n{warning}\n")).as_deref(),
+            Some(fault)
+        );
     }
 
     use super::*;
@@ -3011,7 +3027,7 @@ mod tests {
             "VenusA unsupported read hart=0 pc=0x30000000 address=0x45500100 size=4 value=0x0";
         assert_eq!(
             qemu_failure(&format!("private credential=secret\n{fault}")),
-            fault
+            Some(fault.to_owned())
         );
     }
 
