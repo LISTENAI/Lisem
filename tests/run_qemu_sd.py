@@ -154,6 +154,37 @@ def card_image(hart=0, board="arcs-mini"):
         assert not (m.read(BASE + 0x24) & 2)
         assert [m.read(0x20014000 + n * 4) for n in range(128)] == list(range(0x10000000, 0x10000080))
         assert all(m.read(0x20014200 + n * 4) == 0 for n in range(1920))
+        # An unaligned start can stop inside the last block. The rest of that
+        # block must come from the buffered data, even with no block count.
+        for blocks, mode, index, argument in ((1, 0x11, 17, 512), (2, 0x37, 18, 0)):
+            boundary = 0x20018000
+            start = boundary - (blocks - 1) * 512 - 96
+            m.command('writew 0x45a00006 %d' % (blocks if mode & 2 else 0))
+            m.command('writew 0x45a0000c %d' % mode)
+            m.write(boundary, 0xdeadbeef)
+            m.write(BASE, start)
+            command(index, argument, 0x3a)
+            assert m.read(BASE) == boundary
+            assert m.read(BASE + 0x30) == 0x9
+            assert m.read(BASE + 4) >> 16 == bool(mode & 2)
+            assert m.read(boundary - 4) == 0x10000017
+            assert m.read(boundary) == 0xdeadbeef
+            m.write(BASE + 0x30, 0x9)
+            m.write(BASE, boundary)
+            assert m.read(BASE) == boundary + 416
+            assert m.read(BASE + 0x30) == 0x2
+            assert m.read(BASE + 4) >> 16 == 0
+            assert [m.read(boundary + n * 4) for n in range(104)] == list(range(0x10000018, 0x10000080))
+        # A split write must hold the partial sector until SYSAD resumes it.
+        m.command('writew 0x45a0000c 1')
+        m.write(BASE, boundary - 96)
+        command(24, 1024, 0x3a)
+        assert m.read(BASE) == boundary
+        assert m.read(BASE + 0x30) == 0x9
+        m.write(BASE + 0x30, 0x9)
+        m.write(BASE, boundary)
+        assert m.read(BASE) == boundary + 416
+        assert m.read(BASE + 0x30) == 0x2
         # ADMA2 reads the same sector into guest memory through a descriptor.
         import struct
         m.write(0x20010000, (512 << 16) | 0x23)
@@ -223,7 +254,8 @@ def card_image(hart=0, board="arcs-mini"):
         m.qmp_command('eject', {'device': 'sdcard', 'force': False})
         with image.open('rb') as f:
             f.seek(512)
-            assert f.read(512) == b''.join(struct.pack('<I', n) for n in range(0x10000000, 0x10000080))
+            sector = b''.join(struct.pack('<I', n) for n in range(0x10000000, 0x10000080))
+            assert f.read(1024) == sector * 2
         print('%s: SD identification, PIO/SDMA/ADMA2, eject/reinsert, timeout and persistence: PASS' % case)
     finally:
         m.close()
