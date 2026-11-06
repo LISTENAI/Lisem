@@ -2665,9 +2665,18 @@ impl Client {
 }
 
 pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> {
+    serve_with_exit(catalog, id, stop, || {})
+}
+
+fn serve_with_exit(
+    catalog: Catalog,
+    id: String,
+    stop: Arc<AtomicBool>,
+    before_lease_release: impl FnOnce(),
+) -> Result<()> {
     let item = catalog.device(&id)?;
     let path = PathBuf::from(item["path"].as_str().context("Missing instance path")?);
-    let _lease = Lease::acquire(&path.join("runtime.lock"))?;
+    let lease = Lease::acquire(&path.join("runtime.lock"))?;
     let listener = transport::listener()?;
     let token = Uuid::new_v4().simple().to_string();
     let endpoint = path.join("runtime.json");
@@ -2684,6 +2693,7 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
         deadline: Instant,
     }
     let mut connections: Vec<Connection> = Vec::new();
+    let mut shutdown_reply = None;
     while !runtime.shutdown && !stop.load(Ordering::Acquire) {
         if let Err(error) = runtime.tick()
             && let Some(session) = &mut runtime.session
@@ -2708,6 +2718,9 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
             }
         }
         connections.retain_mut(|connection| {
+            if runtime.shutdown {
+                return false;
+            }
             let result = (|| -> Result<bool> {
                 ensure!(
                     Instant::now() < connection.deadline,
@@ -2736,6 +2749,10 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
                             Ok(value) => json!({"result":value}),
                             Err(error) => json!({"error":error.to_string(),"error_kind":crate::rpc::error_kind(&error)}),
                         };
+                        if runtime.shutdown {
+                            shutdown_reply = Some((connection.stream.try_clone()?, reply));
+                            return Ok(false);
+                        }
                         connection.output = serde_json::to_vec(&reply)?;
                         connection.output.push(b'\n');
                         connection.deadline = Instant::now() + Duration::from_secs(5);
@@ -2758,9 +2775,41 @@ pub fn serve(catalog: Catalog, id: String, stop: Arc<AtomicBool>) -> Result<()> 
         });
         thread::sleep(Duration::from_millis(2));
     }
-    runtime.call("stop", &json!({}))?;
-    let _ = fs::remove_file(endpoint);
-    Ok(())
+    let result = runtime.call("stop", &json!({})).map(|_| ());
+    drop(runtime);
+    drop(connections);
+    drop(listener);
+    // Remove the endpoint while still owning the lease, so a replacement
+    // worker cannot publish its endpoint until we are done with this path.
+    let result = result.and_then(|()| match fs::remove_file(&endpoint) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+            Err(error).context("Cannot remove runtime endpoint")
+        }
+        _ => Ok(()),
+    });
+    before_lease_release();
+    #[cfg(unix)]
+    let result = result.and_then(|()| {
+        lease.file.unlock().context("Cannot release runtime lease")
+    });
+    drop(lease);
+    // Successful shutdown is the receipt that lets the caller retire storage.
+    if let Some((mut stream, reply)) = shutdown_reply {
+        let reply = match &result {
+            Ok(()) => reply,
+            Err(error) => json!({
+                "error":format!("{error:#}"), "error_kind":crate::rpc::error_kind(error)
+            }),
+        };
+        let sent = (|| -> Result<()> {
+            stream.set_nonblocking(false)?;
+            stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+            writeln!(stream, "{reply}")?;
+            Ok(())
+        })();
+        return result.and(sent);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -2802,6 +2851,90 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn shutdown_acknowledges_released_runtime_lease() {
+        use std::sync::mpsc;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let temp = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&root, temp.path()).unwrap();
+        let owner = Uuid::new_v4().simple().to_string();
+        let item = catalog
+            .create_temporary("arcs-mini", None, None, &Default::default(), &owner)
+            .unwrap();
+        let id = item["id"].as_str().unwrap().to_owned();
+        let path = PathBuf::from(item["path"].as_str().unwrap());
+        let (at_release, reached_release) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker = {
+            let catalog = Catalog::open(&root, temp.path()).unwrap();
+            let id = id.clone();
+            let stop = stop.clone();
+            thread::spawn(move || {
+                serve_with_exit(catalog, id, stop, || {
+                    at_release.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(3)).ok();
+                })
+            })
+        };
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let client = loop {
+            if let Ok(client) = Client::connect_for_control(&path) {
+                break client;
+            }
+            if Instant::now() >= deadline {
+                stop.store(true, Ordering::Release);
+                panic!("Runtime did not start: {:?}", worker.join());
+            }
+            thread::sleep(Duration::from_millis(2));
+        };
+        let identity = client.call("status", json!({})).unwrap()["worker"]["id"].clone();
+        let mut stream = TcpStream::connect_timeout(
+            &([127, 0, 0, 1], client.endpoint["port"].as_u64().unwrap() as u16).into(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+        writeln!(
+            stream,
+            "{}",
+            json!({"token":client.endpoint["token"], "method":"shutdown",
+                "params":{"expected_idle":true,"worker":identity}})
+        )
+        .unwrap();
+        reached_release.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!path.join("runtime.json").exists());
+        let error = catalog.remove_temporary(&id, &owner).unwrap_err();
+        assert!(error.to_string().contains("runtime.lock"), "{error:#}");
+        assert!(path.exists());
+        stream.set_nonblocking(true).unwrap();
+        let pending = stream.peek(&mut [0]);
+        stream.set_nonblocking(false).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        resume.send(()).unwrap();
+        let mut response = String::new();
+        BufReader::new(stream).read_line(&mut response).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&response).unwrap(),
+            json!({"result":true})
+        );
+        assert!(
+            matches!(pending, Err(error) if error.kind() == std::io::ErrorKind::WouldBlock),
+            "Shutdown acknowledged before the worker released its lease"
+        );
+        let other_holder = Lease::acquire(&path.join("runtime.lock")).unwrap();
+        worker.join().unwrap().unwrap();
+        let error = catalog.remove_temporary(&id, &owner).unwrap_err();
+        assert!(error.to_string().contains("runtime.lock"), "{error:#}");
+        assert!(path.exists());
+        drop(other_holder);
+        assert!(catalog.remove_temporary(&id, "other-owner").is_err());
+        assert!(path.exists());
+        assert_eq!(catalog.remove_temporary(&id, &owner).unwrap()["removed"], true);
+        assert!(!path.exists());
+    }
 
     #[cfg(windows)]
     #[test]
