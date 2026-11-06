@@ -268,18 +268,21 @@ def rejection():
     print('Active pinmux loss, dynamic MCLK and unverified DMA burst modes rejected: PASS')
 
 
-def subsampling():
+def subsampling(mode):
     # Nonuniform 2x2 neighborhoods distinguish sensor averaging from a
     # center crop, nearest-neighbor resize or averaging packed RGB565 bytes.
     image_bytes = bytes(c for y in range(480) for x in range(640)
                         for c in ((x * 23) % 256, (y * 71 + x * 5) % 256,
                                   (x * 13 + y * 29) % 256))
-    m = Machine(OUTPUT / 'subsample')
+    m = Machine(OUTPUT / ('subsample-%02x' % mode))
     try:
         configure(m)
         transfer(m, [0x50, 1, 0, 2, 0, 4])
         transfer(m, [0x55, 0, 4, 0, 16])
-        transfer(m, [0x59, 0x22, 0x33])
+        transfer(m, [0x59, 0x22, mode])
+        if mode != 0x33:
+            transfer(m, [0x5b, 0, 0, 0, 0])
+            transfer(m, [0x5f, 0, 0, 0, 0])
         m.camera_frame(image_bytes)
         for mirror in (0, 1, 2, 3):
             transfer(m, [0x17, mirror])
@@ -307,8 +310,51 @@ def subsampling():
             assert m.read(RAM + 32) == 0xa5a5a5a5
             assert not m.read(DVP + 0x38) & 12
             m.write(DVP + 0x20, 0)
-        print('GC0328 2x2 neighbor averaging, crop, mirror/flip, DMA bytes and guard: PASS')
+        print('GC0328 mode %02x: 2x2 averaging, crop, mirror/flip and DMA bytes: PASS' % mode)
     finally: m.close()
+
+
+def integer_subsampling_timing():
+    for mode, word_ns in ((0x0e, 1000), (0x0f, 2000)):
+        m = Machine(OUTPUT / ('integer-timing-%02x' % mode))
+        try:
+            configure(m)
+            image(m)
+            m.write(0x46100018, 40)  # 240 MHz HCLK.
+            m.write(DVP + 0x18, 29)  # 4 MHz MCLK.
+            transfer(m, [0x05, 0, 0])  # No horizontal blanking.
+            transfer(m, [0x0f, 0, 16, 0])  # 20 sensor clocks per line at 2 MCLK each.
+            transfer(m, [0x50, 1])
+            transfer(m, [0x55, 0, 4, 0, 16])
+            transfer(m, [0x59, 0x22, mode])
+            transfer(m, [0x5b, 0, 0, 0, 0])
+            transfer(m, [0x5f, 0, 0, 0, 0])
+            m.write(DVP + 0x20, 1)
+            m.command('clock_step 1')
+            assert m.read(DVP + 0x38) & 0x80
+            m.write(DVP + 0x2c, 0x80)
+            # Twelve readout lines lead the active image. Output rows remain
+            # two readout lines apart, independent of output PCLK extension.
+            m.command('clock_step %d' % (120000 + word_ns - 1))
+            assert not m.read(DVP + 0x38) & 1
+            m.command('clock_step 1')
+            for row in range(2):
+                for word in range(4):
+                    if word:
+                        m.command('clock_step %d' % word_ns)
+                    assert m.read(0x45001000) == 0xf800f800
+                if not row:
+                    m.write(DVP + 0x2c, 1)
+                    m.command('clock_step %d' % (20000 - 3 * word_ns - 1))
+                    assert not m.read(DVP + 0x38) & 1
+                    m.command('clock_step 1')
+            elapsed = 140000 + 4 * word_ns
+            m.command('clock_step %d' % (6000000 - elapsed - 1))
+            assert not m.read(DVP + 0x38) & 0x80
+            m.command('clock_step 1')
+            assert m.read(DVP + 0x38) & 0x80
+        finally: m.close()
+    print('GC0328 integer half mode preserves row and frame cadence across PCLK modes: PASS')
 
 
 def arrival_order():
@@ -363,4 +409,6 @@ if __name__ == '__main__':
     rejection()
     formats()
     capacity_and_yuv()
-    subsampling()
+    subsampling(0x33)
+    subsampling(0x0e)
+    integer_subsampling_timing()
