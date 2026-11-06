@@ -2930,10 +2930,16 @@ mod tests {
         assert!(error.to_string().contains("runtime.lock"), "{error:#}");
         assert!(path.exists());
         drop(other_holder);
-        assert!(catalog.remove_temporary(&id, "other-owner").is_err());
+        let error = catalog.remove_temporary(&id, "other-owner").unwrap_err();
+        assert_eq!(error.to_string(), "Temporary instance ownership mismatch");
         assert!(path.exists());
-        assert_eq!(catalog.remove_temporary(&id, &owner).unwrap()["removed"], true);
-        assert!(!path.exists());
+
+        // Successful retirement is part of the SDK's POSIX temporary instance contract.
+        #[cfg(unix)]
+        {
+            assert_eq!(catalog.remove_temporary(&id, &owner).unwrap()["removed"], true);
+            assert!(!path.exists());
+        }
     }
 
     #[cfg(windows)]
