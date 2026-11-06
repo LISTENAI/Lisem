@@ -130,8 +130,9 @@ def verify(binary, python, output, prefix=()):
             text = ('import signal,time,sys\nfrom pathlib import Path\n'
                     'def stop(*args): raise SystemExit(42)\n'
                     'signal.signal(signal.SIGTERM,stop)\n'
-                    f'Path({str(ready)!r}).write_text("ready")\n'
-                    'try: time.sleep(60)\n'
+                    'try:\n'
+                    f'    Path({str(ready)!r}).write_text("ready")\n'
+                    '    time.sleep(60)\n'
                     'except KeyboardInterrupt: sys.exit(23)\n'
                     f'finally: Path({str(finished)!r}).write_text("finished")\n')
             process = subprocess.Popen([*prefix, str(binary), 'python', '--interpreter', str(python), '--', '-c', text], cwd=output, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
