@@ -51,6 +51,26 @@ def run(hart):
         m.command('clock_step 1000000')
         assert [first] + [m.read(BASE + 0x20) for _ in range(3)] == [6, 1, 18, 0x7d]
         assert read() == [6, 14, 19, 0xff]
+        # Interrupt-driven HAL reads one advertised FIFO per FULL/CMPL event.
+        # A mismatched CONFIG used to leave byte 161 in the FIFO at CMPL.
+        contact('239,319,press')
+        transfer(m, [0x00, 0xd0], address=0x1d, stop=False)
+        m.write(BASE + 0x18, 0x3f8)
+        m.write(BASE + 0x24, 0x1f00 | 161)
+        m.write(BASE + 0x28, 1)
+        depth = 2 << (m.read(BASE + 0x10) & 3)
+        received = []
+        for _ in range(256):
+            m.command('clock_step 1000000')
+            status = m.read(BASE + 0x18)
+            if status & (2 | 0x200):
+                received.extend(m.read(BASE + 0x20) for _ in range(min(depth, 161 - len(received))))
+            if status & 0x200:
+                break
+        else:
+            raise AssertionError('Long I2C RX did not complete')
+        assert received == [6, 14, 19, 0xff] + [0] * 157
+        assert m.read(BASE + 0x18) & 1  # No unread tail after completion.
         # Unsupported register writes must NACK.
         status, _ = transfer(m, [0x00, 0xd1], address=0x1d)
         assert not status & 0x400

@@ -12,7 +12,16 @@ def functional(hart):
         for i in (0, 1):
             base = 0x46d00000 + i * 0x100000
             irq = 0xe0021000 + 4 * (43 + i)
-            assert m.read(base + 0x10) == 1 and m.read(base + 0x18) == 0x6001
+            assert m.read(base + 0x10) == 2 and m.read(base + 0x18) == 0x6001
+            depth = 2 << (m.read(base + 0x10) & 3)
+            # HAL services FIFO interrupts using the advertised capacity.
+            # FULL must coincide with that capacity, including after reset.
+            for n in range(depth):
+                assert not m.read(base + 0x18) & 2
+                m.write(base + 0x20, n)
+            assert m.read(base + 0x18) & 2
+            assert [m.read(base + 0x20) for _ in range(depth)] == list(range(depth))
+            assert m.read(base + 0x18) & 1
             m.write(base + 0x14, 4)
             for cycle in range(10):
                 for n in range(8):
