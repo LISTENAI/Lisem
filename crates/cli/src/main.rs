@@ -56,39 +56,13 @@ enum Action {
     /// List device instances.
     List,
     /// Query device models by category or exact model ID.
-    BoardModels {
-        /// Category from the returned categories list, for example camera.
-        #[arg(long)]
-        category: Option<String>,
-        /// Exact model ID (case-insensitive); an unknown model returns found=false.
-        #[arg(long)]
-        model: Option<String>,
-        /// Include full descriptions in a category listing.
-        #[arg(long)]
-        details: bool,
-        /// Include board JSON schema, installed chips and reference boards.
-        #[arg(long)]
-        schema: bool,
-    },
+    BoardModels(BoardModelsArgs),
     /// Validate a board JSON and show its resolved hardware description.
     BoardValidate { path: PathBuf },
     /// Import or replace a custom board; affected instances must be powered off.
     BoardImport { path: PathBuf },
     /// Create an independent instance with a new OTP identity.
-    Create {
-        #[arg(long)]
-        board: String,
-        #[arg(long)]
-        name: Option<String>,
-        #[arg(long)]
-        lpk: Option<PathBuf>,
-        /// Exact chip UID in hexadecimal; defaults to a random prefixed UID (prefix: ff00).
-        #[arg(long)]
-        uid: Option<String>,
-        /// Allow the specified UID without the default prefix for this request.
-        #[arg(long, requires = "uid")]
-        allow_unprefixed_uid: bool,
-    },
+    Create(CreateArgs),
     /// Add an existing instance to this library without changing its storage.
     Attach { path: PathBuf },
     /// Show live state and persisted instance identity.
@@ -147,42 +121,13 @@ enum Action {
         state: String,
     },
     /// Schedule button presses on virtual time; returns the sequence identifier.
-    ButtonSequence {
-        id: String,
-        button: String,
-        #[arg(long)]
-        run: String,
-        #[arg(long, default_value_t = 1)]
-        count: u64,
-        #[arg(long)]
-        hold_ms: u64,
-        #[arg(long, default_value_t = 80)]
-        gap_ms: u64,
-    },
+    ButtonSequence(ButtonSequenceArgs),
     /// Rotate a quadrature encoder or inspect/cancel its virtual-time sequence.
-    Rotary {
-        id: String,
-        rotary: String,
-        #[arg(value_parser=["rotate", "status", "cancel"])]
-        action: String,
-        #[arg(long)] run: String,
-        #[arg(long, allow_hyphen_values=true)] detents: Option<i32>,
-        #[arg(long)] edge_ms: Option<u32>,
-        #[arg(long)] sequence: Option<u64>,
-    },
+    Rotary(RotaryArgs),
     /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
     Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
     /// List digital sources or record transitions at their virtual event times.
-    SignalTrace {
-        id: String,
-        #[arg(long)] run: Option<String>,
-        #[arg(long, num_args=1.., conflicts_with_all=["trace", "stop"])] start: Option<Vec<String>>,
-        #[arg(long, requires="start")] capacity: Option<usize>,
-        #[arg(long)] trace: Option<String>,
-        #[arg(long, requires="trace")] stop: bool,
-        #[arg(long, requires="trace", conflicts_with="stop")] after: Option<u64>,
-        #[arg(long, requires="trace", conflicts_with="stop")] limit: Option<usize>,
-    },
+    SignalTrace(SignalTraceArgs),
     /// Operate a generic virtual BLE central using a run-bound JSON request.
     Ble {
         id: String,
@@ -203,8 +148,7 @@ enum Action {
         run: Option<String>,
     },
     /// Inspect, mount or eject a raw SD card image.
-    SdCard { id: String, #[arg(long, conflicts_with="eject")] image: Option<PathBuf>,
-        #[arg(long)] eject: bool, #[arg(long)] run: Option<String> },
+    SdCard(SdCardArgs),
     /// Arm a bounded event program from a JSON file.
     #[command(after_long_help = r#"Plan example (future UART 0 bytes 'ready', then an 80 ms press):
   {"trigger":{"uart_hex":"7265616479","channel":0,"timeout_ms":10000},
@@ -225,28 +169,11 @@ Dispatched means input delivery; confirm child sequence and firmware results."#)
     UartReceive { id: String, channel: u8, #[arg(long)] capture: PathBuf,
         #[arg(long, default_value_t = 36000)] timeout: u64 },
     /// Read or cancel the latest button sequence, rejecting stale identifiers.
-    ButtonSequenceStatus {
-        id: String,
-        sequence: u64,
-        #[arg(long)]
-        run: String,
-        #[arg(long)]
-        cancel: bool,
-    },
+    ButtonSequenceStatus(ButtonSequenceStatusArgs),
     /// List host camera IDs and authorization without starting capture.
     CameraDevices,
     /// Select a camera image or host camera; retained until cleared.
-    Camera {
-        id: String,
-        #[arg(required_unless_present_any = ["clear", "device"], conflicts_with_all = ["clear", "device"])]
-        image: Option<PathBuf>,
-        /// Host camera ID from camera-devices. No automatic fallback.
-        #[arg(long, conflicts_with = "clear")]
-        device: Option<String>,
-        /// Remove any input; sensor capture waits for a new source.
-        #[arg(long)]
-        clear: bool,
-    },
+    Camera(CameraArgs),
     /// Set Wi-Fi access point availability.
     AccessPoint {
         id: String,
@@ -289,15 +216,7 @@ Dispatched means input delivery; confirm child sequence and firmware results."#)
         hex: bool,
     },
     /// Read a bounded UART history without consuming the terminal connection.
-    Logs {
-        id: String,
-        #[arg(default_value_t = 0)]
-        channel: u8,
-        #[arg(long, default_value_t = 0)]
-        cursor: u64,
-        #[arg(long, default_value_t = 4096)]
-        limit: usize,
-    },
+    Logs(LogsArgs),
     /// Power off and close this instance's host endpoints.
     Shutdown { id: String },
     #[command(name = "_runtime", hide = true)]
@@ -305,6 +224,118 @@ Dispatched means input delivery; confirm child sequence and firmware results."#)
     #[command(name = "_bridge", hide = true)]
     Bridge,
 }
+
+// Separate argument builders keep Clap debug parsing within native stack limits.
+#[derive(clap::Args)]
+struct CreateArgs {
+    #[arg(long)]
+    board: String,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    lpk: Option<PathBuf>,
+    /// Exact chip UID in hexadecimal; defaults to a random prefixed UID (prefix: ff00).
+    #[arg(long)]
+    uid: Option<String>,
+    /// Allow the specified UID without the default prefix for this request.
+    #[arg(long, requires = "uid")]
+    allow_unprefixed_uid: bool,
+}
+
+#[derive(clap::Args)]
+struct ButtonSequenceArgs {
+    id: String,
+    button: String,
+    #[arg(long)]
+    run: String,
+    #[arg(long, default_value_t = 1)]
+    count: u64,
+    #[arg(long)]
+    hold_ms: u64,
+    #[arg(long, default_value_t = 80)]
+    gap_ms: u64,
+}
+
+#[derive(clap::Args)]
+struct RotaryArgs {
+    id: String,
+    rotary: String,
+    #[arg(value_parser=["rotate", "status", "cancel"])]
+    action: String,
+    #[arg(long)] run: String,
+    #[arg(long, allow_hyphen_values=true)] detents: Option<i32>,
+    #[arg(long)] edge_ms: Option<u32>,
+    #[arg(long)] sequence: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct SignalTraceArgs {
+    id: String,
+    #[arg(long)] run: Option<String>,
+    #[arg(long, num_args=1.., conflicts_with_all=["trace", "stop"])] start: Option<Vec<String>>,
+    #[arg(long, requires="start")] capacity: Option<usize>,
+    #[arg(long)] trace: Option<String>,
+    #[arg(long, requires="trace")] stop: bool,
+    #[arg(long, requires="trace", conflicts_with="stop")] after: Option<u64>,
+    #[arg(long, requires="trace", conflicts_with="stop")] limit: Option<usize>,
+}
+
+#[derive(clap::Args)]
+struct BoardModelsArgs {
+    /// Category from the returned categories list, for example camera.
+    #[arg(long)]
+    category: Option<String>,
+    /// Exact model ID (case-insensitive); an unknown model returns found=false.
+    #[arg(long)]
+    model: Option<String>,
+    /// Include full descriptions in a category listing.
+    #[arg(long)]
+    details: bool,
+    /// Include board JSON schema, installed chips and reference boards.
+    #[arg(long)]
+    schema: bool,
+}
+
+#[derive(clap::Args)]
+struct ButtonSequenceStatusArgs {
+    id: String,
+    sequence: u64,
+    #[arg(long)]
+    run: String,
+    #[arg(long)]
+    cancel: bool,
+}
+
+#[derive(clap::Args)]
+struct SdCardArgs {
+    id: String, #[arg(long, conflicts_with="eject")] image: Option<PathBuf>,
+    #[arg(long)] eject: bool, #[arg(long)] run: Option<String>
+}
+
+#[derive(clap::Args)]
+struct CameraArgs {
+    id: String,
+    #[arg(required_unless_present_any = ["clear", "device"], conflicts_with_all = ["clear", "device"])]
+    image: Option<PathBuf>,
+    /// Host camera ID from camera-devices. No automatic fallback.
+    #[arg(long, conflicts_with = "clear")]
+    device: Option<String>,
+    /// Remove any input; sensor capture waits for a new source.
+    #[arg(long)]
+    clear: bool,
+}
+
+#[derive(clap::Args)]
+struct LogsArgs {
+    id: String,
+    #[arg(default_value_t = 0)]
+    channel: u8,
+    #[arg(long, default_value_t = 0)]
+    cursor: u64,
+    #[arg(long, default_value_t = 4096)]
+    limit: usize,
+}
+
 #[derive(clap::Args)]
 struct RunOptions {
     #[arg(long, default_value_t = 300)]
@@ -408,7 +439,7 @@ fn run() -> Result<i32> {
     let value = match args.command {
         Action::Python { .. } | Action::BuildInfo => unreachable!(),
         Action::List => json!(manager.catalog.devices()?),
-        Action::BoardModels { category, model, details, schema } => {
+        Action::BoardModels(BoardModelsArgs { category, model, details, schema }) => {
             let legacy = category.is_none() && model.is_none() && !details && !schema;
             let result = manager.catalog.model_catalog(&lisem_core::board::ModelQuery {
                 category, model, details, schema,
@@ -417,7 +448,7 @@ fn run() -> Result<i32> {
         },
         Action::BoardValidate { path } => manager.call("board_validate", json!({"path":absolute(&path)?}))?,
         Action::BoardImport { path } => manager.call("board_import", json!({"path":absolute(&path)?}))?,
-        Action::Create { board, name, lpk, uid, allow_unprefixed_uid } => manager.call(
+        Action::Create(CreateArgs { board, name, lpk, uid, allow_unprefixed_uid }) => manager.call(
             "create",
             json!({"board": board, "name": name, "package": lpk.as_deref().map(absolute).transpose()?, "uid":uid, "allow_unprefixed_uid":allow_unprefixed_uid}),
         )?,
@@ -469,10 +500,10 @@ fn run() -> Result<i32> {
         Action::Button { id, button, state } => manager.call(
             "button", json!({"id": id, "button": button, "pressed": state == "press"}),
         )?,
-        Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
+        Action::ButtonSequence(ButtonSequenceArgs { id, button, run, count, hold_ms, gap_ms }) => manager.call(
             "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
         )?,
-        Action::Rotary { id, rotary, action, run, detents, edge_ms, sequence } => manager.call(
+        Action::Rotary(RotaryArgs { id, rotary, action, run, detents, edge_ms, sequence }) => manager.call(
             "rotary", json!({"id":id,"rotary":rotary,"action":action,"run":run,
                 "detents":detents,"edge_ms":edge_ms,"sequence":sequence}),
         )?,
@@ -489,7 +520,7 @@ fn run() -> Result<i32> {
             }
             manager.call("signals", params)?
         }
-        Action::SignalTrace { id, run, start, capacity, trace, stop, after, limit } => {
+        Action::SignalTrace(SignalTraceArgs { id, run, start, capacity, trace, stop, after, limit }) => {
             use lisem_core::signal_trace::{Action as TraceAction, Request};
             let action = if start.is_some() { TraceAction::Start }
                 else if stop { TraceAction::Stop }
@@ -516,7 +547,7 @@ fn run() -> Result<i32> {
             }
             manager.call("usb_adb", params)?
         }
-        Action::SdCard { id, image, eject, run } => {
+        Action::SdCard(SdCardArgs { id, image, eject, run }) => {
             let mut params = json!({"id":id});
             if image.is_some() || eject {
                 let state = manager.call("inspect", json!({"id":id}))?;
@@ -532,7 +563,7 @@ fn run() -> Result<i32> {
         Action::EventsStatus { id, sequence, run, cancel } => manager.call("events", json!({"id":id,"run":run,
             "sequence":sequence,"action":if cancel {"cancel"} else {"status"}}))?,
         Action::UartReceive { id, channel, capture, timeout } => uart::receive(&mut manager, &id, channel, &absolute(&capture)?, timeout, &stop)?,
-        Action::ButtonSequenceStatus { id, sequence, run, cancel } => manager.call(
+        Action::ButtonSequenceStatus(ButtonSequenceStatusArgs { id, sequence, run, cancel }) => manager.call(
             if cancel { "button_sequence_cancel" } else { "button_sequence_status" },
             json!({"id":id,"run":run,"sequence":sequence}),
         )?,
@@ -547,7 +578,7 @@ fn run() -> Result<i32> {
         Action::AudioInput { id, path, timeout } => audio::input(&mut manager, &id, &absolute(&path)?, timeout, &stop)?,
         Action::AudioOutput { id, capture } => audio::output(&mut manager, &id, &absolute(&capture)?, &stop)?,
         Action::CameraDevices => manager.call("camera_devices", json!({}))?,
-        Action::Camera { id, image, device, .. } => {
+        Action::Camera(CameraArgs { id, image, device, .. }) => {
             let state = manager.call("inspect", json!({"id":id}))?;
             let mut params = json!({"id":id,"run":state["runtime"]["session"]["output"]});
             if let Some(device) = device {
@@ -568,7 +599,7 @@ fn run() -> Result<i32> {
             "uart_write",
             json!({"id": id, "channel": channel, "hex": if hex { text } else { storage::hex(text.as_bytes()) }}),
         )?,
-        Action::Logs { id, channel, cursor, limit } => manager.call("uart_read", json!({"id":id,"channel":channel,"cursor":cursor,"limit":limit}))?,
+        Action::Logs(LogsArgs { id, channel, cursor, limit }) => manager.call("uart_read", json!({"id":id,"channel":channel,"cursor":cursor,"limit":limit}))?,
         Action::Shutdown { id } => manager.call("shutdown", json!({"id": id}))?,
         Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc => unreachable!(),
     };

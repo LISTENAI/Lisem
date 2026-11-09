@@ -16,8 +16,8 @@ impl Output {
     pub fn for_action(action: &Action) -> Self {
         match action {
             Action::List => Self::List,
-            Action::BoardModels { .. } | Action::BoardValidate { .. } | Action::BoardImport { .. } => Self::Json,
-            Action::Create { .. } | Action::Attach { .. } => Self::Device,
+            Action::BoardModels(..) | Action::BoardValidate { .. } | Action::BoardImport { .. } => Self::Json,
+            Action::Create(..) | Action::Attach { .. } => Self::Device,
             Action::Status { .. } => Self::Status,
             Action::Run { id, .. }
             | Action::Start { id, .. }
@@ -30,9 +30,9 @@ impl Output {
             Action::Button { button, state, .. } => {
                 Self::Message(format!("Button {button}: {state}."))
             }
-            Action::ButtonSequence { .. } | Action::ButtonSequenceStatus { .. } | Action::Rotary { .. } => Self::Json,
-            Action::Ble { .. } | Action::UsbAdb { .. } | Action::SignalTrace { .. } | Action::Signals { .. } | Action::SdCard { .. } | Action::Events { .. } | Action::EventsStatus { .. } | Action::UartReceive { .. }
-            | Action::Camera { .. }
+            Action::ButtonSequence(..) | Action::ButtonSequenceStatus(..) | Action::Rotary(..) => Self::Json,
+            Action::Ble { .. } | Action::UsbAdb { .. } | Action::SignalTrace(..) | Action::Signals { .. } | Action::SdCard(..) | Action::Events { .. } | Action::EventsStatus { .. } | Action::UartReceive { .. }
+            | Action::Camera(..)
             | Action::CameraDevices
             | Action::WifiEnvironment { .. }
             | Action::AccessPoint { .. }
@@ -44,7 +44,7 @@ impl Output {
             Action::Uart { channel, .. } => Self::Message(format!("UART {channel} disabled.")),
             Action::Send { channel, .. } => Self::Message(format!("Sent to UART {channel}.")),
             Action::Shutdown { id } => Self::Message(format!("Runtime closed: {id}.")),
-            Action::Logs { .. } => Self::Raw,
+            Action::Logs(..) => Self::Raw,
             Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc | Action::Python { .. } | Action::BuildInfo => unreachable!(),
         }
     }
