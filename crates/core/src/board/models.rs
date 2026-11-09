@@ -30,6 +30,11 @@ const MODELS: &[Model] = &[
         ports: &["CS"],
     },
     Model {
+        id: "pwm-led", category: "indicator",
+        description: "LED driven by a GPIO or PWM duty at a supported physical pad",
+        ports: &["IN"],
+    },
+    Model {
         id: "quadrature-encoder",
         category: "input",
         description: "Ideal two-phase rotary encoder with virtual-time contact transitions",
@@ -150,7 +155,7 @@ fn parameter_schema(id: &str) -> Value {
         "button" => schema!(Button),
         "quadrature-encoder" => schema!(Rotary),
         "resistor-keypad" => schema!(Keypad),
-        "led" | "signal-probe" | "audio-amplifier" => schema!(Indicator),
+        "led" | "pwm-led" | "signal-probe" | "audio-amplifier" => schema!(Indicator),
         "voltage-divider" => schema!(Divider),
         "sd-card-slot" => schema!(Slot),
         EXTIO => schema!(Extio),
@@ -202,7 +207,7 @@ fn example(id: &str) -> Value {
         "resistor-keypad" => {
             json!({"supply_mv":3300,"pull_up_ohms":10000,"keys":[{"id":"key","label":"按键","resistance_ohms":5100}]})
         }
-        "led" => json!({"active_level":0,"color":"#4cc3a2"}),
+        "led" | "pwm-led" => json!({"active_level":0,"color":"#4cc3a2"}),
         "voltage-divider" => json!({"numerator":2,"denominator":5}),
         "sd-card-slot" => json!({"detect_active_level":0}),
         EXTIO => json!({"address":extio_address()}),
@@ -275,6 +280,10 @@ fn constraints(id: &str) -> Value {
             "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
             "Each populated device has its own persistent binary image."
         ]),
+        "pwm-led" => json!([
+            "LS26 routes: PA0/GPT0, PA1/GPT1, PA21/GPT1; GPIO drive is also observed.",
+            "At most 8 PWM LEDs. Duty is the modeled electrical ratio, not physical light output."
+        ]),
         "quadrature-encoder" => json!([
             "Connect A and B to distinct chip pads; GPIO-expander routing is unsupported.",
             "At most 4 encoders, with 2 or 4 edges per detent; push switches use separate button devices.",
@@ -331,7 +340,7 @@ fn describe(m: &Model, details: bool) -> Value {
     if details {
         value["ports"] = json!(m.ports);
         value["signals"] = json!(signals(m));
-        value["supported_chips"] = if matches!(m.id, "resistor-keypad") {
+        value["supported_chips"] = if matches!(m.id, "resistor-keypad" | "pwm-led") {
             json!(["ls2663", "ls2684"])
         } else {
             json!(SUPPORTED_CHIPS)

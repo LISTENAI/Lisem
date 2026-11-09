@@ -1558,6 +1558,12 @@ impl Runtime {
             if let Some(list) = item["hardware"]["board"]["indicators"].as_array() {
                 for indicator in list {
                     let name = indicator["id"].as_str().context("Indicator ID missing")?;
+                    if let Some(property) = indicator["property"].as_str() {
+                        let device = indicator["device"].as_str().context("Indicator device missing")?;
+                        indicators[name] = if self.session.is_none() { json!(false) }
+                            else { state["devices"][device][property].clone() };
+                        continue;
+                    }
                     let bank = indicator["bank"]
                         .as_str()
                         .context("Indicator bank missing")?;

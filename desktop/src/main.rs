@@ -1236,6 +1236,21 @@ impl Desktop {
                     ),
             );
         }
+        let lights: Vec<_> = indicators.iter().filter(|item| item["duty_property"].is_string()).collect();
+        let mut lighting = div().flex().items_center().justify_center().gap_4();
+        for item in &lights {
+            let id = item["device"].as_str().unwrap_or_default();
+            let property = item["duty_property"].as_str().unwrap_or_default();
+            let duty = if on { self.state.data["session"]["devices"][id][property]
+                .as_f64().unwrap_or(0.0).clamp(0.0, 1.0) as f32 } else { 0.0 };
+            let color = item["color"].as_str()
+                .and_then(|v| u32::from_str_radix(v.trim_start_matches('#'), 16).ok())
+                .unwrap_or(0x4cc3a2);
+            lighting = lighting.child(div().flex().items_center().gap_3()
+                .child(caption(item["label"].as_str().unwrap_or(id).to_owned()))
+                .child(div().w(px(100.)).h(px(12.)).rounded_full().bg(cx.theme().muted)
+                    .child(div().w_full().h_full().rounded_full().bg(rgb(color)).opacity(duty))));
+        }
         let content = div()
             .relative()
             .flex_1()
@@ -1254,6 +1269,7 @@ impl Desktop {
                                     .border_1().border_color(cx.theme().border)
                                     .child(screen),
                             ))
+                            .when(!lights.is_empty(), |body| body.child(lighting))
                             .when(d.capabilities.rotary, |body| body.child(knobs))
                             .when(d.hardware["board"]["buttons"].as_array().is_some_and(|buttons| !buttons.is_empty()),
                                 |body| body.child(keys))

@@ -565,6 +565,19 @@ impl Board {
         }
         for (id, device) in &self.devices {
             match device.model.as_str() {
+                "pwm-led" => {
+                    let p: Indicator = serde_json::from_value(device.parameters.clone())?;
+                    let pad = self.chip_pad(&format!("{id}.IN"))?;
+                    ensure!(self.chip != "venusa" && [0, 1, 21].contains(&pad), "Unsupported PWM LED pad route");
+                    ensure!(p.active_level <= 1, "Invalid indicator polarity");
+                    if plan["pwm_leds"].is_null() { plan["pwm_leds"] = json!([]); }
+                    let rows = plan["pwm_leds"].as_array_mut().unwrap();
+                    ensure!(rows.len() < 8, "At most 8 PWM LEDs are supported");
+                    rows.push(json!({"id":id,"pad":pad,"active_level":p.active_level}));
+                    compiled["indicators"].as_array_mut().unwrap().push(json!({"id":id,
+                        "label":device.label.as_deref().unwrap_or(id),"kind":"led","color":p.color,
+                        "device":id,"property":"enabled","duty_property":"effective_duty"}));
+                }
                 "quadrature-encoder" => {
                     let p: Rotary = serde_json::from_value(device.parameters.clone())?;
                     ensure!([2, 4].contains(&p.edges_per_detent), "Encoder requires 2 or 4 edges per detent");
@@ -821,6 +834,7 @@ impl Board {
             "button",
             "quadrature-encoder",
             "led",
+            "pwm-led",
             "signal-probe",
             "audio-amplifier",
             "gc0328",
@@ -1063,6 +1077,50 @@ mod tests {
 
     fn example() -> Value {
         serde_json::from_str(include_str!("../../../examples/boards/mini-custom.json")).unwrap()
+    }
+
+    #[test]
+    fn pwm_led_declares_duty_source_and_checks_physical_route() {
+        let mut board = json!({"schema_version":1,"id":"led-test","name":"LED",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"lamp":{"model":"pwm-led","parameters":{"active_level":1}}},
+            "nets":{"drive":{"endpoints":["chip.PA1","lamp.IN"]}}});
+        let compiled = compile(&board).unwrap();
+        assert_eq!(compiled["assembly"]["pwm_leds"][0], json!({"id":"lamp","pad":1,"active_level":1}));
+        assert_eq!(compiled["indicators"][0]["duty_property"], "effective_duty");
+        board["nets"]["drive"]["endpoints"][0] = json!("chip.PA2");
+        assert!(compile(&board).is_err());
+        board["nets"]["drive"]["endpoints"][0] = json!("chip.PA1");
+        board["chip"] = json!("venusa");
+        assert!(compile(&board).is_err());
+    }
+
+    #[test]
+    fn rotary_requires_two_owned_chip_pads_and_valid_geometry() {
+        let valid = json!({"schema_version":1,"id":"rotary-test","name":"Rotary",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"knob":{"model":"quadrature-encoder","parameters":{"edges_per_detent":2}}},
+            "nets":{"A":{"endpoints":["chip.PA4","knob.A"],"pull":"up"},
+                "B":{"endpoints":["chip.PA5","knob.B"],"pull":"up"}},"links":[]});
+        for chip in ["ls2684", "ls2663", "venusa"] {
+            let mut raw = valid.clone(); raw["chip"] = json!(chip);
+            let compiled = compile(&raw).unwrap();
+            assert_eq!(compiled["runtime"]["capabilities"]["rotary"], true);
+            assert_eq!(compiled["assembly"]["rotaries"][0]["A"], 4);
+        }
+        for (path, value) in [
+            ("/devices/knob/parameters/edges_per_detent", json!(3)),
+            ("/devices/knob/parameters", json!({"edges_per_detent":2,"unknown":1})),
+            ("/nets/B/endpoints/0", json!("chip.PA4")),
+            ("/nets/B/endpoints", json!(["knob.B"])),
+            ("/nets/B/endpoints/1", json!("knob.C")),
+        ] {
+            let mut bad = valid.clone(); *bad.pointer_mut(path).unwrap() = value;
+            assert!(compile(&bad).is_err(), "accepted {path}");
+        }
+        let mut bad = valid.clone();
+        bad["inputs"] = json!({"conflict":{"type":"digital","net":"A","default":true}});
+        assert!(compile(&bad).is_err());
     }
 
     #[test]
