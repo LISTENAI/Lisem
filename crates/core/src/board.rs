@@ -146,9 +146,11 @@ const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
     ("venusa", 34, 33, 1),
     ("ls2663", 39, 38, 0),
     ("ls2663", 23, 22, 0),
+    ("ls2663", 20, 21, 0),
     ("ls2663", 33, 32, 1),
     ("ls2684", 39, 38, 0),
     ("ls2684", 23, 22, 0),
+    ("ls2684", 20, 21, 0),
     ("ls2684", 33, 32, 1),
 ];
 
@@ -161,6 +163,14 @@ fn spi_routes(chip: &str) -> &'static [(u64, u64)] {
             (0x802020820, 0x28201208208),
             (0x14102104104, 0x2004082082),
         ]
+    }
+}
+
+// ARCS PinMux function 30: clock, IO0, IO1, IO2, IO3.
+// These are chip signal routes; boards choose one pad for each endpoint.
+fn qspi_routes(chip: &str) -> &'static [u64] {
+    if chip == "venusa" { &[] } else {
+        &[0x800420810, 0x8200808088, 0x4101104044, 0x1002041201, 0x404010100]
     }
 }
 
@@ -395,7 +405,6 @@ impl Board {
                         && ((signal == "usb0.host"
                             && target.model == "husb320-ba"
                             && input == "partner")
-
                             || (signal == "codec.dac"
                                 && target.model == "fs1815cn-v1"
                                 && input == "analog"))),
@@ -408,7 +417,7 @@ impl Board {
                 target.model == "display-panel"
                     && matches!(
                         (source.model.as_str(), signal, input),
-                        ("st7789" | "jd79651c", "pixels", "pixels") | ("backlight", "brightness", "brightness")
+                        ("st7789" | "sc919" | "jd79651c", "pixels", "pixels") | ("backlight", "brightness", "brightness")
                     ),
                 "Incompatible device link: {} -> {}",
                 link.from,
@@ -422,6 +431,7 @@ impl Board {
                 "gc0328" => 0x21,
                 "cst328" => 0x1d,
                 "fs1815cn-v1" => 0x34,
+                "sc919-touch-v1" => 0x28,
                 EXTIO => serde_json::from_value::<Extio>(device.parameters.clone())?.address,
                 "husb320-ba" => serde_json::from_value::<TypeC>(device.parameters.clone())?.address,
                 _ => continue,
@@ -464,7 +474,14 @@ impl Board {
     }
 
     fn assemble(&self, compiled: &mut Value) -> Result<Value> {
-        self.single("cst328")?;
+        ensure!(
+            self.devices
+                .values()
+                .filter(|d| matches!(d.model.as_str(), "cst328" | "sc919-touch-v1"))
+                .count()
+                <= 1,
+            "At most one touch controller is supported"
+        );
         let mut plan = compiled["assembly"].clone();
         plan["nor"] = json!(self.flash_devices()?.iter().map(|v| json!({
             "id":v.id,"chip_select":v.chip_select,"capacity_bytes":v.capacity_bytes
@@ -513,11 +530,14 @@ impl Board {
         if let Some((screen_id, screen)) = self.single("display-panel")? {
             let lcd = self.single("st7789")?;
             let epd = self.single("jd79651c")?;
+            let qspi = self.single("sc919")?;
             ensure!(
-                lcd.is_some() != epd.is_some(),
+                usize::from(lcd.is_some()) + usize::from(epd.is_some()) + usize::from(qspi.is_some()) == 1,
                 "Display panel requires exactly one controller"
             );
-            let (lcd_id, lcd) = lcd.or(epd).unwrap();
+            let (lcd_id, lcd) = lcd.or(epd).or(qspi).unwrap();
+            let quad = lcd.model == "sc919";
+            ensure!(!quad || self.chip != "venusa", "QSPI panel route is unavailable on this chip");
             let epaper = lcd.model == "jd79651c";
             ensure!(
                 self.linked(&format!("{screen_id}.pixels"))? == format!("{lcd_id}.pixels"),
@@ -596,15 +616,22 @@ impl Board {
             compiled["screen"] = json!({"width":width,"height":height,
                     "label":screen.label.as_deref().unwrap_or("屏幕")});
             let mut pads = BTreeMap::new();
-            for port in [
-                "SCK",
-                "SDI",
-                "CS",
-                "DC",
-                "RESET",
-                if epaper { "BUSY" } else { "TE" },
-            ] {
+            let ports: &[&str] = if quad {
+                &["SCK", "D0", "D1", "D2", "D3", "CS", "RESET", "TE"]
+            } else if epaper {
+                &["SCK", "SDI", "CS", "DC", "RESET", "BUSY"]
+            } else {
+                &["SCK", "SDI", "CS", "DC", "RESET", "TE"]
+            };
+            for &port in ports {
                 pads.insert(port, self.chip_pad(&format!("{lcd_id}.{port}"))?);
+            }
+            if quad {
+                let routes = qspi_routes(&self.chip);
+                for (signal, port) in ["SCK", "D0", "D1", "D2", "D3"].iter().enumerate() {
+                    ensure!(routes.get(signal).is_some_and(|mask| mask & (1u64 << pads[port]) != 0),
+                        "Unsupported video QSPI pad route for {port}");
+                }
             }
             if epaper {
                 ensure!(
@@ -634,6 +661,7 @@ impl Board {
         } else {
             ensure!(
                 self.single("st7789")?.is_none()
+                    && self.single("sc919")?.is_none()
                     && self.single("jd79651c")?.is_none()
                     && self.single("backlight")?.is_none(),
                 "Display controller and backlight require a display panel"
@@ -798,7 +826,7 @@ impl Board {
                             json!(format!("x-lisa-button-{index}"));
                     }
                 }
-                "cst328" => {
+                "cst328" | "sc919-touch-v1" => {
                     let p: Touch = serde_json::from_value(device.parameters.clone())?;
                     ensure!(
                         ROTATIONS.contains(&p.rotation_clockwise),
@@ -808,7 +836,15 @@ impl Board {
                     let sda = self.chip_pad(&format!("{id}.SDA"))?;
                     let irq = self.chip_pad(&format!("{id}.INT"))?;
                     plan["touch"] = json!({"SCL":scl,"SDA":sda,"INT":irq});
-                    compiled["touch"] = json!({"model":"cst328","address":"0x1d","width":240,
+                    if device.model == "sc919-touch-v1" {
+                        ensure!(
+                            self.chip != "venusa",
+                            "SC919 touch is not supported on VenusA"
+                        );
+                        plan["touch"]["model"] = json!(device.model);
+                        plan["touch"]["RESET"] = json!(self.chip_pad(&format!("{id}.RESET"))?);
+                    }
+                    compiled["touch"] = json!({"model":device.model,"address":if device.model == "cst328" {"0x1d"} else {"0x28"},"width":240,
                         "height":320,"rotation_clockwise":p.rotation_clockwise,
                         "label":device.label.as_deref().unwrap_or("触摸屏")});
                     compiled["runtime"]["touch_property"] = json!("x-lisa-touch");
@@ -963,6 +999,7 @@ impl Board {
             "spi-nor",
             "st7789",
             "jd79651c",
+            "sc919",
             "backlight",
             "button",
             "quadrature-encoder",
@@ -977,6 +1014,7 @@ impl Board {
             "voltage-divider",
             "resistor-keypad",
             "cst328",
+            "sc919-touch-v1",
             "husb320-ba",
             EXTIO,
         ];
@@ -1376,7 +1414,10 @@ mod tests {
         }
         for (path, value) in [
             ("/devices/knob/parameters/edges_per_detent", json!(3)),
-            ("/devices/knob/parameters", json!({"edges_per_detent":2,"unknown":1})),
+            (
+                "/devices/knob/parameters",
+                json!({"edges_per_detent":2,"unknown":1}),
+            ),
             ("/nets/B/endpoints/0", json!("chip.PA4")),
             ("/nets/B/endpoints", json!(["knob.B"])),
             ("/nets/B/endpoints/1", json!("knob.C")),
@@ -1412,6 +1453,88 @@ mod tests {
             *invalid.pointer_mut(path).unwrap() = value;
             assert!(compile(&invalid).is_err(), "accepted {path}");
         }
+    }
+
+    #[test]
+    fn touch_requires_reset_and_one_controller() {
+        let valid = json!({"schema_version":1,"id":"touch-test","name":"Touch",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"touch":{"model":"sc919-touch-v1","parameters":{"rotation_clockwise":270}}},
+            "nets":{"SCL":{"endpoints":["chip.PA20","touch.SCL"]},
+                "SDA":{"endpoints":["chip.PA21","touch.SDA"]},
+                "INT":{"endpoints":["chip.PA19","touch.INT"]},
+                "RESET":{"endpoints":["chip.PA22","touch.RESET"],"pull":"up"}},"links":[]});
+        for chip in ["ls2663", "ls2684"] {
+            let mut raw = valid.clone(); raw["chip"] = json!(chip);
+            let compiled = compile(&raw).unwrap();
+            assert_eq!(compiled["assembly"]["touch"]["RESET"], 22);
+            assert_eq!(compiled["touch"]["model"], "sc919-touch-v1");
+            assert_eq!(compiled["runtime"]["touch_property"], "x-lisa-touch");
+        }
+        for (path, value) in [
+            ("/chip", json!("venusa")),
+            ("/nets/RESET/endpoints", json!(["chip.PA22"])),
+            ("/nets/SDA/endpoints/0", json!("chip.PA20")),
+            ("/devices/touch/parameters", json!({"protocol_version":2})),
+        ] {
+            let mut bad = valid.clone(); *bad.pointer_mut(path).unwrap() = value;
+            assert!(compile(&bad).is_err(), "accepted {path}");
+        }
+        let mut bad = valid.clone();
+        bad["devices"]["other"] = json!({"model":"cst328","parameters":{}});
+        for port in ["SCL", "SDA", "INT"] {
+            bad["nets"][port]["endpoints"].as_array_mut().unwrap().push(json!(format!("other.{port}")));
+        }
+        assert!(compile(&bad).is_err());
+    }
+
+    #[test]
+    fn qspi_panel_requires_complete_physical_route() {
+        let mut raw = json!({"schema_version":1,"id":"quad-display","name":"Quad display",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"lcd":{"model":"sc919","parameters":{}},
+                "screen":{"model":"display-panel","parameters":{
+                    "viewport":{"x":0,"y":0,"width":240,"height":320},"rotation_clockwise":90}},
+                "light":{"model":"backlight","parameters":{"active_level":0}}},
+            "nets":{},"links":[{"from":"lcd.pixels","to":"screen.pixels"},
+                {"from":"light.brightness","to":"screen.brightness"}]});
+        for (port, pad) in [
+            ("SCK", 17),
+            ("D0", 15),
+            ("D1", 14),
+            ("D2", 12),
+            ("D3", 16),
+            ("CS", 13),
+            ("RESET", 10),
+            ("TE", 18),
+        ] {
+            raw["nets"][port] =
+                json!({"endpoints":[format!("chip.PA{pad}"),format!("lcd.{port}")]});
+        }
+        raw["nets"]["BL"] = json!({"endpoints":["chip.PA0","light.EN"]});
+        for chip in ["ls2663", "ls2684"] {
+            raw["chip"] = json!(chip);
+            let board = compile(&raw).unwrap();
+            assert_eq!(board["assembly"]["panel"]["model"], "sc919");
+            assert_eq!(board["screen"]["width"], 320);
+            assert_eq!(board["screen"]["height"], 240);
+            assert!(board["assembly"]["panel"]["pads"].get("DC").is_none());
+        }
+        for (path, value) in [
+            ("/chip", json!("venusa")),
+            ("/nets/D2/endpoints/0", json!("chip.PA19")),
+            ("/nets/D2/endpoints", json!(["lcd.D2"])),
+            ("/nets/D3/endpoints/1", json!("lcd.DC")),
+            ("/devices/lcd/parameters", json!({"protocol":"st7789"})),
+            ("/links", json!([])),
+        ] {
+            let mut invalid = raw.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert!(compile(&invalid).is_err(), "accepted {path}");
+        }
+        raw["devices"].as_object_mut().unwrap().remove("screen");
+        raw["links"] = json!([]);
+        assert!(compile(&raw).is_err());
     }
 
     #[test]
