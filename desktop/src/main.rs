@@ -13,6 +13,7 @@ mod toolbar;
 mod signals;
 mod theme;
 mod touch;
+mod rotary;
 mod wifi_environment;
 
 use backend::{Backend, Device, Snapshot};
@@ -125,6 +126,7 @@ struct Desktop {
     settings_tab: &'static str,
     held: HashSet<String>,
     touch: Option<Value>,
+    rotaries: HashMap<String, rotary::Knob>,
     new_board: Option<String>,
     board_select: Entity<SelectState<Vec<BoardOption>>>,
     board_options: Vec<BoardOption>,
@@ -264,6 +266,7 @@ impl Desktop {
             settings_tab: "general",
             held: HashSet::new(),
             touch: None,
+            rotaries: HashMap::new(),
             new_board: None,
             board_select,
             board_options: Vec::new(),
@@ -665,6 +668,10 @@ impl Desktop {
         }
     }
     fn release_buttons(&mut self) {
+        for knob in self.rotaries.values_mut() {
+            knob.drag = None;
+            knob.queue.clear();
+        }
         self.release_touch();
         for id in self.held.clone() {
             self.button_state(&id, false);
@@ -1088,7 +1095,7 @@ impl Desktop {
             )
     }
 
-    fn device_panel(&self, d: &Device, window: &Window, cx: &mut Context<Self>) -> Div {
+    fn device_panel(&mut self, d: &Device, window: &Window, cx: &mut Context<Self>) -> Div {
         let on = self.powered();
         let indicators = d.hardware["board"]["indicators"]
             .as_array()
@@ -1171,6 +1178,10 @@ impl Desktop {
                 );
         }
         let mut keys = div().flex().flex_wrap().justify_center().items_center().gap_3();
+        let mut knobs = div().flex().flex_wrap().justify_center().items_center().gap_8();
+        for rotary in d.hardware["board"]["rotaries"].as_array().into_iter().flatten() {
+            knobs = knobs.child(self.rotary_control(rotary, on, cx));
+        }
         for key in d.hardware["board"]["buttons"]
             .as_array()
             .cloned()
@@ -1243,9 +1254,10 @@ impl Desktop {
                                     .border_1().border_color(cx.theme().border)
                                     .child(screen),
                             ))
+                            .when(d.capabilities.rotary, |body| body.child(knobs))
                             .when(d.hardware["board"]["buttons"].as_array().is_some_and(|buttons| !buttons.is_empty()),
                                 |body| body.child(keys))
-                            .when(!d.capabilities.screen
+                            .when(!d.capabilities.screen && !d.capabilities.rotary
                                 && d.hardware["board"]["buttons"].as_array().is_none_or(Vec::is_empty),
                                 |body| body.child(self.device_overview(d, cx))),
                     )

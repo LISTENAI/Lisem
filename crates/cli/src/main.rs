@@ -159,6 +159,17 @@ enum Action {
         #[arg(long, default_value_t = 80)]
         gap_ms: u64,
     },
+    /// Rotate a quadrature encoder or inspect/cancel its virtual-time sequence.
+    Rotary {
+        id: String,
+        rotary: String,
+        #[arg(value_parser=["rotate", "status", "cancel"])]
+        action: String,
+        #[arg(long)] run: String,
+        #[arg(long, allow_hyphen_values=true)] detents: Option<i32>,
+        #[arg(long)] edge_ms: Option<u32>,
+        #[arg(long)] sequence: Option<u64>,
+    },
     /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
     Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
     /// List digital sources or record transitions at their virtual event times.
@@ -460,6 +471,10 @@ fn run() -> Result<i32> {
         )?,
         Action::ButtonSequence { id, button, run, count, hold_ms, gap_ms } => manager.call(
             "button_sequence", json!({"id":id,"button":button,"run":run,"count":count,"hold_ms":hold_ms,"gap_ms":gap_ms}),
+        )?,
+        Action::Rotary { id, rotary, action, run, detents, edge_ms, sequence } => manager.call(
+            "rotary", json!({"id":id,"rotary":rotary,"action":action,"run":run,
+                "detents":detents,"edge_ms":edge_ms,"sequence":sequence}),
         )?,
         Action::Signals { id, set, run } => {
             let mut params = json!({"id":id,"run":run});

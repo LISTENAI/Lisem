@@ -13,7 +13,7 @@ QEMU_TESTS := \
     qemu-gpio qemu-host-audio qemu-host-display qemu-host-network qemu-host-network-capture \
     qemu-hsu qemu-i2c qemu-icount qemu-jit-state qemu-jpeg qemu-jpeg-encode \
     qemu-mailbox qemu-pacing qemu-psram qemu-remap qemu-rf \
-    qemu-rom qemu-sd qemu-serial qemu-qspi qemu-signals qemu-signal-trace qemu-soc-clocks qemu-storage \
+    qemu-rom qemu-rotary qemu-sd qemu-serial qemu-qspi qemu-signals qemu-signal-trace qemu-soc-clocks qemu-storage \
     qemu-sysctl qemu-touch qemu-trng qemu-uart qemu-usb qemu-usb-lab qemu-usb-adb \
     qemu-venusa qemu-watchdog qemu-watchpoint qemu-wifi qemu-wifi-ap qemu-wifi-disconnect qemu-wifi-environment \
     qemu-wifi-capture qemu-wifi-dma qemu-wifi-doze qemu-wifi-presence qemu-wifi-rx qemu-wifi-tx qemu-wifi-wpa2

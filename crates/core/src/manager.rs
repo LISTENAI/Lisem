@@ -389,6 +389,7 @@ impl Manager {
             | "button_sequence"
             | "button_sequence_status"
             | "button_sequence_cancel"
+            | "rotary"
             | "touch"
             | "camera" => {
                 let value = self.worker(&id)?.call(method, params.clone())?;

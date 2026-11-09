@@ -327,6 +327,7 @@ pub struct Capabilities {
     pub signal_trace: bool,
     pub events: bool,
     pub button_sequence: bool,
+    pub rotary: bool,
     pub uart_channels: Vec<u8>,
 }
 
@@ -336,6 +337,7 @@ pub struct Backend {
     pub environment_prefix: String,
     buttons: std::collections::BTreeMap<String, String>,
     sequence_ids: Vec<String>,
+    pub rotaries: Vec<String>,
     touch_property: Option<String>,
     flash: String,
     flash_devices: Vec<storage::FlashDevice>,
@@ -508,6 +510,8 @@ impl Backend {
             environment_prefix,
             buttons,
             sequence_ids,
+            rotaries: board["rotaries"].as_array().into_iter().flatten()
+                .filter_map(|v| v["id"].as_str().map(str::to_owned)).collect(),
             touch_property,
             touch_size,
             flash,

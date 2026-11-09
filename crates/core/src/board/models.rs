@@ -30,6 +30,12 @@ const MODELS: &[Model] = &[
         ports: &["CS"],
     },
     Model {
+        id: "quadrature-encoder",
+        category: "input",
+        description: "Ideal two-phase rotary encoder with virtual-time contact transitions",
+        ports: &["A", "B"],
+    },
+    Model {
         id: "st7789",
         category: "display",
         description: "SPI display controller with pixel RAM and TE output",
@@ -142,6 +148,7 @@ fn parameter_schema(id: &str) -> Value {
         "gc0328" => schema!(Camera),
         "cst328" => schema!(Touch),
         "button" => schema!(Button),
+        "quadrature-encoder" => schema!(Rotary),
         "resistor-keypad" => schema!(Keypad),
         "led" | "signal-probe" | "audio-amplifier" => schema!(Indicator),
         "voltage-divider" => schema!(Divider),
@@ -191,6 +198,7 @@ fn example(id: &str) -> Value {
         "gc0328" => json!({"rotation_clockwise":90}),
         "cst328" => json!({"rotation_clockwise":270}),
         "button" => json!({"pressed_level":0,"released_level":1}),
+        "quadrature-encoder" => json!({"edges_per_detent":2}),
         "resistor-keypad" => {
             json!({"supply_mv":3300,"pull_up_ohms":10000,"keys":[{"id":"key","label":"按键","resistance_ohms":5100}]})
         }
@@ -207,6 +215,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
     matches!(
         (model, port),
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
+            | ("quadrature-encoder", "A" | "B")
             | ("st7789", "TE")
             | ("cst328", "INT")
             | ("husb320-ba", "INT_N" | "ID")
@@ -265,6 +274,12 @@ fn constraints(id: &str) -> Value {
             "Capacity is a power of two from 64 KiB through 16 MiB; 24-bit addressing only.",
             "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
             "Each populated device has its own persistent binary image."
+        ]),
+        "quadrature-encoder" => json!([
+            "Connect A and B to distinct chip pads; GPIO-expander routing is unsupported.",
+            "At most 4 encoders, with 2 or 4 edges per detent; push switches use separate button devices.",
+            "Positive rotation follows AB=11,01,00,10,11. Phase survives reset; pending motion is cancelled.",
+            "Ideal digital contacts only; mechanical bounce and analog RC waveforms are not modeled."
         ]),
         "st7789" | "backlight" | "display-panel" => json!([
             "One controller, one panel and one backlight must be connected together.",
@@ -380,6 +395,10 @@ pub fn query_models(query: &ModelQuery) -> Result<Value> {
 pub(super) fn rotation_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"integer", "enum":ROTATIONS,
         "description":"Physical installation rotation, clockwise degrees."})
+}
+
+pub(super) fn rotary_edges_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":"integer", "enum":[2,4]})
 }
 
 pub(super) fn extio_address_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {

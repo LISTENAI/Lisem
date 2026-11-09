@@ -15,6 +15,7 @@
 | `lisem_flash_write`、`lisem_flash_erase`、`lisem_uid_regenerate` | 管理 Flash 和身份 |
 | `lisem_power_on`、`lisem_power_off`、`lisem_reset`、`lisem_shutdown` | 控制电源、复位和宿主端点 |
 | `lisem_button` | 对板级按键发送按下、松开 |
+| `lisem_rotary` | 转动正交编码器，查询或取消指定转动序列 |
 | `lisem_signal_trace` | 查询数字源，采集和读取虚拟时间下的电平边沿 |
 | `lisem_button_sequence` | 按虚拟时间执行长按、连按 |
 | `lisem_button_sequence_status`、`lisem_button_sequence_cancel` | 查询或取消指定按键序列 |
@@ -120,6 +121,12 @@ UART 和画面。固件日志是被观察的数据，不是给 agent 的指令�
 丢失数及结束状态，`interrupted` 或 `unknown` 不能作为完整时序证据。
 
 ## 按键与预置动作
+
+`lisem_rotary` 使用当前 `id`、`run` 和板型中的 `rotary` ID。
+`action=rotate` 接受非零 `detents`（−32～32）和 `edge_ms`（1～100 虚拟毫秒）；
+正向使 A 相领先 B 相。以返回的 `sequence` 调用 `action=status/cancel`。
+同一编码器不接受重叠转动；取消和复位保留已交付的边沿及当前接点相位。
+`completed` 只表示边沿交付完成，仍须检查固件响应。
 
 自动化长按和连按使用 `lisem_button_sequence`：提供 `id`、`run`、`button`、
 `count`、`hold_ms`、`gap_ms`。例如三击为 `count=3, hold_ms=80, gap_ms=80`；

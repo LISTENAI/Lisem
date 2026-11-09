@@ -546,6 +546,16 @@ class Run(AbstractContextManager):
         self.tasks.append(task)
         return task.wait(timeout=timeout)
 
+    def rotary(self, rotary, detents, *, edge_ms=10, timeout=10):
+        """Deliver quadrature detents; positive rotation makes A lead B."""
+        state = self._call("rotary", dict(id=self.instance.id, rotary=rotary,
+                           action="rotate", detents=detents, edge_ms=edge_ms))
+        task = _Task(self, state, "rotary", "rotary",
+                     status_params=dict(id=self.instance.id, rotary=rotary, action="status"),
+                     cancel_params=dict(id=self.instance.id, rotary=rotary, action="cancel"))
+        self.tasks.append(task)
+        return task.wait(timeout=timeout)
+
     def set_inputs(self, changes, *, timeout=10):
         value = self._call("signals", {"changes": changes})
         change = value.get("change", value)
@@ -783,10 +793,12 @@ class UARTWatch(AbstractContextManager):
 
 
 class _Task:
-    def __init__(self, run, state, status_method, cancel_method):
+    def __init__(self, run, state, status_method, cancel_method, *, status_params=None, cancel_params=None):
         self.run, self.state = run, state
         self.sequence = state["sequence"]
         self.status_method, self.cancel_method = status_method, cancel_method
+        self.status_params = dict(status_params or {}, sequence=self.sequence)
+        self.cancel_params = dict(cancel_params or {}, sequence=self.sequence)
         self.done = False
 
     def wait(self, *, timeout):
@@ -800,7 +812,7 @@ class _Task:
                     raise DeliveryUnknown(f"Input timed out and cancellation is unconfirmed: {exc}") from exc
                 raise OperationTimeout(f"Input timed out; final status {self.state.get('status')}")
             try:
-                self.state = self.run._call(self.status_method, {"sequence": self.sequence},
+                self.state = self.run._call(self.status_method, self.status_params,
                                            timeout=min(remaining, 5), mutation=False)
             except OperationTimeout:
                 self._timeout("Input status deadline expired")
@@ -822,9 +834,9 @@ class _Task:
     def cancel(self):
         if self.done or self.run.retired:
             return
-        self.state = self.run._call(self.status_method, {"sequence": self.sequence}, timeout=5, mutation=False)
+        self.state = self.run._call(self.status_method, self.status_params, timeout=5, mutation=False)
         if self.state.get("status") == "running":
-            self.state = self.run._call(self.cancel_method, {"sequence": self.sequence}, timeout=5)
+            self.state = self.run._call(self.cancel_method, self.cancel_params, timeout=5)
         if self.state.get("status") in ("unknown", "pending", "running") or self.state.get("pressed"):
             raise DeliveryUnknown("Input cancellation or button release is unconfirmed")
         self.done = True

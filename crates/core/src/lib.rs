@@ -14,6 +14,7 @@ pub mod rpc;
 pub mod paths;
 pub mod process;
 pub mod runtime;
+pub mod rotary;
 mod shared;
 pub mod storage;
 mod transport;

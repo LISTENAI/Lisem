@@ -422,11 +422,11 @@ impl Board {
         }
         let mut compiled = json!({"id":self.id,"name":self.name,"chip":self.chip,
             "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some(),
-            "buttons":[],"indicators":[],"inputs":[],"definition":self,
+            "buttons":[],"rotaries":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
                 "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
                 "button_sequence":true}},
-            "assembly":{"version":1,"chip":self.chip,"buttons":[],"indicators":[]}});
+                "assembly":{"version":1,"chip":self.chip,"buttons":[],"rotaries":[],"indicators":[]}});
         if self.chip == "venusa" {
             compiled["runtime"] = json!({"available":true,"machine":"venusa-board",
                 "capabilities":{"snapshot":true,"wifi":false,"sd":false,"usb_adb":false,
@@ -565,6 +565,19 @@ impl Board {
         }
         for (id, device) in &self.devices {
             match device.model.as_str() {
+                "quadrature-encoder" => {
+                    let p: Rotary = serde_json::from_value(device.parameters.clone())?;
+                    ensure!([2, 4].contains(&p.edges_per_detent), "Encoder requires 2 or 4 edges per detent");
+                    let a = self.chip_pad(&format!("{id}.A"))?;
+                    let b = self.chip_pad(&format!("{id}.B"))?;
+                    ensure!(a < 64 && b < 64 && a != b, "Encoder requires two distinct chip pads");
+                    let rows = plan["rotaries"].as_array_mut().unwrap();
+                    ensure!(rows.len() < 4, "At most 4 rotary encoders are supported");
+                    rows.push(json!({"id":id,"A":a,"B":b,"edges_per_detent":p.edges_per_detent}));
+                    compiled["rotaries"].as_array_mut().unwrap().push(json!({"id":id,
+                        "label":device.label.as_deref().unwrap_or(id),"edges_per_detent":p.edges_per_detent}));
+                    compiled["runtime"]["capabilities"]["rotary"] = json!(true);
+                }
                 "button" => {
                     let p: Button = serde_json::from_value(device.parameters.clone())?;
                     ensure!(
@@ -806,6 +819,7 @@ impl Board {
             "st7789",
             "backlight",
             "button",
+            "quadrature-encoder",
             "led",
             "signal-probe",
             "audio-amplifier",
@@ -957,6 +971,12 @@ struct Button {
     pressed_level: u8,
     #[schemars(range(max = 1))]
     released_level: u8,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Rotary {
+    #[schemars(schema_with = "models::rotary_edges_schema")]
+    edges_per_detent: u8,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -26,6 +26,19 @@ lisem stop DEVICE
 信号是否有效；未驱动或板型未定义该信号时为 `null`。固件的开关机行为
 应结合该信号、画面及串口判断。
 
+## 旋转编码器
+
+板型声明编码器后，使用其器件 ID 向当前运行提交转动：
+
+```sh
+lisem rotary ID ENCODER rotate --run RUN --detents 1 --edge-ms 10
+```
+
+`RUN` 取自实例状态中的 `runtime.session.output`。用 `status` 或 `cancel`
+替代 `rotate`，并提供返回的 `--sequence` 查询或取消。边沿在虚拟时钟上
+产生，完成只表示输入已交付，固件自行解码。复位取消剩余转动并保留已到达
+的物理相位。
+
 ## BLE
 
 使用 `lisem ble INSTANCE_ID --run RUN --request JSON` 操作当前运行。

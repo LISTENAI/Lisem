@@ -439,6 +439,7 @@ pub struct Session {
     backend: Backend,
     pending_releases: BTreeMap<String, String>,
     pending_cancel: bool,
+    pending_rotary_cancel: Option<String>,
     pending_event_cancel: bool,
 }
 impl Session {
@@ -663,6 +664,7 @@ impl Session {
             process,
             pending_releases: BTreeMap::new(),
             pending_cancel: false,
+            pending_rotary_cancel: None,
             pending_event_cancel: false,
             ble: crate::ble::Central::default(),
             qmp,
@@ -1296,6 +1298,16 @@ impl Runtime {
                 }
             }
             if !session.finished && session.qmp.pending_id().is_none() {
+                if let Some(rotary) = session.pending_rotary_cancel.clone() {
+                    let value = session.qmp.get("x-lisem-rotary", &mut session.uart)?;
+                    let state: Value = serde_json::from_str(value.as_str().context("Invalid rotary state")?)?;
+                    if state[&rotary]["status"] == "running" {
+                        let command = json!({"rotary":rotary,"action":"cancel",
+                            "sequence":state[&rotary]["sequence"]});
+                        session.qmp.set("x-lisem-rotary", json!(command.to_string()), &mut session.uart)?;
+                    }
+                    session.pending_rotary_cancel = None;
+                }
                 if session.pending_event_cancel {
                     session.qmp.set("x-lisa-events", json!("cancel"), &mut session.uart)?;
                     session.pending_event_cancel = false;
@@ -1679,6 +1691,7 @@ impl Runtime {
             "signal_trace" => capabilities.signal_trace,
             "events" => capabilities.events,
             "button_sequence" | "button_sequence_status" | "button_sequence_cancel" => capabilities.button_sequence,
+            "rotary" => capabilities.rotary,
             "reset_download" => capabilities.download,
             _ => true,
         };
@@ -1957,6 +1970,39 @@ impl Runtime {
                 let status: Value = serde_json::from_str(value.as_str().context("Invalid event status")?)?;
                 session.state["events"] = status.clone();
                 Ok(status)
+            }
+            "rotary" => {
+                let request: crate::rotary::Request = serde_json::from_value(params.clone())?;
+                request.validate()?;
+                let session = self.session.as_mut().context("Instance is not running")?;
+                ensure!(session.backend.rotaries.contains(&request.rotary), "Unknown rotary encoder");
+                ensure!(session.pending_rotary_cancel.is_none(), "Rotary cancellation is pending");
+                session.qmp.ensure_idle()?;
+                if request.action != "status" {
+                    let command = serde_json::to_value(&request)?;
+                    if let Err(error) = session.qmp.set("x-lisem-rotary", json!(command.to_string()), &mut session.uart) {
+                        if request.action == "rotate" && session.qmp.pending_id().is_some() {
+                            session.pending_rotary_cancel = Some(request.rotary.clone());
+                        }
+                        return Err(error);
+                    }
+                }
+                let result = (|| -> Result<Value> {
+                    let value = session.qmp.get("x-lisem-rotary", &mut session.uart)?;
+                    let state: Value = serde_json::from_str(value.as_str().context("Invalid rotary state")?)?;
+                    let mut state = state[&request.rotary].clone();
+                    ensure!(state.is_object(), "Missing rotary state");
+                    if request.action != "rotate" {
+                        ensure!(state["sequence"].as_u64() == request.sequence, "Stale rotary sequence");
+                    }
+                    state["run"] = json!(request.run);
+                    state["rotary"] = json!(request.rotary);
+                    Ok(state)
+                })();
+                if result.is_err() && request.action == "rotate" {
+                    session.pending_rotary_cancel = Some(request.rotary);
+                }
+                result
             }
             "button_sequence" => {
                 ensure!(
