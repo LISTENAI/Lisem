@@ -797,13 +797,10 @@ impl Board {
 
 fn adc_channel(chip: &str, pad: u8) -> Result<u8> {
     ensure!(chip != "venusa", "VenusA analog pad routing is unavailable");
+    // LS26 User Manual v1.0, Appendix ana_iomux: PB2..PB7 -> VIN0..VIN5.
+    // GPADC result channels 0..3 are internal sources, so VIN0 starts at 4.
     Ok(match pad {
-        38 => 4,
-        39 => 5,
-        40 => 6,
-        37 => 7,
-        36 => 8,
-        35 => 9,
+        34..=39 => pad - 30,
         _ => bail!("Pad has no GPADC VIN route"),
     })
 }
@@ -1020,6 +1017,26 @@ mod tests {
             1_680_000
         );
         assert_eq!(source(&board), &raw);
+    }
+
+    #[test]
+    fn ls26_analog_pads_follow_vin_channels() {
+        for chip in ["ls2663", "ls2684"] {
+            for (pin, channel) in [(2, 4), (3, 5), (4, 6), (5, 7), (6, 8), (7, 9)] {
+                let raw = json!({"schema_version":1,"id":"analog","name":"Analog",
+                    "chip":chip,"storage":{"flash_bytes":16777216},"devices":{},
+                    "nets":{"VIN":{"endpoints":[format!("chip.PB{pin}")]}},"links":[],
+                    "inputs":{"voltage":{"type":"voltage","net":"VIN","unit":"mV",
+                        "range":{"min":0,"max":3300},"default":1680}}});
+                let board = compile(&raw).unwrap();
+                let physical = crate::signals::physical(&board, &Value::Null).unwrap();
+                assert_eq!(physical["adc_uv"][channel.to_string()], 1_680_000);
+                assert_eq!(physical["adc_uv"].as_object().unwrap().len(), 1);
+            }
+            assert!(adc_channel(chip, 33).is_err());
+            assert!(adc_channel(chip, 40).is_err());
+        }
+        assert!(adc_channel("venusa", 39).is_err());
     }
 
     #[test]
