@@ -27,7 +27,14 @@ def run(name, command, timeout=1800, env=None):
                                 timeout=timeout, env=env)
     if result.returncode:
         content = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', path.read_text(errors='replace'))
-        # Emit only bounded identifiers and numeric statuses, never raw logs.
+        # Keep failure output bounded; redact build-machine paths and omit
+        # the remaining captured stdout/stderr from Rust test failures.
+        panic_messages = re.findall(
+            r"^thread '[^\n]+'(?: \([0-9]+\))? panicked at [^\n]+:\n([^\n]{1,1000})",
+            content, re.M)[:20]
+        for path in (str(ROOT), str(Path.home())):
+            for spelling in {path, path.replace('\\', '/')}:
+                panic_messages = [message.replace(spelling, '<build>') for message in panic_messages]
         summary = {
             'phase': name, 'returncode': result.returncode,
             'test_failures': re.findall(r'^(?:ERROR|FAIL): ([A-Za-z0-9_.]+) \(([A-Za-z0-9_.]+)\)$', content, re.M)[:20],
@@ -38,6 +45,7 @@ def run(name, command, timeout=1800, env=None):
                 r'((?:crates|desktop)/[A-Za-z0-9_./-]+:[0-9]+:[0-9]+)',
                 content.replace('\\', '/'), re.M)[:20],
             'cargo_errors': re.findall(r'^error(?:\[[A-Z0-9]+\])?: ([^\n]{1,300})', content, re.M)[-10:],
+            'rust_panic_messages': [message[:300] for message in panic_messages],
             'rust_errors': sorted(set(re.findall(r'error\[(E[0-9]{4})\]', content))),
             'exception_types': sorted(set(re.findall(r'^([A-Za-z]+(?:Error|Exception)):', content, re.M))),
             'python_frames': [

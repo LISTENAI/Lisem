@@ -29,7 +29,8 @@ fn default_is_readable_and_json_remains_scriptable() {
     );
     assert!(
         created.status.success(),
-        "{}",
+        "status={}; stderr={}",
+        created.status,
         String::from_utf8_lossy(&created.stderr)
     );
     let item: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
