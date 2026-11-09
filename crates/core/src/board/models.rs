@@ -40,6 +40,12 @@ const MODELS: &[Model] = &[
         ports: &["IN"],
     },
     Model {
+        id: "fs1815cn-v1",
+        category: "audio",
+        description: "FS1815CN v1 analog amplifier profile with ideal gain and clipping",
+        ports: &["SCL", "SDA"],
+    },
+    Model {
         id: "quadrature-encoder",
         category: "input",
         description: "Ideal two-phase rotary encoder with virtual-time contact transitions",
@@ -152,7 +158,7 @@ fn parameter_schema(id: &str) -> Value {
     }
     match id {
         "spi-nor" => schema!(SerialNor),
-        "ls8500" => schema!(Nor),
+        "fs1815cn-v1" | "ls8500" => schema!(Nor),
         "st7789" => schema!(Controller),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -201,7 +207,7 @@ pub(super) fn apply_parameter_schemas(board: &mut Value) {
 fn example(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
-        "ls8500" => json!({}),
+        "fs1815cn-v1" | "ls8500" => json!({}),
         "st7789" => json!({"panel_inverted":true}),
         "display-panel" => {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
@@ -272,6 +278,7 @@ fn signals(m: &Model) -> Vec<Value> {
 fn links(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"inputs":["bus"],"sources":["chip.flash.data"]}),
+        "fs1815cn-v1" => json!({"inputs":["analog"],"sources":["chip.codec.dac"]}),
         "st7789" => json!({"outputs":["pixels"]}),
         "backlight" => json!({"outputs":["brightness"]}),
         "display-panel" => json!({"inputs":["pixels","brightness"]}),
@@ -293,6 +300,12 @@ fn constraints(id: &str) -> Value {
         "pwm-led" => json!([
             "LS26 routes: PA0/GPT0, PA1/GPT1, PA21/GPT1; GPIO drive is also observed.",
             "At most 8 PWM LEDs. Duty is the modeled electrical ratio, not physical light output."
+        ]),
+        "fs1815cn-v1" => json!([
+            "Requires chip.codec.dac -> analog and I2C at address 0x34.",
+            "One board amplifier; ideal linear gain and signed16 full-scale clipping.",
+            "Only the v1 analog calibration profile is supported; unknown settings NACK.",
+            "Boost, thermal protection, speaker response and physical telemetry are not modeled."
         ]),
         "quadrature-encoder" => json!([
             "Connect A and B to distinct chip pads; GPIO-expander routing is unsupported.",
@@ -350,7 +363,10 @@ fn describe(m: &Model, details: bool) -> Value {
     if details {
         value["ports"] = json!(m.ports);
         value["signals"] = json!(signals(m));
-        value["supported_chips"] = if matches!(m.id, "resistor-keypad" | "pwm-led" | "ls8500") {
+        value["supported_chips"] = if matches!(
+            m.id,
+            "resistor-keypad" | "fs1815cn-v1" | "pwm-led" | "ls8500"
+        ) {
             json!(["ls2663", "ls2684"])
         } else {
             json!(SUPPORTED_CHIPS)
@@ -436,6 +452,9 @@ fn data_signals(id: &str) -> Value {
             "required":true,"sources":["chip.flash.data"]}]),
         "ls8500" => json!([{"name":"illuminance","direction":"input",
             "kind":"illuminance","unit":"lux","required":false,"source":"board-input"}]),
+        "fs1815cn-v1" => json!([{"name":"analog","direction":"input",
+            "kind":"analog-audio","required":true,"sources":["chip.codec.dac"],
+            "chips":["ls2663","ls2684"]}]),
         "st7789" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
         "backlight" => {
             json!([{"name":"brightness","direction":"output","kind":"brightness","required":true}])
@@ -455,6 +474,7 @@ fn interfaces(id: &str) -> Value {
     let address = match id {
         "gc0328" => Some(0x21),
         "cst328" => Some(0x1d),
+        "fs1815cn-v1" => Some(0x34),
         "ls8500" => Some(0x54),
         _ => None,
     };

@@ -383,7 +383,10 @@ impl Board {
                         && ((signal == "usb0.host"
                             && target.model == "husb320-ba"
                             && input == "partner")
-)),
+
+                            || (signal == "codec.dac"
+                                && target.model == "fs1815cn-v1"
+                                && input == "analog"))),
                     "Unsupported chip resource link"
                 );
                 continue;
@@ -406,6 +409,7 @@ impl Board {
                 "ls8500" => 0x54,
                 "gc0328" => 0x21,
                 "cst328" => 0x1d,
+                "fs1815cn-v1" => 0x34,
                 EXTIO => serde_json::from_value::<Extio>(device.parameters.clone())?.address,
                 "husb320-ba" => serde_json::from_value::<TypeC>(device.parameters.clone())?.address,
                 _ => continue,
@@ -430,7 +434,7 @@ impl Board {
             );
         }
         let mut compiled = json!({"id":self.id,"name":self.name,"chip":self.chip,
-            "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some(),
+            "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some() || self.single("fs1815cn-v1")?.is_some(),
             "buttons":[],"rotaries":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
                 "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
@@ -596,6 +600,20 @@ impl Board {
                     compiled["indicators"].as_array_mut().unwrap().push(json!({"id":id,
                         "label":device.label.as_deref().unwrap_or(id),"kind":"led","color":p.color,
                         "device":id,"property":"enabled","duty_property":"effective_duty"}));
+                }
+                "fs1815cn-v1" => {
+                    let _: Nor = serde_json::from_value(device.parameters.clone())?;
+                    ensure!(self.chip != "venusa" && self.single("fs1815cn-v1")?.is_some(),
+                        "FS1815 requires an LS26 chip and one amplifier");
+                    ensure!(self.single("audio-amplifier")?.is_none(), "Only one amplifier is supported");
+                    ensure!(self.links.iter().any(|link| link.from == "chip.codec.dac"
+                        && link.to == format!("{id}.analog")), "FS1815 analog input is not connected");
+                    plan["fs1815"] = json!({"id":id,
+                        "SCL":self.chip_pad(&format!("{id}.SCL"))?,
+                        "SDA":self.chip_pad(&format!("{id}.SDA"))?});
+                    compiled["indicators"].as_array_mut().unwrap().push(json!({"id":id,
+                        "label":device.label.as_deref().unwrap_or(id),"kind":"audio-amplifier",
+                        "device":id,"property":"enabled"}));
                 }
                 "quadrature-encoder" => {
                     let p: Rotary = serde_json::from_value(device.parameters.clone())?;
@@ -867,6 +885,7 @@ impl Board {
             "ls8500",
             "signal-probe",
             "audio-amplifier",
+            "fs1815cn-v1",
             "gc0328",
             "sd-card-slot",
             "voltage-divider",
@@ -1154,6 +1173,29 @@ mod tests {
         assert!(compile(&board).is_err());
         board["nets"]["drive"]["endpoints"][0] = json!("chip.PA1");
         board["chip"] = json!("venusa");
+        assert!(compile(&board).is_err());
+    }
+
+    #[test]
+    fn fs1815_requires_analog_link_and_unique_amplifier() {
+        let mut board = json!({"schema_version":1,"id":"amp-test","name":"Amplifier",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"speaker":{"model":"fs1815cn-v1","parameters":{}}},
+            "nets":{"scl":{"endpoints":["chip.PB1","speaker.SCL"]},
+                    "sda":{"endpoints":["chip.PB0","speaker.SDA"]}},
+            "links":[{"from":"chip.codec.dac","to":"speaker.analog"}]});
+        let compiled = compile(&board).unwrap();
+        assert_eq!(compiled["audio"], true);
+        assert_eq!(compiled["assembly"]["fs1815"], json!({"id":"speaker","SCL":33,"SDA":32}));
+        assert_eq!(compiled["indicators"][0]["property"], "enabled");
+        board["links"] = json!([]);
+        assert!(compile(&board).is_err());
+        board["links"] = json!([{"from":"chip.codec.dac","to":"speaker.analog"}]);
+        board["devices"]["speaker"]["parameters"]["gain"] = json!(1);
+        assert!(compile(&board).is_err());
+        board["devices"]["speaker"]["parameters"] = json!({});
+        board["devices"]["amp"] = json!({"model":"audio-amplifier","parameters":{"active_level":1}});
+        board["nets"]["amp"] = json!({"endpoints":["chip.PA1","amp.IN"]});
         assert!(compile(&board).is_err());
     }
 
