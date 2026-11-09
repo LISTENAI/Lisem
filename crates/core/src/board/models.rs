@@ -25,6 +25,11 @@ pub(super) struct Model {
 
 const MODELS: &[Model] = &[
     Model {
+        id: "spi-nor", category: "storage",
+        description: "Serial NOR with independently declared capacity and chip select",
+        ports: &["CS"],
+    },
+    Model {
         id: "st7789",
         category: "display",
         description: "SPI display controller with pixel RAM and TE output",
@@ -130,6 +135,7 @@ fn parameter_schema(id: &str) -> Value {
         };
     }
     match id {
+        "spi-nor" => schema!(SerialNor),
         "st7789" => schema!(Controller),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -176,6 +182,7 @@ pub(super) fn apply_parameter_schemas(board: &mut Value) {
 
 fn example(id: &str) -> Value {
     match id {
+        "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
         "st7789" => json!({"panel_inverted":true}),
         "display-panel" => {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
@@ -243,6 +250,7 @@ fn signals(m: &Model) -> Vec<Value> {
 
 fn links(id: &str) -> Value {
     match id {
+        "spi-nor" => json!({"inputs":["bus"],"sources":["chip.flash.data"]}),
         "st7789" => json!({"outputs":["pixels"]}),
         "backlight" => json!({"outputs":["brightness"]}),
         "display-panel" => json!({"inputs":["pixels","brightness"]}),
@@ -253,6 +261,11 @@ fn links(id: &str) -> Value {
 
 fn constraints(id: &str) -> Value {
     match id {
+        "spi-nor" => json!([
+            "Capacity is a power of two from 64 KiB through 16 MiB; 24-bit addressing only.",
+            "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
+            "Each populated device has its own persistent binary image."
+        ]),
         "st7789" | "backlight" | "display-panel" => json!([
             "One controller, one panel and one backlight must be connected together.",
             "Connect controller.pixels to panel.pixels and backlight.brightness to panel.brightness.",
@@ -303,7 +316,7 @@ fn describe(m: &Model, details: bool) -> Value {
     if details {
         value["ports"] = json!(m.ports);
         value["signals"] = json!(signals(m));
-        value["supported_chips"] = if m.id == "resistor-keypad" {
+        value["supported_chips"] = if matches!(m.id, "resistor-keypad") {
             json!(["ls2663", "ls2684"])
         } else {
             json!(SUPPORTED_CHIPS)
@@ -381,6 +394,8 @@ pub(super) fn typec_address_schema(_: &mut schemars::SchemaGenerator) -> schemar
 
 fn data_signals(id: &str) -> Value {
     match id {
+        "spi-nor" => json!([{"name":"bus","direction":"input","kind":"spi-memory-bus",
+            "required":true,"sources":["chip.flash.data"]}]),
         "st7789" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
         "backlight" => {
             json!([{"name":"brightness","direction":"output","kind":"brightness","required":true}])
@@ -410,6 +425,8 @@ fn interfaces(id: &str) -> Value {
         EXTIO | "husb320-ba" => {
             json!([{"protocol":"i2c","address_parameter":"address","clock":"SCL","data":"SDA"}])
         }
+        "spi-nor" => json!([{"protocol":"spi-memory","bus":"bus","select":"CS",
+            "capacity_parameter":"capacity_bytes","select_parameter":"chip_select"}]),
         "st7789" => json!([{"protocol":"spi","clock":"SCK","data":"SDI","select":"CS"}]),
         _ => json!([]),
     }
@@ -438,7 +455,9 @@ pub fn wiring(chip: &str) -> Value {
         .into_iter()
         .zip(sd_pads(chip).into_iter().map(endpoint))
         .collect();
-    json!({"pads":pads,"i2c":i2c,"adc":adc,"sd":sd,"flash_bytes":NOR_BYTES,
+    json!({"pads":pads,"i2c":i2c,"adc":adc,"sd":sd,
+        "nor":{"model":"spi-nor","capacity_min_bytes":65536,"capacity_max_bytes":16777216,
+            "capacity_power_of_two":true,"chip_selects":if chip == "venusa" {json!([0])} else {json!([0,1])}},
         "controller_sd_detect":chip!="venusa","usb_host_partner":chip!="venusa",
         "constraints":["Firmware configures controller clocks and PinMux; board JSON describes physical wiring.",
             "Each modeled endpoint belongs to one net; at most one chip or expander GPIO per net.",

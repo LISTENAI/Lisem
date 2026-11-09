@@ -14,7 +14,7 @@ class Machine:
     def __init__(self, directory, hart=0, budget_ns=1000000000, flash=None, otp=None, power_button=None, audio=None,
                  network=False, loopback=False, uart=False, desktop=False, serial_connections=None, host_audio=None, camera_input=None,
                  board='arcs-mini', sd_image=None, sd_slot=False, assembly=None, ble_capture=True,
-                 wifi_capture=True, network_capture=True):
+                 wifi_capture=True, network_capture=True, flash_cs1=None):
         self.directory = directory
         self.directory.mkdir(parents=True)
         self.log = (directory / 'qemu.log').open('wb')
@@ -90,6 +90,10 @@ class Machine:
             image.write_bytes(flash)
             firmware += ['-bios', str(image)]
             env['ARCS_QEMU_FLASH_PERSIST'] = '1'
+        if flash_cs1 is not None:
+            image = directory / 'flash-cs1.bin'
+            image.write_bytes(flash_cs1)
+            env['ARCS_QEMU_FLASH_CS1_IMAGE'] = str(image)
         if board.startswith('venusa'):
             image = directory / 'flash.bin'
             image.write_bytes(flash if flash is not None else bytes(16 << 20))

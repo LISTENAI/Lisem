@@ -3,9 +3,6 @@
   "id": "arcs-evb",
   "name": "Arcs-EVB",
   "chip": "ls2684",
-  "storage": {
-    "flash_bytes": 16777216
-  },
   "devices": {
     "lcd": {
       "model": "st7789",
@@ -87,6 +84,13 @@
       "model": "cst328",
       "parameters": {
         "rotation_clockwise": 270
+      }
+    },
+    "flash0": {
+      "model": "spi-nor",
+      "parameters": {
+        "capacity_bytes": 16777216,
+        "chip_select": 0
       }
     }
   },
@@ -302,6 +306,10 @@
     {
       "from": "backlight.brightness",
       "to": "screen.brightness"
+    },
+    {
+      "from": "chip.flash.data",
+      "to": "flash0.bus"
     }
   ],
   "inputs": {}

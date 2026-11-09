@@ -13,13 +13,39 @@ use std::{
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FlashDevice {
+    pub id: String,
+    pub chip_select: u8,
+    pub capacity_bytes: usize,
+    pub file: String,
+}
+
+impl FlashDevice {
+    pub fn new(id: &str, chip_select: u8, capacity_bytes: usize) -> Self {
+        Self { id: id.into(), chip_select, capacity_bytes,
+            file: if chip_select == 0 { "flash.bin".into() }
+                else { format!("flash-cs{chip_select}.bin") } }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Layout {
     pub chip: String,
     pub board: String,
     pub flash_bytes: usize,
+    #[serde(default)]
+    pub flash_devices: Vec<FlashDevice>,
     pub otp_bytes: usize,
     pub uid_offset: usize,
     pub uid_bytes: usize,
+}
+
+impl Layout {
+    pub fn flashes(&self) -> Vec<FlashDevice> {
+        if self.flash_devices.is_empty() {
+            vec![FlashDevice::new("flash0", 0, self.flash_bytes)]
+        } else { self.flash_devices.clone() }
+    }
 }
 
 pub struct Lease {
@@ -235,19 +261,66 @@ pub fn lpk_flash(path: &Path, layout: &Layout, mut flash: Vec<u8>) -> Result<Vec
 }
 
 fn manifest(layout: &Layout) -> Value {
+    json!({"version":2,"chip":layout.chip,"board":layout.board,
+           "flash_devices":layout.flashes(),"otp_bytes":layout.otp_bytes})
+}
+
+fn legacy_manifest(layout: &Layout) -> Value {
     json!({"version":1,"chip":layout.chip,"board":layout.board,
-           "flash_bytes":layout.flash_bytes,"otp_bytes":layout.otp_bytes})
+        "flash_bytes":layout.flash_bytes,"otp_bytes":layout.otp_bytes})
+}
+
+fn is_single_flash_manifest(saved: &Value, layout: &Layout) -> bool {
+    layout.flashes().len() == 1 && *saved == legacy_manifest(layout)
+}
+
+fn write_flash_images(path: &Path, layout: &Layout, bytes: &[u8]) -> Result<()> {
+    ensure!(bytes.len() == layout.flash_bytes, "Flash size mismatch");
+    let flashes = layout.flashes();
+    ensure!(flashes.iter().map(|f| f.capacity_bytes).try_fold(0usize, |n, size| n.checked_add(size)) == Some(layout.flash_bytes), "Invalid Flash geometry");
+    ensure!(flashes.iter().enumerate().all(|(i,f)| f.chip_select as usize == i && f.capacity_bytes > 0 && f.file == FlashDevice::new(&f.id,f.chip_select,f.capacity_bytes).file), "Invalid Flash device mapping");
+    let mut offset = 0;
+    for flash in flashes {
+        let end = offset + flash.capacity_bytes;
+        ensure!(end <= bytes.len(), "Invalid Flash geometry");
+        atomic_write(&path.join(flash.file), &bytes[offset..end])?;
+        offset = end;
+    }
+    ensure!(offset == bytes.len(), "Incomplete Flash geometry");
+    Ok(())
+}
+
+pub fn read_flash_images(path: &Path, layout: &Layout) -> Result<Vec<u8>> {
+    let mut bytes = Vec::with_capacity(layout.flash_bytes);
+    for flash in layout.flashes() {
+        let image = fs::read(path.join(&flash.file))?;
+        ensure!(image.len() == flash.capacity_bytes, "Flash size mismatch: {}", flash.id);
+        bytes.extend_from_slice(&image);
+    }
+    Ok(bytes)
+}
+
+// Called only under the instance lease. The single image already has the
+// current filename and layout; only the manifest needs an atomic upgrade.
+fn upgrade_manifest(path: &Path, layout: &Layout) -> Result<()> {
+    if is_single_flash_manifest(&read_json(&path.join("instance.json"))?, layout) {
+        write_json(&path.join("instance.json"), &manifest(layout))?;
+    }
+    Ok(())
 }
 
 pub fn validate(path: &Path, layout: &Layout) -> Result<()> {
-    ensure!(
-        read_json(&path.join("instance.json"))? == manifest(layout),
-        "Unsupported instance manifest"
-    );
-    ensure!(
-        fs::metadata(path.join("flash.bin"))?.len() == layout.flash_bytes as u64,
-        "Instance Flash size mismatch"
-    );
+    let saved = read_json(&path.join("instance.json"))?;
+    if is_single_flash_manifest(&saved, layout) {
+        ensure!(fs::metadata(path.join("flash.bin"))?.len() == layout.flash_bytes as u64,
+                "Legacy Flash size mismatch");
+    } else {
+        ensure!(saved == manifest(layout), "Unsupported instance manifest");
+        for flash in layout.flashes() {
+            ensure!(fs::metadata(path.join(&flash.file))?.len() == flash.capacity_bytes as u64,
+                    "Instance Flash size mismatch: {}", flash.id);
+        }
+    }
     ensure!(
         fs::metadata(path.join("otp.bin"))?.len() == layout.otp_bytes as u64,
         "Instance OTP size mismatch"
@@ -268,6 +341,7 @@ pub fn locked(path: &Path, layout: &Layout) -> Result<Lease> {
     );
     let lease = Lease::acquire(&path.join("instance.lock"))?;
     validate(path, layout)?;
+    upgrade_manifest(path, layout)?;
     Ok(lease)
 }
 
@@ -373,7 +447,7 @@ pub fn create_with_uid(
         "Invalid chip UID layout"
     );
     otp[layout.uid_offset..layout.uid_offset + layout.uid_bytes].copy_from_slice(&bytes);
-    atomic_write(&temporary.path().join("flash.bin"), &flash)?;
+    write_flash_images(temporary.path(), layout, &flash)?;
     atomic_write(&temporary.path().join("otp.bin"), &otp)?;
     write_json(&temporary.path().join("instance.json"), &manifest(layout))?;
     File::create(temporary.path().join("instance.lock"))?;
@@ -384,13 +458,13 @@ pub fn create_with_uid(
 
 pub fn import(path: &Path, layout: &Layout, package: &Path) -> Result<()> {
     let _lease = locked(path, layout)?;
-    let flash = lpk_flash(package, layout, fs::read(path.join("flash.bin"))?)?;
-    atomic_write(&path.join("flash.bin"), &flash)
+    let flash = lpk_flash(package, layout, read_flash_images(path, layout)?)?;
+    write_flash_images(path, layout, &flash)
 }
 
 pub fn erase(path: &Path, layout: &Layout) -> Result<()> {
     let _lease = locked(path, layout)?;
-    atomic_write(&path.join("flash.bin"), &vec![255; layout.flash_bytes])
+    write_flash_images(path, layout, &vec![255; layout.flash_bytes])
 }
 
 pub fn write_flash(path: &Path, layout: &Layout, image: &Path, offset: usize) -> Result<()> {
@@ -402,9 +476,9 @@ pub fn write_flash(path: &Path, layout: &Layout, image: &Path, offset: usize) ->
     );
     let data = fs::read(image)?;
     ensure!(data.len() == size, "Image changed while reading");
-    let mut flash = fs::read(path.join("flash.bin"))?;
+    let mut flash = read_flash_images(path, layout)?;
     flash[offset..offset + size].copy_from_slice(&data);
-    atomic_write(&path.join("flash.bin"), &flash)
+    write_flash_images(path, layout, &flash)
 }
 
 pub fn regenerate_uid(path: &Path, layout: &Layout) -> Result<String> {
@@ -598,6 +672,7 @@ mod uid_tests {
             chip: "test".into(),
             board: "test".into(),
             flash_bytes: 1,
+            flash_devices: vec![],
             otp_bytes: 32,
             uid_offset: 0,
             uid_bytes: 12,

@@ -47,6 +47,9 @@ lisem write INSTANCE_ID firmware.bin
 
 `INSTANCE_ID` 使用创建结果中的 ID。写入须下电，默认 Flash 偏移为 0；
 多段镜像通过 `write --offset` 指定各段偏移。
+多颗 Flash 的 LPK 地址和写入偏移按片选顺序累加容量，导入时分别写入各自
+镜像文件。例如 CS0 为 8 MiB 时，CS1 的逻辑起始偏移为 8 MiB；这些偏移
+不是 CPU 的 XIP 地址。
 
 ## 麦克风与扬声器
 

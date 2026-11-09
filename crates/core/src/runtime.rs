@@ -468,10 +468,8 @@ impl Session {
         // an already running QEMU process.
         let qemu_sha256 = storage::sha256(&assets.qemu())?;
         let instance = Path::new(item["path"].as_str().context("Missing instance path")?);
-        let lease = storage::locked(
-            instance,
-            &catalog.layout(item["board"].as_str().context("Missing board")?)?,
-        )?;
+        let layout = catalog.layout(item["board"].as_str().context("Missing board")?)?;
+        let lease = storage::locked(instance, &layout)?;
         let mut regions = Regions::new(instance)?;
         let workspace = if options.capture.is_none() {
             Some(tempfile::tempdir()?)
@@ -658,7 +656,7 @@ impl Session {
         if options.capture.is_some() {
             storage::write_json(
                 &output.join("run.json"),
-                &json!({"qemu_sha256":storage::sha256(&assets.qemu())?,"flash_sha256":storage::sha256(&instance.join("flash.bin"))?,"otp_sha256":storage::sha256(&instance.join("otp.bin"))?,"boot_source":"chip-rom","options":options}),
+                &json!({"qemu_sha256":storage::sha256(&assets.qemu())?,"flash_images":layout.flashes().iter().map(|flash| Ok(json!({"device":flash.id,"file":flash.file,"capacity_bytes":flash.capacity_bytes,"sha256":storage::sha256(&instance.join(&flash.file))?}))).collect::<Result<Vec<_>>>()?,"otp_sha256":storage::sha256(&instance.join("otp.bin"))?,"boot_source":"chip-rom","options":options}),
             )?;
         }
         let mut session = Self {

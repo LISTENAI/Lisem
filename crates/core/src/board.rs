@@ -17,6 +17,7 @@ pub struct Board {
     pub id: String,
     pub name: String,
     pub chip: String,
+    #[serde(default)]
     pub storage: Storage,
     #[schemars(length(max = 64))]
     pub devices: BTreeMap<String, Device>,
@@ -30,9 +31,10 @@ pub struct Board {
     pub inputs: BTreeMap<String, Stimulus>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Storage {
+    #[serde(default, skip_serializing_if = "is_zero")]
     pub flash_bytes: u64,
 }
 
@@ -45,6 +47,8 @@ pub struct Device {
     #[serde(default = "empty_object")]
     pub parameters: Value,
 }
+
+fn is_zero(value: &u64) -> bool { *value == 0 }
 
 fn empty_object() -> Value {
     json!({})
@@ -176,6 +180,39 @@ fn ports(model: &str) -> Result<&'static [&'static str]> {
 }
 
 impl Board {
+    fn flash_devices(&self) -> Result<Vec<crate::storage::FlashDevice>> {
+        use crate::storage::FlashDevice;
+        let mut devices = Vec::new();
+        for (id, device) in &self.devices {
+            if device.model != "spi-nor" { continue; }
+            let p: SerialNor = serde_json::from_value(device.parameters.clone())?;
+            ensure!(p.capacity_bytes.is_power_of_two()
+                && (65536..=16777216).contains(&p.capacity_bytes),
+                "NOR capacity must be a power of two from 64 KiB through 16 MiB");
+            ensure!(p.chip_select <= 1 && (self.chip != "venusa" || p.chip_select == 0),
+                "Unsupported NOR chip select");
+            let bus = self.linked(&format!("{id}.bus"))?;
+            ensure!(bus == "chip.flash.data",
+                "NOR requires a serial memory controller link");
+            if p.chip_select == 1 {
+                ensure!(self.chip_pad(&format!("{id}.CS"))? == 11, "Unsupported SPIB CS1 pad route");
+            } else {
+                ensure!(!self.nets.values().any(|n| n.endpoints.contains(&format!("{id}.CS"))),
+                    "Primary NOR uses the controller's dedicated chip select");
+            }
+            devices.push(FlashDevice::new(id, p.chip_select, p.capacity_bytes));
+        }
+        if devices.is_empty() {
+            ensure!(self.storage.flash_bytes == NOR_BYTES,
+                "Board must declare its NOR devices");
+            devices.push(FlashDevice::new("flash0", 0, NOR_BYTES as usize));
+        }
+        devices.sort_by_key(|v| v.chip_select);
+        ensure!(devices.len() <= 2 && devices.iter().enumerate().all(|(i,v)| v.chip_select as usize == i),
+            "NOR chip selects must be unique and start at CS0");
+        Ok(devices)
+    }
+
     fn net(&self, endpoint: &str) -> Option<(&str, &Net)> {
         self.nets
             .iter()
@@ -239,10 +276,10 @@ impl Board {
             "Board assembly is unavailable for chip {}",
             self.chip
         );
-        ensure!(
-            self.storage.flash_bytes == NOR_BYTES,
-            "This chip backend requires a 16 MiB NOR"
-        );
+        let flash_devices = self.flash_devices()?;
+        let flash_bytes: u64 = flash_devices.iter().map(|v| v.capacity_bytes as u64).sum();
+        ensure!(self.storage.flash_bytes == 0 || self.storage.flash_bytes == flash_bytes,
+                "Storage size must match the declared NOR devices");
         ensure!(
             self.devices.len() <= 64 && self.nets.len() <= 128 && self.links.len() <= 32,
             "Board description exceeds assembly limits"
@@ -333,10 +370,12 @@ impl Board {
             let target = self.devices.get(target).context("Unknown link target")?;
             if source == "chip" {
                 ensure!(
-                    signal == "usb0.host"
-                        && target.model == "husb320-ba"
-                        && input == "partner"
-                        && self.chip != "venusa",
+                    (signal == "flash.data" && target.model == "spi-nor" && input == "bus")
+                        || (self.chip != "venusa"
+                        && ((signal == "usb0.host"
+                            && target.model == "husb320-ba"
+                            && input == "partner")
+)),
                     "Unsupported chip resource link"
                 );
                 continue;
@@ -382,7 +421,7 @@ impl Board {
             );
         }
         let mut compiled = json!({"id":self.id,"name":self.name,"chip":self.chip,
-            "flash_bytes":self.storage.flash_bytes,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some(),
+            "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some(),
             "buttons":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
                 "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
@@ -402,6 +441,9 @@ impl Board {
     fn assemble(&self, compiled: &mut Value) -> Result<Value> {
         self.single("cst328")?;
         let mut plan = compiled["assembly"].clone();
+        plan["nor"] = json!(self.flash_devices()?.iter().map(|v| json!({
+            "id":v.id,"chip_select":v.chip_select,"capacity_bytes":v.capacity_bytes
+        })).collect::<Vec<_>>());
         if let Some((id, dev)) = self.single(EXTIO)? {
             let p: Extio = serde_json::from_value(dev.parameters.clone())?;
             ensure!(
@@ -760,6 +802,7 @@ impl Board {
         }
         // No net may silently disappear from the assembly plan.
         let used_models = [
+            "spi-nor",
             "st7789",
             "backlight",
             "button",
@@ -803,6 +846,19 @@ fn adc_channel(chip: &str, pad: u8) -> Result<u8> {
         34..=39 => pad - 30,
         _ => bail!("Pad has no GPADC VIN route"),
     })
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Nor {}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SerialNor {
+    #[schemars(range(min = 65536, max = 16777216))]
+    capacity_bytes: usize,
+    #[schemars(range(max = 1))]
+    chip_select: u8,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -935,13 +991,17 @@ pub fn schema() -> Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(Board)).unwrap();
     schema["properties"]["schema_version"]["const"] = json!(1);
     schema["properties"]["chip"]["enum"] = json!(SUPPORTED_CHIPS);
-    schema["$defs"]["Storage"]["properties"]["flash_bytes"]["const"] = json!(NOR_BYTES);
     models::apply_parameter_schemas(&mut schema);
     schema
 }
 
 pub fn compile(value: &Value) -> Result<Value> {
     serde_json::from_value::<Board>(value.clone())?.compile()
+}
+
+pub(crate) fn flash_devices(value: &Value) -> Result<Vec<crate::storage::FlashDevice>> {
+    let board: Board = serde_json::from_value(source(value).clone())?;
+    board.flash_devices()
 }
 
 pub fn source(value: &Value) -> &Value {
@@ -983,6 +1043,31 @@ mod tests {
 
     fn example() -> Value {
         serde_json::from_str(include_str!("../../../examples/boards/mini-custom.json")).unwrap()
+    }
+
+    #[test]
+    fn secondary_nor_requires_capacity_bus_and_chip_select() {
+        let valid = json!({"schema_version":1,"id":"dual-nor","name":"Dual NOR",
+            "chip":"ls2684",
+            "devices":{
+                "first":{"model":"spi-nor","parameters":{"capacity_bytes":8388608,"chip_select":0}},
+                "second":{"model":"spi-nor","parameters":{"capacity_bytes":4194304,"chip_select":1}}},
+            "nets":{"CS1":{"endpoints":["chip.PA11","second.CS"]}},
+            "links":[{"from":"chip.flash.data","to":"first.bus"},
+                     {"from":"chip.flash.data","to":"second.bus"}]});
+        assert_eq!(compile(&valid).unwrap()["assembly"]["nor"][1]["capacity_bytes"], 4194304);
+        for (path, value) in [
+            ("/devices/second/parameters/capacity_bytes", json!(3000000)),
+            ("/chip", json!("venusa")),
+            ("/nets/CS1/endpoints/0", json!("chip.PA10")),
+            ("/links/0/from", json!("chip.unknown")),
+            ("/devices/second/parameters", json!({"capacity":8})),
+            ("/links", json!([])),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(path).unwrap() = value;
+            assert!(compile(&invalid).is_err(), "accepted {path}");
+        }
     }
 
     #[test]
@@ -1177,4 +1262,31 @@ mod tests {
     }
 
     use std::path::Path;
+
+    #[test]
+    fn nor_capacity_is_declared_per_device() {
+        let raw = json!({"schema_version":1,"id":"unequal-nor","name":"Unequal NOR",
+            "chip":"ls2684", "devices":{
+                "boot":{"model":"spi-nor","parameters":{"capacity_bytes":4194304,"chip_select":0}},
+                "data":{"model":"spi-nor","parameters":{"capacity_bytes":8388608,"chip_select":1}}},
+            "nets":{"CS":{"endpoints":["chip.PA11","data.CS"]}},
+            "links":[{"from":"chip.flash.data","to":"boot.bus"},
+                     {"from":"chip.flash.data","to":"data.bus"}]});
+        let compiled = compile(&raw).unwrap();
+        assert_eq!(compiled["flash_bytes"],12582912);
+        assert_eq!(compiled["flash_devices"][0]["capacity_bytes"],4194304);
+        assert_eq!(compiled["flash_devices"][1]["file"],"flash-cs1.bin");
+        assert_eq!(compiled["assembly"]["nor"][1]["capacity_bytes"],8388608);
+        for (path,value) in [
+            ("/devices/data/parameters/capacity_bytes",json!(0)),
+            ("/devices/data/parameters/capacity_bytes",json!(6291456)),
+            ("/devices/data/parameters/capacity_bytes",json!(33554432)),
+            ("/devices/data/parameters/chip_select",json!(0)),
+            ("/devices/data/parameters/chip_select",json!(2)),
+            ("/chip",json!("venusa")),
+        ] {
+            let mut bad = raw.clone(); *bad.pointer_mut(path).unwrap() = value;
+            assert!(compile(&bad).is_err(), "accepted {path}");
+        }
+    }
 }

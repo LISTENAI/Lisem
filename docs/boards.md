@@ -34,8 +34,11 @@ OTP 和设备身份。通过 MCP 管理板型见[工具参考](mcp.md#板型与�
   "id": "my-board",
   "name": "我的板型",
   "chip": "ls2684",
-  "storage": { "flash_bytes": 16777216 },
   "devices": {
+    "flash0": {
+      "model": "spi-nor",
+      "parameters": { "capacity_bytes": 8388608, "chip_select": 0 }
+    },
     "key": {
       "model": "button",
       "label": "功能键",
@@ -45,7 +48,7 @@ OTP 和设备身份。通过 MCP 管理板型见[工具参考](mcp.md#板型与�
   "nets": {
     "KEY": { "endpoints": ["chip.PB4", "key.OUT"], "pull": "up" }
   },
-  "links": [],
+  "links": [{ "from": "chip.flash.data", "to": "flash0.bus" }],
   "inputs": {}
 }
 ```
@@ -55,7 +58,6 @@ OTP 和设备身份。通过 MCP 管理板型见[工具参考](mcp.md#板型与�
 | `schema_version` | 描述格式的版本；本文示例使用 `1` |
 | `id`、`name` | 板型 ID 和显示名称 |
 | `chip` | 芯片描述的 ID，决定控制器、引脚和存储能力 |
-| `storage.flash_bytes` | Flash 容量，单位为字节，与所选芯片的存储配置匹配 |
 | `devices` | 器件 ID、模型、参数和可选显示名称 |
 | `nets` | 网络名、连接端点和可选上下拉 |
 | `links` | 器件间的像素、亮度等数据接口 |
@@ -97,6 +99,16 @@ lisem board-models --schema
 
 更换接线时，修改对应网络的芯片端点，并使固件的控制器和 PinMux 配置与之
 匹配。可用引脚及路由取决于所选芯片。
+
+### NOR 存储
+
+每颗 NOR 使用独立的 `spi-nor` 器件，参数 `capacity_bytes` 声明字节容量，
+`chip_select` 声明片选编号，各颗容量可以不同。使用 `links` 将
+`chip.flash.data` 连接到每颗器件的 `bus`。CS0 使用控制器专用片选；
+其它片选的接线和容量限制通过能力目录查询，固件负责设置控制器与 PinMux。
+
+实例镜像的组织方式见[存储架构](architecture.md#存储与外部连接)，
+写入偏移见[写入原始二进制](usage.md#写入原始二进制)。
 
 ### 数据接口与屏幕示例
 

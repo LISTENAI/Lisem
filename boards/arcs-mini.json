@@ -3,9 +3,6 @@
   "id": "arcs-mini",
   "name": "Arcs-Mini",
   "chip": "ls2684",
-  "storage": {
-    "flash_bytes": 16777216
-  },
   "devices": {
     "lcd": {
       "model": "st7789",
@@ -79,6 +76,13 @@
       "parameters": {
         "numerator": 2,
         "denominator": 5
+      }
+    },
+    "flash0": {
+      "model": "spi-nor",
+      "parameters": {
+        "capacity_bytes": 16777216,
+        "chip_select": 0
       }
     }
   },
@@ -296,6 +300,10 @@
     {
       "from": "backlight.brightness",
       "to": "screen.brightness"
+    },
+    {
+      "from": "chip.flash.data",
+      "to": "flash0.bus"
     }
   ],
   "inputs": {

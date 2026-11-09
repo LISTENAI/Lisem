@@ -209,6 +209,68 @@ def functional():
         m.close()
 
 
+def dual_flash(first=8 << 20, second=4 << 20):
+    plan = {'version': 1, 'chip': 'ls2684', 'buttons': [], 'indicators': [],
+            'nor': [{'chip_select':0,'capacity_bytes':first}, {'chip_select':1,'capacity_bytes':second}]}
+    original = bytearray(b'\xff' * first)
+    other = bytearray(b'\xff' * second)
+    original[0x1000:0x1004] = b'CS00'
+    other[0x1000:0x1004] = b'CS11'
+    otp = bytes(range(256)) * 2
+    m = Machine(OUTPUT / f'dual-{first}-{second}', board='arcs-board', assembly=plan,
+                flash=original, flash_cs1=other, otp=otp)
+    try:
+        # CS1 must remain electrically disconnected until firmware selects it.
+        m.write(FLASH + 0x58, 0xffff0006)
+        assert command(m, 0x9f, length=3) == b'\xff' * 3
+        m.write(0x4750002c, 1)
+        assert command(m, 0x9f, length=3) == bytes([0xef, 0x40, second.bit_length()-1])
+        m.write(FLASH + 0x54, 0x0fff0000)
+        m.write(FLASH + 0x58, 0xffff0000)
+        assert command(m, 3, address=0x1000, length=4) == b'CS00'
+        assert command(m, 3, address=0x1001000, length=4) == b'CS11'
+        for mode, base, marker in [(0xffff0009, 0x30000000, b'CS00'),
+                                   (0xffff0006, 0x31000000, b'CS11')]:
+            m.write(FLASH + 0x58, mode)
+            capacity = first if base == 0x30000000 else second
+            assert command(m, 0x9f, length=3) == bytes([0xef, 0x40, capacity.bit_length()-1])
+            assert int.from_bytes(command(m, 0x5a, address=20, length=4), 'little') == capacity * 8 - 1
+            assert command(m, 0x5a, address=0xfffffe, length=6) == b'\xff\xffSFDP'
+            assert command(m, 3, address=capacity + 0x1000, length=4) == marker
+            assert command(m, 3, address=0x1000, length=4) == marker
+            assert memory(m, base + 0x1000, 4) == marker
+            command(m, 6)
+            command(m, 2, address=0x2000, data=marker)
+            assert memory(m, base + 0x2000, 4) == marker
+        command(m, 6)
+        command(m, 0x20, address=0x1000)
+        assert memory(m, 0x31001000, 4) == b'\xff' * 4
+        assert memory(m, 0x30001000, 4) == b'CS00'
+        m.write(0x47700000, 0x14000)
+        m.write(0x47700004, 0xa5)
+        assert m.read(0x47700000) == 0x14000 and m.read(0x47700004) == 0xa5
+        m.qmp_command('system_reset')
+        assert m.read(0x47700000) == 0 and m.read(0x47700004) == 0
+        assert memory(m, 0x30002000, 4) == b'CS00'
+        assert memory(m, 0x31002000, 4) == b'CS11'
+        persisted = (m.directory / 'flash.bin').read_bytes()
+        assert persisted[0x2000:0x2004] == b'CS00'
+        persisted_other = (m.directory / 'flash-cs1.bin').read_bytes()
+        assert len(persisted) == first and len(persisted_other) == second
+        assert persisted_other[0x2000:0x2004] == b'CS11'
+        assert (m.directory / 'otp.bin').read_bytes() == otp
+    finally:
+        m.close()
+    m = Machine(OUTPUT / f'dual-reopen-{first}-{second}', board='arcs-board', assembly=plan,
+                flash=persisted, flash_cs1=persisted_other, otp=otp)
+    try:
+        assert memory(m, 0x31002000, 4) == b'CS11'
+        assert memory(m, 0x30002000, 4) == b'CS00'
+    finally:
+        m.close()
+    print(f'Dual NOR {first}/{second}: JEDEC/SFDP, select, separate files, erase, persistence and reset: PASS')
+
+
 def reject(name, commands):
     m = Machine(OUTPUT / name)
     try:
@@ -228,7 +290,12 @@ def reject(name, commands):
 
 def main():
     functional()
+    dual_flash()
+    dual_flash(4 << 20, 16 << 20)
+    dual_flash(16 << 20, 16 << 20)
     for i, commands in enumerate((
+            ['readl 0x47700008'], ['writel 0x47700000 0x8000'],
+            ['writel 0x47700000 0x20000'], ['writel 0x47700004 0x100'],
             ['readl 0x47600004'], ['writeb 0x4760002c 0'],
             ['writel 0x47600030 8'],
             ['writel 0x47600020 0x47000000', 'writel 0x47600024 0xff'],

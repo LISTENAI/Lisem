@@ -338,6 +338,7 @@ pub struct Backend {
     sequence_ids: Vec<String>,
     touch_property: Option<String>,
     flash: String,
+    flash_devices: Vec<storage::FlashDevice>,
     clock_quantum_ns: Option<u64>,
     pub touch_size: Option<(u64, u64)>,
 }
@@ -501,6 +502,7 @@ impl Backend {
             Some(quantum)
         };
         Ok(Self {
+            flash_devices: serde_json::from_value(board["flash_devices"].clone())?,
             machine,
             capabilities,
             environment_prefix,
@@ -560,6 +562,11 @@ impl Backend {
                 .to_string_lossy()
                 .replace(',', ",,");
             command.args(["-drive", &format!("if=pflash,format=raw,file={path}")]);
+        }
+        for flash in &self.flash_devices {
+            if flash.chip_select == 1 {
+                command.env(self.env("FLASH_CS1_IMAGE"), instance.join(&flash.file));
+            }
         }
         if self.environment_prefix == "ARCS_QEMU_" {
             command

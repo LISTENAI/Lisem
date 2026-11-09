@@ -107,7 +107,7 @@ impl Catalog {
             let metadata = self.metadata(instance)?;
             if metadata["hardware"]["board"]["id"] == id {
                 let old = self.layout(id)?;
-                ensure!(old.flash_bytes as u64 == board["flash_bytes"]
+                ensure!(serde_json::to_value(old.flashes())? == board["flash_devices"]
                     && metadata["hardware"]["chip"]["id"] == board["chip"],
                     "Board update changes chip or persistent storage geometry");
                 leases.push(storage::locked(instance, &old)?);
@@ -126,13 +126,14 @@ impl Catalog {
             .chips
             .get(board["chip"].as_str().context("Board chip missing")?)
             .context("Unknown chip")?;
-        // Storage geometry belongs to the chip provider, not the UI/CLI.
+        // NOR geometry belongs to board devices; OTP geometry belongs to the chip.
         // All LS26 variants share the same OTP geometry and UID layout.
         let defaults = match chip["family"].as_str() {
             Some("arcs") => (512, 8, 8),
             _ => (0, 0, 0),
         };
         let layout = Layout {
+            flash_devices: serde_json::from_value(board["flash_devices"].clone())?,
             chip: chip["family"]
                 .as_str()
                 .context("Chip family missing")?
@@ -586,11 +587,15 @@ impl Catalog {
             .context("Chip not supported")?;
         if board.get("definition").is_some() {
             let previous = crate::board::source(&saved["board"]);
-            let previous_flash = previous["storage"]["flash_bytes"].as_u64()
-                .or_else(|| previous["flash_bytes"].as_u64());
+            let previous_flashes = if previous.get("schema_version").is_some() {
+                serde_json::to_value(crate::board::flash_devices(previous)?)?
+            } else {
+                json!([crate::storage::FlashDevice::new("flash0", 0,
+                    previous["flash_bytes"].as_u64().context("Previous Flash size missing")? as usize)])
+            };
             ensure!(previous["chip"] == board["chip"] && saved["board"]["chip"] == board["chip"]
                 && saved["chip"]["id"] == chip["id"] && saved["chip"]["family"] == chip["family"]
-                && previous_flash == board["flash_bytes"].as_u64()
+                && previous_flashes == board["flash_devices"]
                 && (saved["board"]["flash_bytes"].is_null() || saved["board"]["flash_bytes"] == board["flash_bytes"]),
                 "Board chip or persistent storage geometry changed");
             for (field, default) in [("otp_bytes",512), ("uid_offset",8), ("uid_bytes",8)] {

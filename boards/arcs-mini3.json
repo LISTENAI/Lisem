@@ -3,9 +3,6 @@
   "id": "arcs-mini3",
   "name": "Arcs-Mini3",
   "chip": "ls2663",
-  "storage": {
-    "flash_bytes": 16777216
-  },
   "devices": {
     "lcd": {
       "model": "st7789",
@@ -105,6 +102,13 @@
       "model": "husb320-ba",
       "parameters": {
         "address": 49
+      }
+    },
+    "flash0": {
+      "model": "spi-nor",
+      "parameters": {
+        "capacity_bytes": 16777216,
+        "chip_select": 0
       }
     }
   },
@@ -361,6 +365,10 @@
     {
       "from": "chip.usb0.host",
       "to": "typec.partner"
+    },
+    {
+      "from": "chip.flash.data",
+      "to": "flash0.bus"
     }
   ],
   "inputs": {

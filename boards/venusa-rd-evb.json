@@ -3,9 +3,6 @@
   "id": "venusa-rd-evb",
   "name": "VenusA RD EVB",
   "chip": "venusa",
-  "storage": {
-    "flash_bytes": 16777216
-  },
   "devices": {
     "pa": {
       "model": "audio-amplifier",
@@ -23,6 +20,13 @@
       "label": "摄像头",
       "parameters": {
         "rotation_clockwise": 0
+      }
+    },
+    "flash0": {
+      "model": "spi-nor",
+      "parameters": {
+        "capacity_bytes": 16777216,
+        "chip_select": 0
       }
     }
   },
@@ -162,6 +166,11 @@
       ]
     }
   },
-  "links": [],
+  "links": [
+    {
+      "from": "chip.flash.data",
+      "to": "flash0.bus"
+    }
+  ],
   "inputs": {}
 }

@@ -5,7 +5,7 @@ use std::{path::PathBuf, process::Command};
 fn minimal() -> Value {
     json!({"chip":{"id":"test-chip","runtime":{"abi":"lisem-v1",
         "environment_prefix":"LISEM_QEMU_","flash":"pflash"}},
-        "board":{"id":"test-board","runtime":{"machine":"test-board"},
+        "board":{"id":"test-board","flash_devices":[],"runtime":{"machine":"test-board"},
         "uart_channels":[0,1],"buttons":[],"audio":false}})
 }
 
