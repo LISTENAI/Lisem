@@ -314,6 +314,85 @@ def calibration():
     finally: m.close()
 
 
+# Mini2 PIO measurements: signed 32-bit TX/RX, 2048 input samples, SRC_CLR
+# before each case. The 24-bit SRC output occupies bits 31:8. Cases 0..5
+# place a 0x10000000 impulse at sample 48+case; case 6 uses an independent
+# deterministic pseudo-random signal. Hashes cover raw little-endian RX words.
+SRC_SILICON = {'10': {'samples': 682,
+        'sha256': '651ba42c748de4a9953fb8c266d1de030bdc4bb4758e336c27a2c9402cc55856'},
+ '11': {'samples': 682,
+        'sha256': 'eab8aed2aa07b40bfe3e677a49ebd4457c9c99637ac05fa1b393e984b14c5f38'},
+ '12': {'samples': 682,
+        'sha256': 'e5fcab4e7038f1e590c4b4f1f5e3185d39d375c03f34340d403896ccca04dcac'},
+ '13': {'samples': 682,
+        'sha256': '26fbd5a6e4a1a4ca063f2e5cd36228cb161c03dee8f121128351d73fcebee29e'},
+ '14': {'samples': 682,
+        'sha256': 'dcf202395363a6cfe08b59ef935480c120d4b31fd427fd9be2810ab05e070034'},
+ '15': {'samples': 682,
+        'sha256': '4d414b41d082db1efdd8a8ea3ef9ff87cb47db6770bd818e3ba3e6a95e1a10e7'},
+ '16': {'samples': 682,
+        'sha256': '576020c9b09868d3d314ebc64980c6bc92ecbef889603ed29f0343be1d9f79d2'},
+ '20': {'samples': 341,
+        'sha256': '6af01856fa370c40991fd86284fc49149ce9f67a0ecffad51c0edb4a12cd8e78'},
+ '21': {'samples': 341,
+        'sha256': '8a088f4e2fc533d54466967bdc37374b8501572a940f3d9a7638d8002d5d0584'},
+ '22': {'samples': 341,
+        'sha256': '2c0fdcb4e616ac6c5d5254d5f636fea3f4c992ec974644b366d4789b03139836'},
+ '23': {'samples': 341,
+        'sha256': '5e43c5c255808348f618a3b2a7ad0b9d7484a653127d4406345ee9123a178962'},
+ '24': {'samples': 341,
+        'sha256': 'b805a50c4c24e81f36876d7a7053cc44dcb9eac8d357b070f1af9b0a054c6f33'},
+ '25': {'samples': 341,
+        'sha256': 'bacf3b10ba9d8febde1ab519ab0742bcb27fd5a6b4e0f06c399bac308f216d7c'},
+ '26': {'samples': 341,
+        'sha256': '53979cbee0c678ed9faa7cdbe2e0f9f172092b46ba78c4817fa73cf8ff70647d'}}
+
+
+def digital_src():
+    for hart in (0, 1):
+        for mode in (1, 2):
+            ratio = 3 if mode == 1 else 6
+            for kind in range(7):
+                expected = SRC_SILICON[str(mode * 10 + kind)]
+                m = Machine(OUTPUT / f'src-{hart}-{mode}-{kind}', hart=hart,
+                            budget_ns=100000000)
+                try:
+                    configure(m, 48000, values=[], adc=False)
+                    m.write(APC + 24, 0x1000100d)
+                    m.write(APC + 24, 0x10000005 | (0xa00 if mode == 1 else 0x200))
+                    assert not m.read(APC + 24) & 0x1000
+                    data = bytearray()
+                    for n in range(2048):
+                        value = (0x10000000 if n == 48 + kind else 0) if kind < 6 else (
+                            (((n * 1103515245 + 12345) & 0x1fffffff) - 0x10000000) if n >= 48 else 0)
+                        m.write(APC + 0xf4, value & 0xffffffff)
+                        step(m, 20833)
+                        assert not (m.read(APC + 24) >> 4) & 31
+                        step(m, 1)
+                        assert (m.read(APC + 24) >> 4) & 31 == int(n % ratio == 0)
+                        if n % ratio == 0:
+                            word = m.read(APC + 0x10c)
+                            if len(data) < expected['samples'] * 4:
+                                data += struct.pack('<I', word)
+                    assert len(data) == expected['samples'] * 4
+                    assert hashlib.sha256(data).hexdigest() == expected['sha256'], (hart, mode, kind)
+                    # SRC_CLR cancels filter history and decimation phase,
+                    # independently of the RX FIFO clear pulse.
+                    m.write(APC + 24, 0x1000100d)
+                    assert not m.read(APC + 24) & 0x1000
+                    m.write(APC + 24, 0x10000005 | (0xa00 if mode == 1 else 0x200))
+                    m.write(APC + 0xf4, 0)
+                    step(m, 20834)
+                    assert (m.read(APC + 24) >> 4) & 31 == 1
+                    assert m.read(APC + 0x10c) == 0
+                    m.qmp_command('system_reset')
+                    step(m, 20834 * 6)
+                    assert m.read(APC + 24) == 0
+                finally:
+                    m.close()
+    print('APC SRC: both harts, both ratios, 14 Mini2 bit-exact vectors, sample boundaries and reset: PASS')
+
+
 def digital_loopback():
     def words(values, fmt):
         if not fmt:
@@ -430,7 +509,7 @@ def rejection():
          'writel 0x4590002c 1', 'writel 0x45900000 0xa3', 'clock_step 1000'],
         ['writel 0x45b00000 0x10'], ['writel 0x45b0000c 0x600'],
         ['writel 0x45b00014 0x02070001'], ['writel 0x45b00018 0x20000001'],
-        ['writel 0x45b00018 0x10000201'], ['writel 0x45b00018 0x12070001'],
+        ['writel 0x45b00018 0x00000201'], ['writel 0x45b00018 0x12070001'],
         ['readl 0x45b000f4'], ['writel 0x45b00104 1'], ['readw 0x45b00014'],
         ['readl 0x45c00000'], ['writeb 0x45c00008 1'],
     ]
@@ -534,6 +613,7 @@ if __name__ == '__main__':
     analog_standby(0); analog_standby(1)
     feedback()
     digital_loopback()
+    digital_src()
     calibration()
     cpu_probe()
     rejection()
