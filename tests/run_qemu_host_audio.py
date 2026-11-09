@@ -2,6 +2,7 @@
 """Independent shared PCM endpoint through real Codec/FIFO MMIO boundaries."""
 import ctypes
 import json
+import math
 import mmap
 import subprocess
 import time
@@ -37,6 +38,51 @@ def endpoint(path):
         s.input[n] = (n * 777) % 65536 - 32768
     s.input_write = s.input_logged = 100
     return memory, s
+
+
+def playback_48k():
+    # Frequency rejection plus real FIFO/raw capture and exact timestamps.
+    for frequency in (1000, 12000):
+        directory = OUTPUT / ('playback-48k-' + str(frequency)); directory.mkdir()
+        memory, s = endpoint(directory / 'stream.bin'); s.capture = 0
+        m = Machine(directory / 'qemu', budget_ns=25000000,
+                    host_audio=directory / 'stream.bin')
+        values = [round(10000 * math.sin(2 * math.pi * frequency * n / 48000)) for n in range(960)]
+        try:
+            configure(m, 48000, values=[], adc=False)
+            m.write(0x47500004, 1); m.write(0x46700030, 2); m.write(0x46700028, 2)
+            for n, value in enumerate(values):
+                m.write(APC + 0xf4, (value << 16) & 0xffffffff)
+                m.command('clock_step 20833')
+                assert s.output_write == n // 3
+                m.command('clock_step 1')
+                assert s.output_write == (n + 1) // 3
+            output = [s.output[n].value for n in range(320)]
+            rms = math.sqrt(sum(v*v for v in output[40:]) / 280)
+            assert 6900 < rms < 7200 if frequency == 1000 else rms < 4, rms
+            assert all(s.output[n].ns == (n + 1) * 62502 and s.output[n].enabled for n in range(320))
+            assert not s.host_error and not s.guest_error
+            m.write(AP, 0x40)
+            _, raw, rate = finish(m, 25000000)
+            assert raw == values and rate == 48000
+        finally:
+            m.close(); del s; memory.close()
+    # Warm reset clears the FIR without discarding the transport's old frames.
+    directory = OUTPUT / 'playback-48k-reset'; directory.mkdir()
+    memory, s = endpoint(directory / 'stream.bin'); s.capture = 0
+    m = Machine(directory / 'qemu', budget_ns=5000000, host_audio=directory / 'stream.bin')
+    try:
+        configure(m, 48000, values=[10000]*8, adc=False)
+        m.write(0x47500004, 1); m.write(0x46700030, 2); m.write(0x46700028, 2)
+        m.command('clock_step 125004'); assert s.output_write == 2
+        m.qmp_command('system_reset')
+        configure(m, 48000, values=[0]*8, adc=False)
+        m.command('clock_step 125004')
+        assert s.output_write == 4 and s.output[2].value == s.output[3].value == 0
+        assert not s.output[2].enabled and not s.output[3].enabled
+    finally:
+        m.close(); del s; memory.close()
+    print('48 kHz host playback: passband, anti-aliasing, raw capture, sample edges and reset PASS')
 
 
 def main():
@@ -85,6 +131,7 @@ def main():
             assert s.watermark_ns == 1000000 and s.adc_missing == 0
         finally:
             m.close(); del s; memory.close()
+    playback_48k()
     # First sampling event maps a fresh input window, independent of boot time.
     directory = OUTPUT / 'epoch'; directory.mkdir()
     memory, s = endpoint(directory / 'stream.bin')
