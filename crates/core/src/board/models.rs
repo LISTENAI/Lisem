@@ -30,6 +30,11 @@ const MODELS: &[Model] = &[
         ports: &["CS"],
     },
     Model {
+        id: "ls8500", category: "sensor",
+        description: "I2C ambient light sensor with timed integration and threshold interrupts",
+        ports: &["SCL", "SDA", "INT"],
+    },
+    Model {
         id: "pwm-led", category: "indicator",
         description: "LED driven by a GPIO or PWM duty at a supported physical pad",
         ports: &["IN"],
@@ -147,6 +152,7 @@ fn parameter_schema(id: &str) -> Value {
     }
     match id {
         "spi-nor" => schema!(SerialNor),
+        "ls8500" => schema!(Nor),
         "st7789" => schema!(Controller),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -195,6 +201,7 @@ pub(super) fn apply_parameter_schemas(board: &mut Value) {
 fn example(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
+        "ls8500" => json!({}),
         "st7789" => json!({"panel_inverted":true}),
         "display-panel" => {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
@@ -222,7 +229,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
             | ("quadrature-encoder", "A" | "B")
             | ("st7789", "TE")
-            | ("cst328", "INT")
+            | ("cst328" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
             | (
                 "gc0328",
@@ -280,6 +287,9 @@ fn constraints(id: &str) -> Value {
             "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
             "Each populated device has its own persistent binary image."
         ]),
+        "ls8500" => json!(["One sensor per board; fixed I2C address 0x54 and active-low INT.",
+            "Ideal IR-free 5600 K white-LED scene, 0..60000 lux; no spectral or noise calibration.",
+            "Continuous integration and threshold persistence are supported; external synchronous triggering is rejected."]),
         "pwm-led" => json!([
             "LS26 routes: PA0/GPT0, PA1/GPT1, PA21/GPT1; GPIO drive is also observed.",
             "At most 8 PWM LEDs. Duty is the modeled electrical ratio, not physical light output."
@@ -340,7 +350,7 @@ fn describe(m: &Model, details: bool) -> Value {
     if details {
         value["ports"] = json!(m.ports);
         value["signals"] = json!(signals(m));
-        value["supported_chips"] = if matches!(m.id, "resistor-keypad" | "pwm-led") {
+        value["supported_chips"] = if matches!(m.id, "resistor-keypad" | "pwm-led" | "ls8500") {
             json!(["ls2663", "ls2684"])
         } else {
             json!(SUPPORTED_CHIPS)
@@ -424,6 +434,8 @@ fn data_signals(id: &str) -> Value {
     match id {
         "spi-nor" => json!([{"name":"bus","direction":"input","kind":"spi-memory-bus",
             "required":true,"sources":["chip.flash.data"]}]),
+        "ls8500" => json!([{"name":"illuminance","direction":"input",
+            "kind":"illuminance","unit":"lux","required":false,"source":"board-input"}]),
         "st7789" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
         "backlight" => {
             json!([{"name":"brightness","direction":"output","kind":"brightness","required":true}])
@@ -443,6 +455,7 @@ fn interfaces(id: &str) -> Value {
     let address = match id {
         "gc0328" => Some(0x21),
         "cst328" => Some(0x1d),
+        "ls8500" => Some(0x54),
         _ => None,
     };
     if let Some(address) = address {

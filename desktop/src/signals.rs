@@ -6,7 +6,7 @@ use gpui::component::{
 };
 use std::{cell::Cell, collections::BTreeMap};
 
-struct VoltageField {
+struct NumericField {
     id: String,
     input: Entity<InputState>,
     slider: Entity<SliderState>,
@@ -17,7 +17,7 @@ struct VoltageField {
 pub struct Signals {
     backend: Arc<Backend>,
     id: String,
-    fields: Vec<VoltageField>,
+    fields: Vec<NumericField>,
     pending: Option<(String, Value)>,
     queued: BTreeMap<String, (Value, Value)>,
     message: String,
@@ -35,7 +35,7 @@ impl Signals {
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|row| row["type"] == "voltage")
+            .filter(|row| row["type"] == "voltage" || row["type"] == "illuminance")
             .map(|row| {
                 let id = row["id"].as_str().unwrap().to_owned();
                 let max = row["max"].as_u64().unwrap() as u32;
@@ -69,6 +69,7 @@ impl Signals {
                 )
                 .detach();
                 let target = id.clone();
+                let unit = row["unit"].as_str().unwrap_or("mV").to_owned();
                 cx.subscribe_in(
                     &input,
                     window,
@@ -76,10 +77,10 @@ impl Signals {
                         if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
                             match field.read(cx).value().trim().parse::<u32>() {
                                 Ok(value) if value <= max => {
-                                    view.set_voltage(&target, value, window, cx);
+                                    view.set_numeric(&target, value, window, cx);
                                 }
                                 _ => {
-                                    view.message = format!("请输入 0–{max} mV 的整数电压值");
+                                    view.message = format!("请输入 0–{max} {unit} 的整数值");
                                     cx.notify();
                                 }
                             }
@@ -98,12 +99,12 @@ impl Signals {
                                 StepAction::Increment => value.saturating_add(10).min(max),
                                 StepAction::Decrement => value.saturating_sub(10).min(max),
                             };
-                            view.set_voltage(&target, value, window, cx);
+                            view.set_numeric(&target, value, window, cx);
                         }
                     },
                 )
                 .detach();
-                VoltageField {
+                NumericField {
                     id,
                     input,
                     slider,
@@ -133,7 +134,7 @@ impl Signals {
         }
     }
 
-    fn set_voltage(&mut self, id: &str, value: u32, window: &mut Window, cx: &mut Context<Self>) {
+    fn set_numeric(&mut self, id: &str, value: u32, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(field) = self.fields.iter().find(|field| field.id == id) {
             field.input.update(cx, |input, cx| {
                 input.set_value(value.to_string(), window, cx)
@@ -258,7 +259,7 @@ impl Signals {
     }
 }
 
-impl VoltageField {
+impl NumericField {
     fn control(&self) -> impl IntoElement {
         let pressed = self.dragging.clone();
         let state = self.slider.clone();
@@ -355,7 +356,7 @@ impl Render for Signals {
                             "低电平".into()
                         }
                     } else {
-                        format!("{} mV", row["default"])
+                        format!("{} {}", row["default"], row["unit"].as_str().unwrap_or(""))
                     }
                 ))
                 .disabled(
@@ -444,7 +445,7 @@ impl Render for Signals {
                             .justify_end()
                             .gap_2()
                             .child(div().w(px(160.)).child(NumberInput::new(&field.input)))
-                            .child(caption("mV")),
+                            .child(caption(row["unit"].as_str().unwrap_or("").to_owned())),
                     )
                     .child(div().px_3().child(field.control()))
                     .child(

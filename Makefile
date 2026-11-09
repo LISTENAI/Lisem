@@ -6,7 +6,7 @@ export CARGO_TARGET_DIR
 .NOTPARALLEL:
 
 QEMU_TESTS := \
-    qemu-board qemu-pwm-led qemu-extio qemu-typec qemu-adc qemu-aes qemu-aon-timer qemu-audio qemu-bluetooth \
+    qemu-board qemu-pwm-led qemu-ls8500 qemu-extio qemu-typec qemu-adc qemu-aes qemu-aon-timer qemu-audio qemu-bluetooth \
     qemu-ble-central qemu-bluetooth-aes qemu-bluetooth-activity qemu-bluetooth-history qemu-bluetooth-link qemu-bluetooth-rx qemu-calendar qemu-camera qemu-camera-capture qemu-camera-input \
     qemu-clock-notify qemu-counter-chain qemu-cpu qemu-cpu-clocks \
     qemu-events qemu-desktop qemu-display qemu-dsp qemu-dma qemu-dma2d qemu-dma2d-memory qemu-dualtimer qemu-dvp-clock \

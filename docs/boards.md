@@ -61,7 +61,7 @@ OTP 和设备身份。通过 MCP 管理板型见[工具参考](mcp.md#板型与�
 | `devices` | 器件 ID、模型、参数和可选显示名称 |
 | `nets` | 网络名、连接端点和可选上下拉 |
 | `links` | 器件间的像素、亮度等数据接口 |
-| `inputs` | 运行中可调节的数字量和电压输入 |
+| `inputs` | 运行中可调节的数字量、电压和照度输入 |
 
 ### 器件与连线
 
@@ -152,6 +152,19 @@ ST7789 的显示 RAM 为 240 × 320，面板的 `viewport` 指定可见区域的
 比例。完整示例见
 [自定义 Mini](../examples/boards/mini-custom.json)的 `inputs` 与电池分压接线。
 操作方法见[信号输入](usage.md#信号输入)。
+
+照度输入通过 `device` 选择支持照度信号的器件，不连接数字网络。例如：
+
+```json
+"inputs": {
+  "illuminance": {
+    "type": "illuminance", "device": "ambient", "unit": "lux",
+    "range": {"min": 0, "max": 60000}, "default": 550
+  }
+}
+```
+
+`ambient` 是板型中器件的 ID。输入使用整数 lux，范围须符合该模型的能力目录。
 
 ## 更新已有板型
 

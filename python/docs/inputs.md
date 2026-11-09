@@ -31,7 +31,7 @@ Wi-Fi、SD 和摄像头在上电前通过 `device` 保存，运行中通过当�
 | `run.set_inputs(changes, *, timeout=10)` | 当前运行应用，状态 `applied` |
 
 输入行含 ID、类型、默认值、`value`、`overridden`；数字量为 bool，电压为
-整数 mV。名称与范围由板型声明。`changes` 是 ID 到值的字典，部分更新保留
+整数 mV，照度为整数 lux。名称与范围由板型声明。`changes` 是 ID 到值的字典，部分更新保留
 其他项，`None` 恢复该项默认值。非法或未知字段整体拒绝；活动运行期间使用
 Run 写入。无声明输入的板型返回空列表。
 

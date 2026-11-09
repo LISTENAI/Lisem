@@ -7,6 +7,15 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
+    Illuminance {
+        device: String,
+        id: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        default: u32,
+        max: u32,
+    },
     Digital {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         endpoint: Option<String>,
@@ -35,18 +44,22 @@ pub enum Input {
 impl Input {
     pub fn id(&self) -> &str {
         match self {
-            Self::Digital { id, .. } | Self::Voltage { id, .. } => id,
+            Self::Digital { id, .. } | Self::Voltage { id, .. } | Self::Illuminance { id, .. } => id,
         }
     }
     fn default(&self) -> Value {
         match self {
             Self::Digital { default, .. } => json!(default),
-            Self::Voltage { default, .. } => json!(default),
+            Self::Voltage { default, .. } | Self::Illuminance { default, .. } => json!(default),
         }
     }
     fn validate(&self, value: &Value) -> Result<()> {
         match self {
             Self::Digital { .. } => ensure!(value.is_boolean(), "Digital input must be boolean"),
+            Self::Illuminance { max, .. } => ensure!(
+                value.as_u64().is_some_and(|v| v <= *max as u64),
+                "Illuminance must be an integer in 0..={max} lux"
+            ),
             Self::Voltage { max, .. } => ensure!(
                 value.as_u64().is_some_and(|v| v <= *max as u64),
                 "Voltage input must be an integer in 0..={max} mV"
@@ -78,6 +91,12 @@ pub fn definitions(board: &Value) -> Result<Vec<Input>> {
         );
         input.validate(&input.default())?;
         match input {
+            Input::Illuminance { device, max, .. } => {
+                ensure!(board["assembly"]["ls8500"]["id"] == *device
+                    && *max > 0 && *max <= 60000
+                    && targets.insert((format!("light:{device}"), 0)),
+                    "Invalid or duplicate illuminance input");
+            }
             Input::Digital { pin, .. } => {
                 ensure!(
                     *pin < 96 && targets.insert((String::new(), *pin)),
@@ -193,6 +212,7 @@ pub fn state(board: &Value, saved: &Value) -> Result<Value> {
                 .cloned()
                 .unwrap_or_else(|| input.default());
             row["overridden"] = json!(values.contains_key(input.id()));
+            if matches!(input, Input::Illuminance { .. }) { row["unit"] = json!("lux"); }
             if matches!(input, Input::Voltage { .. }) {
                 row["unit"] = json!("mV");
             }
@@ -204,6 +224,7 @@ pub fn state(board: &Value, saved: &Value) -> Result<Value> {
 
 pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
     let values = saved_overrides(board, saved)?;
+    let mut illuminance_lux = BTreeMap::new();
     let mut pads = BTreeMap::new();
     let mut adc_uv = BTreeMap::new();
     let mut device_adc_uv = BTreeMap::<String,BTreeMap<String,u64>>::new();
@@ -213,6 +234,7 @@ pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
             .cloned()
             .unwrap_or_else(|| input.default());
         match input {
+            Input::Illuminance { device, .. } => { illuminance_lux.insert(device, value); }
             Input::Digital { pin, .. } => {
                 pads.insert(pin.to_string(), value);
             }
@@ -233,6 +255,7 @@ pub fn physical(board: &Value, saved: &Value) -> Result<Value> {
     }
     let mut result = json!({"pads":pads,"adc_uv":adc_uv});
     if !device_adc_uv.is_empty() { result["device_adc_uv"] = json!(device_adc_uv); }
+    if !illuminance_lux.is_empty() { result["illuminance_lux"] = json!(illuminance_lux); }
     Ok(result)
 }
 

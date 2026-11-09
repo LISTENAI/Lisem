@@ -73,6 +73,14 @@ pub struct Link {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Stimulus {
+    Illuminance {
+        device: String,
+        #[serde(default)]
+        description: Option<String>,
+        unit: String,
+        range: Range,
+        default: u32,
+    },
     Digital {
         net: String,
         #[serde(default)]
@@ -395,6 +403,7 @@ impl Board {
         let mut buses: BTreeMap<u8, (u8, u8, BTreeSet<u8>)> = BTreeMap::new();
         for (id, device) in &self.devices {
             let address = match device.model.as_str() {
+                "ls8500" => 0x54,
                 "gc0328" => 0x21,
                 "cst328" => 0x1d,
                 EXTIO => serde_json::from_value::<Extio>(device.parameters.clone())?.address,
@@ -565,6 +574,16 @@ impl Board {
         }
         for (id, device) in &self.devices {
             match device.model.as_str() {
+                "ls8500" => {
+                    let _: Nor = serde_json::from_value(device.parameters.clone())?;
+                    ensure!(self.chip != "venusa" && self.single("ls8500")?.is_some(),
+                        "LS8500 requires an LS26 chip and one light sensor");
+                    ensure!(self.chip_pad(&format!("{id}.INT"))? < 64, "LS8500 interrupt requires a chip pad");
+                    plan["ls8500"] = json!({"id":id,
+                        "SCL":self.chip_pad(&format!("{id}.SCL"))?,
+                        "SDA":self.chip_pad(&format!("{id}.SDA"))?,
+                        "INT":self.chip_pad(&format!("{id}.INT"))?});
+                }
                 "pwm-led" => {
                     let p: Indicator = serde_json::from_value(device.parameters.clone())?;
                     let pad = self.chip_pad(&format!("{id}.IN"))?;
@@ -752,6 +771,16 @@ impl Board {
             let input_id = id;
             ensure!(identifier(id) && !id.contains('-'), "Invalid input ID");
             let row = match input {
+                Stimulus::Illuminance { device, description, unit, range, default } => {
+                    ensure!(unit == "lux" && range.min == 0 && range.max > 0
+                        && range.max <= 60000 && *default <= range.max,
+                        "Invalid illuminance range or unit");
+                    let sensor = self.devices.get(device).context("Unknown light sensor")?;
+                    ensure!(sensor.model == "ls8500", "Device has no illuminance input");
+                    json!({"id":id,"label":sensor.label.as_deref().unwrap_or(device),
+                        "description":description,"type":"illuminance","device":device,
+                        "default":default,"max":range.max})
+                }
                 Stimulus::Digital {
                     net,
                     description,
@@ -835,6 +864,7 @@ impl Board {
             "quadrature-encoder",
             "led",
             "pwm-led",
+            "ls8500",
             "signal-probe",
             "audio-amplifier",
             "gc0328",
@@ -850,6 +880,7 @@ impl Board {
                 net.pull.is_some()
                     || net.endpoints.iter().any(|e| !e.starts_with("chip."))
                     || self.inputs.values().any(|i| match i {
+                        Stimulus::Illuminance { .. } => false,
                         Stimulus::Digital { net: n, .. } | Stimulus::Voltage { net: n, .. } =>
                             self.nets.get(n).is_some_and(|v| std::ptr::eq(v, net)),
                     }),
@@ -1077,6 +1108,37 @@ mod tests {
 
     fn example() -> Value {
         serde_json::from_str(include_str!("../../../examples/boards/mini-custom.json")).unwrap()
+    }
+
+    #[test]
+    fn illuminance_reaches_one_optical_sensor_and_rejects_invalid_sources() {
+        let mut board = json!({"schema_version":1,"id":"light-test","name":"Light",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"ambient":{"model":"ls8500","parameters":{}}},
+            "nets":{"scl":{"endpoints":["chip.PB1","ambient.SCL"]},
+                    "sda":{"endpoints":["chip.PB0","ambient.SDA"]},
+                    "irq":{"endpoints":["chip.PB2","ambient.INT"]}},
+            "inputs":{"light":{"type":"illuminance","device":"ambient","unit":"lux",
+                "range":{"min":0,"max":60000},"default":550}}});
+        let compiled = compile(&board).unwrap();
+        assert_eq!(compiled["assembly"]["ls8500"], json!({"id":"ambient","SCL":33,"SDA":32,"INT":34}));
+        assert_eq!(crate::signals::physical(&compiled, &Value::Null).unwrap()["illuminance_lux"]["ambient"], 550);
+        let changed = crate::signals::change(&compiled, &Value::Null, &json!({"light":1100})).unwrap();
+        assert_eq!(crate::signals::state(&compiled, &changed).unwrap()[0]["unit"], "lux");
+        assert_eq!(crate::signals::physical(&compiled, &changed).unwrap()["illuminance_lux"]["ambient"], 1100);
+        for value in [json!(-1),json!(60001),json!(true),json!(1.5)] {
+            assert!(crate::signals::change(&compiled, &Value::Null, &json!({"light":value})).is_err());
+        }
+        let restored = crate::signals::change(&compiled, &changed, &json!({"light":null})).unwrap();
+        assert_eq!(crate::signals::physical(&compiled, &restored).unwrap()["illuminance_lux"]["ambient"],550);
+        board["inputs"]["duplicate"] = board["inputs"]["light"].clone();
+        assert!(compile(&board).is_err());
+        board["inputs"].as_object_mut().unwrap().remove("duplicate");
+        board["inputs"]["light"]["device"] = json!("unknown"); assert!(compile(&board).is_err());
+        board["inputs"]["light"]["device"] = json!("ambient");
+        board["devices"]["ambient"]["parameters"]["gain"] = json!(2); assert!(compile(&board).is_err());
+        board["devices"]["ambient"]["parameters"] = json!({});
+        board["nets"].as_object_mut().unwrap().remove("irq"); assert!(compile(&board).is_err());
     }
 
     #[test]
