@@ -30,7 +30,7 @@ def main():
         m.write(0x46800064, 1)
         apply(False, 1_520_000)
         assert m.read(0x46800064) & 1 == 0
-        m.write(0x46600004, 8)  # VIN / 3, Vbg 1.2 V.
+        assert m.read(0x46600004) == 0x0c  # Reset selects VIN / 3.
         assert sample() == 432
         # Samples already in the FIFO retain their sampled voltage.
         m.write(0x46600000, 1)

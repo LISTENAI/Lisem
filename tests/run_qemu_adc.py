@@ -44,7 +44,7 @@ def functional(hart):
             address = BASE + 0xb0 + channel * 4
             expected = [(channel * 61 + 73) % 1024] * 3 + [1023 - channel] * 2
             assert [m.read(address) for _ in range(5)] == expected
-            assert m.read(address) == 0
+            assert m.read(address) == expected[-1]
         assert m.read(BASE + 0x78) == 0xffff0000
         # Ring wrap, threshold crossing, full flag and level reassertion.
         for channel in (0, 7, 8, 15):
@@ -66,6 +66,15 @@ def functional(hart):
             assert m.read(BASE + 0x7c) & (1 << channel)
             m.write(BASE + 0x70, 0xffffffff)
             assert irq(m) == 1  # Threshold is a level derived from FIFO depth.
+            m.write(BASE + 0x64, 0xffffffff)
+            m.write(BASE + 0x68, ~(1 << channel) & 0xffffffff)
+            code(m, channel, 999)
+            m.write(BASE, 1)
+            assert m.read(BASE + 0x80) == 1 << channel and irq(m) == 1
+            assert [m.read(BASE + 0xb0 + channel * 4) for _ in range(16)] == [11 * 31] * 16
+            m.write(BASE + 0x74, 1 << channel)
+            assert m.read(BASE + 0x80) == 0 and irq(m) == 0
+            code(m, channel, 11 * 31)
             reset(m)
             assert irq(m) == 0
             m.write(BASE + 16, 1 << channel)
@@ -94,7 +103,6 @@ def functional(hart):
 def rejection():
     for i, commands in enumerate((['writel 0x46600000 2'], ['writel 0x46600010 0x10000'],
             ['writel 0x46600008 1'], ['readl 0x46600018'], ['readw 0x466000b1'],
-            ['writel 0x46600010 1', 'writel 0x46600000 0x10000001', 'writel 0x46600000 1'],
             ['set_irq_in /machine/soc adc-input 0 1024'])):
         m = Machine(OUTPUT / ('reject%d' % i))
         try:
@@ -108,7 +116,7 @@ def rejection():
             assert json.loads((m.directory / 'report.json').read_text())['status'] == 'unsupported-mmio'
         finally:
             m.close()
-    print('GPADC unsupported triggers, DMA, capacitive mode, overflow and accesses rejected: PASS')
+    print('GPADC unsupported triggers, DMA, capacitive mode and accesses rejected: PASS')
 
 
 def evb_buttons():
