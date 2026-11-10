@@ -117,7 +117,10 @@ def catalog_checks(binary, data, client):
     assert camera['parameter_schema']['properties']['rotation_clockwise']['default'] == 0
     assert any(p['name'] == 'PCLK' and p['direction'] == 'output' for p in camera['signals'])
     detailed = client.tool('lisem_catalog', {'category': 'camera', 'details': True})
-    assert detailed['models'] == exact['models']
+    assert detailed == cli('board-models', '--category', 'camera', '--details')
+    assert {m['model'] for m in detailed['models']} == {m['model'] for m in category['models']}
+    assert camera in detailed['models']
+    assert all('parameter_schema' in m for m in detailed['models'])
     for arguments, command in [
         ({'model': 'GC0828'}, ('--model', 'GC0828')),
         ({'category': 'display', 'model': 'gc0328'}, ('--category', 'display', '--model', 'gc0328')),
