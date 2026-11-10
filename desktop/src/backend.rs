@@ -12,7 +12,7 @@ use std::{
         mpsc,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 #[derive(Clone, Default, Deserialize)]
@@ -140,13 +140,19 @@ impl Backend {
                     thread::sleep(Duration::from_millis(16));
                 }
             });
+            let mut last_status = Instant::now();
             loop {
+                let mut refresh_status = true;
                 match receiver.recv_timeout(Duration::from_millis(250)) {
                     Ok(Request::Quit) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Ok(Request::Query(method, params, reply)) => {
                         let _ = reply.send(bridge.call(method, params));
                     }
                     Ok(Request::Call(method, params)) => {
+                        // Touch motion can arrive faster than status polling.
+                        // Keep input ordered while frames update independently.
+                        refresh_status = method != "touch"
+                            || last_status.elapsed() >= Duration::from_millis(250);
                         let owner = if matches!(method, "create" | "attach" | "detach" | "board_import") {
                             Some(LIBRARY_NOTICE.to_owned())
                         } else { params["id"].as_str().map(str::to_owned) };
@@ -198,6 +204,9 @@ impl Backend {
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
+                if !refresh_status {
+                    continue;
+                }
                 match bridge.call("status", json!({})) {
                     Ok(data) => {
                         let mut state = output.lock().unwrap();
@@ -216,6 +225,7 @@ impl Backend {
                         state.status_error = Some(error);
                     }
                 }
+                last_status = Instant::now();
             }
             frame_stop.store(true, Ordering::Release);
             let _ = frames.join();
