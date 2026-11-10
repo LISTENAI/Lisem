@@ -21,6 +21,9 @@ def run_tests(names):
                    if not name.startswith(('ARCS_QEMU_', 'LISEM_QEMU_'))}
     environment['QTEST_QEMU_BINARY'] = str(BUILD / ('qemu-system-riscv32' + suffix))
     with tempfile.TemporaryDirectory(prefix='lisem-qtest-') as temporary:
+        # GLib subprocess tests can exit before their own file cleanup runs.
+        # Keep their Flash images and captures inside the parent-owned scope.
+        environment.update(TMPDIR=temporary, TMP=temporary, TEMP=temporary)
         for prefix, size in (('ARCS', 512), ('LISEM', 64)):
             otp = Path(temporary) / (prefix.lower() + '-otp.bin')
             otp.write_bytes(bytes(size))
