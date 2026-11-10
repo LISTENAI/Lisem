@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """BF3901 SCCB -> serial raw pixels -> SPI FIFO/DMA, with source cancellation."""
+import json
 import time
 from qemu_test import ROOT
 from qemu_camera_test import CameraMachine
@@ -17,12 +18,13 @@ def register(m, address, value=None):
     return transfer(m, receive=1, reset=False, address=0x6e)[1][0]
 
 
-def capture(software_cs):
+def capture(software_cs, edge_events=False):
     assembly = plan()
     assembly.pop('panel')
     assembly['camera'] = {'model': 'bf3901', 'pads': {
         'SCL': 39, 'SDA': 38, 'MCLK': 26, 'PCLK': 25, 'VSYNC': 22, 'D0': 24}}
-    m = CameraMachine(OUTPUT / ('software-cs' if software_cs else 'pin-cs'),
+    m = CameraMachine(OUTPUT / (('software-cs' if software_cs else 'pin-cs') +
+                                ('-edges' if edge_events else '-batch')),
                       board='arcs-board', assembly=assembly)
     try:
         setup(m)
@@ -58,11 +60,34 @@ def capture(software_cs):
         m.write(DMA + 0x44, 6 << 7)
         m.write(DMA + 0x398, 1)
         m.write(DMA + 0x3a0, 0x101)
+        if edge_events:
+            # A masked-in clock pad retains individual events; trigger mode
+            # zero makes this an equivalent reference without extra IRQs.
+            m.write(0x46700050, 1 << 25)
         register(m, 9, 0)
         m.command('clock_step 1000000')
         assert m.read(SPI + 0x64) == 0 and m.read(RAM) == 0xa5a5a5a5
         m.camera_frame(bytes([0x20, 0x40, 0x80]) * (640 * 480))
-        m.command('clock_step 300000')
+        samples = []
+        trace = None
+        for index in range(300):
+            m.command('clock_step %d' % (31 if index < 100 else 1484))
+            # Reads inside a data unit must see the same partial pin/FIFO/DMA
+            # state as edge scheduling, including the completion boundary.
+            samples.append([m.read(address) for address in
+                (SPI + 0x64, SPI + 0x3c, 0x46700020, DMA + 8, RAM, RAM + 4)])
+            if index in (1, 7):
+                request = {'action': 'start' if index == 1 else 'stop',
+                           'id': 'serial-edges'}
+                if index == 1:
+                    request.update(endpoints=[24, 25], capacity=256)
+                m.qmp_command('qom-set', {'path': '/machine',
+                    'property': 'x-lisa-signal-trace', 'value': json.dumps(request)})
+                if index == 7:
+                    trace = json.loads(m.qmp_command('qom-get', {
+                        'path': '/machine', 'property': 'x-lisa-signal-trace'}))['events']
+        assert trace and len(trace) > 2
+        m.command('clock_step 100')
         assert m.read(SPI + 0x64) == 8
         assert [m.read(RAM + 4 * i) for i in range(3)] == [0x40804080, 0x20402040, 0xa5a5a5a5]
         assert bool(m.read(SPI + 0x3c) & 16) != software_cs
@@ -84,8 +109,10 @@ def capture(software_cs):
         m.close()
     print('BF3901 %s: SCCB, raw pixels, DMA, frame end, absent/cleared source and clock/reset: PASS' %
           ('software CS' if software_cs else 'pin CS'))
+    return samples, trace
 
 
 if __name__ == '__main__':
-    capture(False)
-    capture(True)
+    for software_cs in (False, True):
+        assert capture(software_cs) == capture(software_cs, edge_events=True)
+    print('BF3901 batched/edge scheduling: partial reads and trace timestamps match: PASS')
