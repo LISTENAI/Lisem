@@ -417,7 +417,7 @@ impl Board {
                 target.model == "display-panel"
                     && matches!(
                         (source.model.as_str(), signal, input),
-                        ("st7789" | "sc919" | "jd79651c", "pixels", "pixels") | ("backlight", "brightness", "brightness")
+                        ("st7789" | "sc919" | "axs15231e" | "jd79651c", "pixels", "pixels") | ("backlight", "brightness", "brightness")
                     ),
                 "Incompatible device link: {} -> {}",
                 link.from,
@@ -531,12 +531,13 @@ impl Board {
             let lcd = self.single("st7789")?;
             let epd = self.single("jd79651c")?;
             let qspi = self.single("sc919")?;
+            let axs = self.single("axs15231e")?;
             ensure!(
-                usize::from(lcd.is_some()) + usize::from(epd.is_some()) + usize::from(qspi.is_some()) == 1,
+                usize::from(lcd.is_some()) + usize::from(epd.is_some()) + usize::from(qspi.is_some()) + usize::from(axs.is_some()) == 1,
                 "Display panel requires exactly one controller"
             );
-            let (lcd_id, lcd) = lcd.or(epd).or(qspi).unwrap();
-            let quad = lcd.model == "sc919";
+            let (lcd_id, lcd) = lcd.or(epd).or(qspi).or(axs).unwrap();
+            let quad = matches!(lcd.model.as_str(), "sc919" | "axs15231e");
             ensure!(!quad || self.chip != "venusa", "QSPI panel route is unavailable on this chip");
             let epaper = lcd.model == "jd79651c";
             ensure!(
@@ -560,7 +561,7 @@ impl Board {
                     "Display panel brightness source does not match its backlight"
                 );
             }
-            let (ram_width, ram_height) = if epaper { (176, 296) } else { (240, 320) };
+            let (ram_width, ram_height) = if epaper { (176, 296) } else if lcd.model == "axs15231e" { (180, 720) } else { (240, 320) };
             let p: Panel = serde_json::from_value(screen.parameters.clone())?;
             ensure!(
                 p.viewport.width > 0
@@ -662,6 +663,7 @@ impl Board {
             ensure!(
                 self.single("st7789")?.is_none()
                     && self.single("sc919")?.is_none()
+                    && self.single("axs15231e")?.is_none()
                     && self.single("jd79651c")?.is_none()
                     && self.single("backlight")?.is_none(),
                 "Display controller and backlight require a display panel"
@@ -1000,6 +1002,7 @@ impl Board {
             "st7789",
             "jd79651c",
             "sc919",
+            "axs15231e",
             "backlight",
             "button",
             "quadrature-encoder",
@@ -1133,11 +1136,11 @@ struct Panel {
 struct Viewport {
     #[schemars(range(max = 239))]
     x: u32,
-    #[schemars(range(max = 319))]
+    #[schemars(range(max = 719))]
     y: u32,
     #[schemars(range(min = 1, max = 240))]
     width: u32,
-    #[schemars(range(min = 1, max = 320))]
+    #[schemars(range(min = 1, max = 720))]
     height: u32,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -1512,25 +1515,30 @@ mod tests {
                 json!({"endpoints":[format!("chip.PA{pad}"),format!("lcd.{port}")]});
         }
         raw["nets"]["BL"] = json!({"endpoints":["chip.PA0","light.EN"]});
-        for chip in ["ls2663", "ls2684"] {
-            raw["chip"] = json!(chip);
-            let board = compile(&raw).unwrap();
-            assert_eq!(board["assembly"]["panel"]["model"], "sc919");
-            assert_eq!(board["screen"]["width"], 320);
-            assert_eq!(board["screen"]["height"], 240);
-            assert!(board["assembly"]["panel"]["pads"].get("DC").is_none());
-        }
-        for (path, value) in [
-            ("/chip", json!("venusa")),
-            ("/nets/D2/endpoints/0", json!("chip.PA19")),
-            ("/nets/D2/endpoints", json!(["lcd.D2"])),
-            ("/nets/D3/endpoints/1", json!("lcd.DC")),
-            ("/devices/lcd/parameters", json!({"protocol":"st7789"})),
-            ("/links", json!([])),
-        ] {
-            let mut invalid = raw.clone();
-            *invalid.pointer_mut(path).unwrap() = value;
-            assert!(compile(&invalid).is_err(), "accepted {path}");
+        for (model, width, height) in [("sc919", 240, 320), ("axs15231e", 180, 720)] {
+            raw["devices"]["lcd"]["model"] = json!(model);
+            raw["devices"]["screen"]["parameters"]["viewport"]["width"] = json!(width);
+            raw["devices"]["screen"]["parameters"]["viewport"]["height"] = json!(height);
+            for chip in ["ls2663", "ls2684"] {
+                raw["chip"] = json!(chip);
+                let board = compile(&raw).unwrap();
+                assert_eq!(board["assembly"]["panel"]["model"], model);
+                assert_eq!(board["screen"]["width"], height);
+                assert_eq!(board["screen"]["height"], width);
+                assert!(board["assembly"]["panel"]["pads"].get("DC").is_none());
+            }
+            for (path, value) in [
+                ("/chip", json!("venusa")),
+                ("/nets/D2/endpoints/0", json!("chip.PA19")),
+                ("/nets/D2/endpoints", json!(["lcd.D2"])),
+                ("/nets/D3/endpoints/1", json!("lcd.DC")),
+                ("/devices/lcd/parameters", json!({"protocol":"st7789"})),
+                ("/links", json!([])),
+            ] {
+                let mut invalid = raw.clone();
+                *invalid.pointer_mut(path).unwrap() = value;
+                assert!(compile(&invalid).is_err(), "accepted {path}");
+            }
         }
         raw["devices"].as_object_mut().unwrap().remove("screen");
         raw["links"] = json!([]);

@@ -64,6 +64,11 @@ const MODELS: &[Model] = &[
         ports: &["SCK", "SDI", "CS", "DC", "RESET", "BUSY"],
     },
     Model {
+        id: "axs15231e", category: "display",
+        description: "QSPI RGB565 display controller, single-gate command mode",
+        ports: &["SCK", "D0", "D1", "D2", "D3", "CS", "RESET", "TE"],
+    },
+    Model {
         id: "sc919",
         category: "display",
         description: "QSPI RGB565 display controller with GRAM and vertical TE",
@@ -177,7 +182,7 @@ fn parameter_schema(id: &str) -> Value {
     match id {
         "spi-nor" => schema!(SerialNor),
         "fs1815cn-v1" | "ls8500" => schema!(Nor),
-        "st7789" | "sc919" => schema!(Controller),
+        "st7789" | "sc919" | "axs15231e" => schema!(Controller),
         "jd79651c" => schema!(Epaper),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -227,7 +232,7 @@ fn example(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
         "fs1815cn-v1" | "ls8500" => json!({}),
-        "st7789" | "sc919" => json!({"panel_inverted":true}),
+        "st7789" | "sc919" | "axs15231e" => json!({"panel_inverted":true}),
         "jd79651c" => json!({}),
         "display-panel" => {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
@@ -254,7 +259,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
         (model, port),
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
             | ("quadrature-encoder", "A" | "B")
-            | ("st7789" | "sc919", "TE")
+            | ("st7789" | "sc919" | "axs15231e", "TE")
             | ("jd79651c", "BUSY")
             | ("cst328" | "sc919-touch-v1" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
@@ -300,7 +305,7 @@ fn links(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"inputs":["bus"],"sources":["chip.flash.data"]}),
         "fs1815cn-v1" => json!({"inputs":["analog"],"sources":["chip.codec.dac"]}),
-        "st7789" | "sc919" | "jd79651c" => json!({"outputs":["pixels"]}),
+        "st7789" | "sc919" | "axs15231e" | "jd79651c" => json!({"outputs":["pixels"]}),
         "backlight" => json!({"outputs":["brightness"]}),
         "display-panel" => json!({"inputs":["pixels","brightness"]}),
         "husb320-ba" => json!({"inputs":["partner"],"sources":["chip.usb0.host"]}),
@@ -333,6 +338,12 @@ fn constraints(id: &str) -> Value {
             "At most 4 encoders, with 2 or 4 edges per detent; push switches use separate button devices.",
             "Positive rotation follows AB=11,01,00,10,11. Phase survives reset; pending motion is cancelled.",
             "Ideal digital contacts only; mechanical bounce and analog RC waveforms are not modeled."
+        ]),
+        "axs15231e" => json!([
+            "Single-gate command mode with 180x720 GRAM; viewport and mounting are declared by the panel.",
+            "Requires one display-panel and backlight, with board-declared QSPI, RESET and TE pads.",
+            "RGB565 writes and vertical TE; normal refresh timing is estimated at 60 Hz.",
+            "Only the documented DCS subset is supported; external-flash loading, video mode and touch are not implied."
         ]),
         "sc919" => json!([
             "One controller, one panel and one backlight must be connected together.",
@@ -409,7 +420,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "resistor-keypad" | "fs1815cn-v1" | "sc919" | "sc919-touch-v1" | "pwm-led" | "ls8500"
+            "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "pwm-led" | "ls8500"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -499,7 +510,7 @@ fn data_signals(id: &str) -> Value {
         "fs1815cn-v1" => json!([{"name":"analog","direction":"input",
             "kind":"analog-audio","required":true,"sources":["chip.codec.dac"],
             "chips":["ls2663","ls2684"]}]),
-        "st7789" | "sc919" | "jd79651c" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
+        "st7789" | "sc919" | "axs15231e" | "jd79651c" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
         "backlight" => {
             json!([{"name":"brightness","direction":"output","kind":"brightness","required":true}])
         }
@@ -533,7 +544,7 @@ fn interfaces(id: &str) -> Value {
         }
         "spi-nor" => json!([{"protocol":"spi-memory","bus":"bus","select":"CS",
             "capacity_parameter":"capacity_bytes","select_parameter":"chip_select"}]),
-        "sc919" => {
+        "sc919" | "axs15231e" => {
             json!([{"protocol":"qspi","clock":"SCK","data":["D0","D1","D2","D3"],"select":"CS"}])
         }
         "st7789" | "jd79651c" => json!([{"protocol":"spi","clock":"SCK","data":"SDI","select":"CS"}]),
