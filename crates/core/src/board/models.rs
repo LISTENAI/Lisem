@@ -46,6 +46,11 @@ const MODELS: &[Model] = &[
         ports: &["SCL", "SDA"],
     },
     Model {
+        id: "hold-reset", category: "input",
+        description: "Functional long-press reset circuit with board-selected hold duration",
+        ports: &["KEY", "RESET_N"],
+    },
+    Model {
         id: "quadrature-encoder",
         category: "input",
         description: "Ideal two-phase rotary encoder with virtual-time contact transitions",
@@ -204,6 +209,7 @@ fn parameter_schema(id: &str) -> Value {
         "cst328" | "sc919-touch-v1" => schema!(Touch),
         "button" => schema!(Button),
         "quadrature-encoder" => schema!(Rotary),
+        "hold-reset" => schema!(HoldReset),
         "resistor-keypad" => schema!(Keypad),
         "led" | "pwm-led" | "signal-probe" | "audio-amplifier" => schema!(Indicator),
         "voltage-divider" => schema!(Divider),
@@ -257,6 +263,7 @@ fn example(id: &str) -> Value {
         "axs15231e-touch-ve4" => json!({"width":180,"height":720,"rotation_clockwise":270}),
         "button" => json!({"pressed_level":0,"released_level":1}),
         "quadrature-encoder" => json!({"edges_per_detent":2}),
+        "hold-reset" => json!({"hold_ms":8000,"active_level":0}),
         "resistor-keypad" => {
             json!({"supply_mv":3300,"pull_up_ohms":10000,"keys":[{"id":"key","label":"按键","resistance_ohms":5100}]})
         }
@@ -274,6 +281,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
         (model, port),
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
             | ("quadrature-encoder", "A" | "B")
+            | ("hold-reset", "RESET_N")
             | ("st7789" | "sc919" | "axs15231e", "TE")
             | ("jd79651c", "BUSY")
             | ("cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "ls8500", "INT")
@@ -347,6 +355,11 @@ fn constraints(id: &str) -> Value {
             "One board amplifier; ideal linear gain and signed16 full-scale clipping.",
             "Only the v1 analog calibration profile is supported; unknown settings NACK.",
             "Boost, thermal protection, speaker response and physical telemetry are not modeled."
+        ]),
+        "hold-reset" => json!([
+            "KEY shares a chip pad with a board button; RESET_N connects to chip.RESET_N.",
+            "One reset after an uninterrupted hold; release rearms the circuit. A chip reset does not reset the external circuit.",
+            "Functional reset strobe only: analog pulse width and external MCU instruction execution are not modeled."
         ]),
         "quadrature-encoder" => json!([
             "Connect A and B to distinct chip pads; GPIO-expander routing is unsupported.",
@@ -449,7 +462,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500"
+            "hold-reset" | "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -622,6 +635,7 @@ pub fn wiring(chip: &str) -> Value {
     json!({"pads":pads,"i2c":i2c,"spi":spi,"qspi":qspi,"adc":adc,"sd":sd,
         "nor":{"model":"spi-nor","capacity_min_bytes":65536,"capacity_max_bytes":16777216,
             "capacity_power_of_two":true,"chip_selects":if chip == "venusa" {json!([0])} else {json!([0,1])}},
+        "reset_input":if chip == "venusa" {Value::Null} else {json!("chip.RESET_N")},
         "controller_sd_detect":chip!="venusa","usb_host_partner":chip!="venusa",
         "constraints":["Firmware configures controller clocks and PinMux; board JSON describes physical wiring.",
             "Each modeled endpoint belongs to one net; at most one chip or expander GPIO per net.",

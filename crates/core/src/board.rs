@@ -337,7 +337,7 @@ impl Board {
                     endpoints.insert(endpoint),
                     "Endpoint belongs to multiple nets: {endpoint}"
                 );
-                if endpoint == "chip.SD_CD" {
+                if endpoint == "chip.SD_CD" || (endpoint == "chip.RESET_N" && self.chip != "venusa") {
                 } else if endpoint.starts_with("chip.") {
                     pad(endpoint, &self.chip)?;
                 } else {
@@ -373,6 +373,12 @@ impl Board {
                 !(analog && digital),
                 "Mixed analog and digital ports on net {name}"
             );
+        }
+        if let Some((_, net)) = self.net("chip.RESET_N") {
+            ensure!(net.endpoints.len() == 2 && net.endpoints.iter().any(|e| {
+                e.split_once('.').is_some_and(|(id, port)| port == "RESET_N"
+                    && self.devices.get(id).is_some_and(|d| d.model == "hold-reset"))
+            }), "RESET_N requires one hold-reset output");
         }
         for (name, net) in &self.nets {
             let pins = net
@@ -762,6 +768,24 @@ impl Board {
                         "label":device.label.as_deref().unwrap_or(id),"kind":"audio-amplifier",
                         "device":id,"property":"enabled"}));
                 }
+                "hold-reset" => {
+                    let p: HoldReset = serde_json::from_value(device.parameters.clone())?;
+                    ensure!(self.chip != "venusa" && self.single("hold-reset")?.is_some(),
+                        "Hold reset requires one circuit and an LS26 reset input");
+                    ensure!((1..=60000).contains(&p.hold_ms) && p.active_level <= 1,
+                        "Invalid reset circuit timing or polarity");
+                    let (_, output) = self.net(&format!("{id}.RESET_N"))
+                        .context("Unconnected reset output")?;
+                    ensure!(output.endpoints.len() == 2 && output.endpoints.iter().any(|e| e == "chip.RESET_N"),
+                        "Hold reset output must connect to chip.RESET_N");
+                    let (_, input) = self.net(&format!("{id}.KEY")).context("Unconnected reset key")?;
+                    ensure!(input.endpoints.iter().any(|e| e.split_once('.').is_some_and(|(id, port)|
+                        port == "OUT" && self.devices.get(id).is_some_and(|d| d.model == "button"))),
+                        "Hold reset input requires a board button");
+                    let pad = self.chip_pad(&format!("{id}.KEY"))?;
+                    ensure!(pad < 64, "Hold reset input requires a chip pad");
+                    plan["hold_reset"] = json!({"KEY":pad,"hold_ms":p.hold_ms,"active_low":p.active_level == 0});
+                }
                 "quadrature-encoder" => {
                     let p: Rotary = serde_json::from_value(device.parameters.clone())?;
                     ensure!([2, 4].contains(&p.edges_per_detent), "Encoder requires 2 or 4 edges per detent");
@@ -1050,6 +1074,7 @@ impl Board {
             "backlight",
             "button",
             "quadrature-encoder",
+            "hold-reset",
             "led",
             "pwm-led",
             "ls8500",
@@ -1234,6 +1259,14 @@ struct Button {
     pressed_level: u8,
     #[schemars(range(max = 1))]
     released_level: u8,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct HoldReset {
+    #[schemars(range(min = 1, max = 60000))]
+    hold_ms: u32,
+    #[schemars(range(max = 1))]
+    active_level: u8,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

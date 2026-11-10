@@ -138,6 +138,32 @@ def screen_and_buttons():
         m.close()
 
 
+def hold_reset():
+    p = plan()
+    p['hold_reset'] = {'KEY': 40, 'hold_ms': 20, 'active_low': True}
+    m = Machine(OUTPUT / 'hold-reset', board='arcs-board', assembly=p, desktop=True)
+    try:
+        def press(value):
+            m.qmp_command('qom-set', {'path': '/machine', 'property': 'x-lisa-button-0', 'value': value})
+        cause = 0x48000054
+        m.write(cause, 0)
+        press(True); m.command('clock_step 10000000'); press(False)
+        m.command('clock_step 30000000')
+        assert m.read(cause) == 0
+        press(True); m.command('clock_step 19000000')
+        assert m.read(cause) == 0
+        m.command('clock_step 1000000')
+        assert m.read(cause) & 1
+        m.write(cause, 0); m.command('clock_step 50000000')
+        assert m.read(cause) == 0  # Still held: no repeated reset.
+        press(False); press(True); m.command('clock_step 20000000')
+        assert m.read(cause) & 1
+        press(False)
+        print('Board hold reset: cancelled short press, deadline, POR cause and release rearm: PASS')
+    finally:
+        m.close()
+
+
 def chip_variants():
     variants = [('ls2684', 16 << 20, 0xdd), ('ls2663', 8 << 20, 0x93)]
     for chip, size, identity in variants:
@@ -293,6 +319,7 @@ def analog_keypad():
 
 
 if __name__ == '__main__':
+    hold_reset()
     screen_and_buttons()
     chip_variants()
     venusa_screen()
