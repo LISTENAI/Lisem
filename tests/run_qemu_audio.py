@@ -40,6 +40,7 @@ def finish(m, budget):
 
 
 def configure(m, rate, values=VALUES, adc=None):
+    m.write(0x46100000, 0x210000)  # 24 MHz HCLK: 1 us DMA arbitration.
     if adc is None: adc = rate in (8000, 16000, 48000)
     m.write(AP + 8, 0x70000)
     m.write(APC, 1); m.write(APC + 12, 0x80000005); m.write(APC + 20, 5)
@@ -161,6 +162,7 @@ def gates():
 def dma_channels(hart):
     m = Machine(OUTPUT / ('dma%d' % hart), hart=hart)
     try:
+        m.write(0x46100000, 0x210000)
         for ch in range(6):
             for width in (1, 2, 4):
                 m.write(AP, 2)

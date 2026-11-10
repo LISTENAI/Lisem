@@ -358,12 +358,12 @@ def integer_subsampling_timing():
 
 
 def arrival_order():
-    # At 240 MHz HCLK these MCLK divisors make word periods 0.5/1/2 us.
-    # A tight two-line crop also exercises a 1 us line gap. At equal time,
+    # At 240 MHz HCLK arbitration takes 100 ns. These MCLK divisors
+    # exercise equal and slower word periods, including a 100 ns line gap. At equal time,
     # a timer queued before the word's predecessor must retain precedence.
-    for divider, period, threshold, available in ((14, 500, 6, 7),
-                                                  (29, 1000, 7, 8),
-                                                  (59, 2000, 7, 7)):
+    for divider, period, threshold, available in ((2, 100, 7, 8),
+                                                  (5, 200, 7, 7),
+                                                  (14, 500, 7, 7)):
         m = Machine(OUTPUT / ('arrival-order-%d' % period))
         try:
             configure(m); image(m)
@@ -377,7 +377,7 @@ def arrival_order():
             for i in range(9): m.write(RAM + i*4, 0xa5a5a5a5)
             dma(m, 8); m.write(DVP + 0x20, 1)
             m.command('clock_step 1'); first = m.command('clock_step')
-            burst = first + (threshold - 1)*period + 1000
+            burst = first + (threshold - 1)*period + 100
             before = burst - first - 1
             m.command('clock_step %d' % before)
             assert [m.read(RAM + 4*i) for i in range(9)] == [0xa5a5a5a5]*9
@@ -386,7 +386,7 @@ def arrival_order():
                 [0xf800f800]*available + [0]*(8-available))
             assert m.read(RAM + 32) == 0xa5a5a5a5
             assert bool(m.read(DVP + 0x38) & 4) == (available < 8)
-            assert bool(m.read(DVP + 0x38) & 0x40) == (period <= 1000)
+            assert bool(m.read(DVP + 0x38) & 0x40) == (period <= 100)
             # Stopping immediately after the DMA boundary must not expose
             # future pixels or cause any later RAM write.
             m.write(DVP + 0x20, 0); m.write(DVP + 0x2c, 0x7ff)

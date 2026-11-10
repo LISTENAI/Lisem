@@ -40,6 +40,7 @@ def tables(m):
 
 
 def configure(m, fmt=2, gray=False, columns=1, rows=1, ac=False):
+    m.write(0x46100000, 0x210000)  # 24 MHz HCLK.
     m.write(AP + 8, 0x8000); m.write(AP + 12, 0x80000000); m.write(AP, 0x4000)
     hs, vs = (1 if gray or fmt == 2 else 2), (2 if not gray and fmt == 1 else 1)
     components = 1 if gray else 3
