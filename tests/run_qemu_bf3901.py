@@ -33,7 +33,8 @@ def capture(software_cs):
         # Application Note 6.1: front-end crop selects raw array samples.
         for reg, value in ((0x12, 1), (0x6b, 1), (0x11, 0xb0), (0x15, 0),
                            (0x92, 0), (0xe3, 0), (0x4a, 0x0e),
-                           (0xda, 0), (0xdb, 4), (0xdc, 0), (0xdd, 2), (0xde, 0)):
+                           (0xda, 0), (0xdb, 4), (0xdc, 0), (0xdd, 2),
+                           (0xde, 0x11 if software_cs else 0)):
             register(m, reg, value)
         m.write(0x46000018, 0x11800000)
         for pad in (24, 25):
