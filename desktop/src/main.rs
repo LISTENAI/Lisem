@@ -126,6 +126,8 @@ struct Desktop {
     settings_tab: &'static str,
     held: HashSet<String>,
     touch: Option<Value>,
+    display_scale: Option<u16>,
+    display_scroll: gpui::ScrollHandle,
     rotaries: HashMap<String, rotary::Knob>,
     new_board: Option<String>,
     board_select: Entity<SelectState<Vec<BoardOption>>>,
@@ -266,6 +268,8 @@ impl Desktop {
             settings_tab: "general",
             held: HashSet::new(),
             touch: None,
+            display_scale: None,
+            display_scroll: gpui::ScrollHandle::default(),
             rotaries: HashMap::new(),
             new_board: None,
             board_select,
@@ -1115,8 +1119,16 @@ impl Desktop {
         let insets = gpui::component::window_paddings(window);
         let available = f32::from(window.viewport_size().width - insets.left - insets.right)
             - if self.signals_visible { 300. } else { 0. };
-        let scale = (available - 64.).clamp(120., 336.) as f64 / width.max(height);
+        let available_height = f32::from(window.viewport_size().height - insets.top - insets.bottom)
+            - if d.capabilities.screen { 116. } else { 68. };
+        let scale = self.display_scale
+            .map(|percent| percent as f64 / 100.)
+            .unwrap_or_else(|| {
+                ((available - 64.).max(1.) as f64 / width)
+                    .min((available_height - 160.).max(1.) as f64 / height)
+            });
         let mut screen = div()
+            .flex_shrink_0()
             .w(px((width * scale) as f32))
             .h(px((height * scale) as f32))
             .bg(rgb(0x07090b))
@@ -1255,27 +1267,41 @@ impl Desktop {
             .relative()
             .flex_1()
             .min_w_0()
+            .min_h_0()
             .flex()
             .flex_col()
             .gap_4()
             .child(self.device_toolbar(d, &indicators, pa_enabled, window, cx))
+            .when(d.capabilities.screen, |body| body.child(
+                div().flex_shrink_0().flex().justify_center()
+                    .child(self.display_scale_menu(cx)),
+            ))
             .child(
-                div().flex_1().min_h_0().flex()
+                div().flex_1().min_h_0().min_w_0().w_full().flex()
                     .child(
-                        div().id("device-view").flex_1().min_w_0().flex().flex_col()
-                            .overflow_y_scrollbar().items_center().justify_center().gap_5()
-                            .when(d.capabilities.screen, |body| body.child(
-                                div().p_4().rounded_2xl().bg(cx.theme().muted)
-                                    .border_1().border_color(cx.theme().border)
-                                    .child(screen),
-                            ))
-                            .when(!lights.is_empty(), |body| body.child(lighting))
-                            .when(d.capabilities.rotary, |body| body.child(knobs))
-                            .when(d.hardware["board"]["buttons"].as_array().is_some_and(|buttons| !buttons.is_empty()),
-                                |body| body.child(keys))
-                            .when(!d.capabilities.screen && !d.capabilities.rotary
-                                && d.hardware["board"]["buttons"].as_array().is_none_or(Vec::is_empty),
-                                |body| body.child(self.device_overview(d, cx))),
+                        div().relative().flex_1().min_w_0().min_h_0()
+                            .child(
+                                div().id("device-view").size_full()
+                                    .overflow_scroll().track_scroll(&self.display_scroll)
+                                    .child(
+                                        div().w(px(if d.capabilities.screen { (width * scale) as f32 + 64. } else { 0. }))
+                                            .min_w(px(available.max(1.))).min_h(px(available_height.max(1.)))
+                                            .flex().flex_col().flex_shrink_0().items_center().justify_center().gap_5().p_4()
+                                            .when(d.capabilities.screen, |body| body.child(
+                                                div().flex_shrink_0().p_4().rounded_2xl().bg(cx.theme().muted)
+                                                    .border_1().border_color(cx.theme().border)
+                                                    .child(screen),
+                                            ))
+                                            .when(!lights.is_empty(), |body| body.child(lighting))
+                                            .when(d.capabilities.rotary, |body| body.child(knobs))
+                                            .when(d.hardware["board"]["buttons"].as_array().is_some_and(|buttons| !buttons.is_empty()),
+                                                |body| body.child(keys))
+                                            .when(!d.capabilities.screen && !d.capabilities.rotary
+                                                && d.hardware["board"]["buttons"].as_array().is_none_or(Vec::is_empty),
+                                                |body| body.child(self.device_overview(d, cx))),
+                                    ),
+                            )
+                            .scrollbar(&self.display_scroll, gpui::component::scroll::ScrollbarAxis::Both),
                     )
                     .when(self.signals_visible, |body| {
                         body.child(
