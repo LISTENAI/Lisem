@@ -155,6 +155,35 @@ def functional():
             command(m, op, address=start + size - 1)
             assert memory(m, 0x30000000 + start - 1, 2) == b'\x00\xff'
             assert memory(m, 0x30000000 + start + size - 1, 2) == b'\xff\x00'
+        # Status protection covers ranges, not every write whenever BP is set.
+        # Exercise the 16 KiB sector boundary at both ends and its complement.
+        for bottom in (False, True):
+            for complement in (False, True):
+                edge = 0x4000 if bottom else len(original) - 0x4000
+                protected, writable = (edge - 1, edge) if bottom else (edge, edge - 1)
+                if complement:
+                    protected, writable = writable, protected
+                command(m, 6)
+                command(m, 1, data=bytes([0x4c | (0x20 if bottom else 0),
+                                          0x02 | (0x40 if complement else 0)]))
+                before = command(m, 3, address=protected, length=1)
+                command(m, 6)
+                command(m, 2, address=protected, data=b'\x00')
+                assert command(m, 3, address=protected, length=1) == before
+                command(m, 6)
+                command(m, 2, address=writable, data=b'\x00')
+                assert command(m, 3, address=writable, length=1) == b'\x00'
+                # A larger erase straddling the protected boundary is ignored.
+                command(m, 6)
+                command(m, 0xd8, address=writable)
+                command(m, 6)
+                command(m, 0xc7)
+                assert command(m, 3, address=writable, length=1) == b'\x00'
+                command(m, 6)
+                command(m, 0x20, address=writable)
+                assert command(m, 3, address=writable, length=1) == b'\xff'
+        command(m, 6)
+        command(m, 1, data=b'\x00\x02')
         command(m, 0xb7)
         assert command(m, 0x15, length=1) == b'\x01'
         command(m, 0xe9)
@@ -305,7 +334,7 @@ def main():
              'writel 0x47600024 3', 'writel 0x47600024 3'],
             ['writel 0x47600020 0x47000000', 'writel 0x47600024 6',
              'writel 0x47600020 0x41000000', 'writel 0x47600024 1',
-             'writel 0x4760002c 4', 'writel 0x47600020 0x47000000',
+             'writel 0x4760002c 0x58', 'writel 0x47600020 0x47000000',
              'writel 0x47600024 6', 'writel 0x47600024 0x20'],
             ['writel 0x48600008 0x50000'], ['writel 0x48600008 0x100000'],
             ['writel 0x48600008 0x200000'], ['writel 0x48600008 0x410080'],
