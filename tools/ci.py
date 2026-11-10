@@ -136,8 +136,7 @@ def native_build(python, system, arch):
         run('jit-state', [python, 'tests/run_qemu_jit_state.py'])
 
 
-def sdk_contract(python, target):
-    source = ROOT / 'artifacts/native-package'
+def sdk_contract(python, target, source):
     metadata = json.loads((source / 'build.json').read_text())
     if metadata['commit'] != commit_id() or metadata['target'] != target:
         raise ValueError('Native SDK contract input does not match the source commit and target')
@@ -176,6 +175,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--target', required=True)
     parser.add_argument('--phase', choices=('all', 'tests', 'native', 'rust', 'package', 'sdk'), default='all')
+    parser.add_argument('--package-dir', type=Path, default=ROOT / 'artifacts/native-package',
+                        help='Directory containing the native archive and build.json for the SDK phase')
     args = parser.parse_args()
     system = {'Darwin': 'darwin', 'Linux': 'linux', 'Windows': 'windows'}[platform.system()]
     arch = {'arm64': 'aarch64', 'aarch64': 'aarch64', 'amd64': 'x86_64',
@@ -183,7 +184,7 @@ def main():
     assert args.target == f'{system}-{arch}', 'Native runner does not match package target'
     python = sys.executable
     if args.phase == 'sdk':
-        sdk_contract(python, args.target)
+        sdk_contract(python, args.target, args.package_dir.resolve())
         return
     if args.phase in ('all', 'tests'):
         unit_tests(python)

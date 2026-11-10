@@ -129,7 +129,7 @@ jobs:
     name: Package and integration tests
     needs: [build]
     runs-on: ${{ inputs.runner }}
-    timeout-minutes: 15
+    timeout-minutes: 35
     env:
       CC: clang
     steps:
@@ -137,7 +137,36 @@ jobs:
         with:
           persist-credentials: false
           submodules: true
+      - name: Record the Windows SDK test PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '"LISEM_SDK_HOST_PATH=$env:Path" >> $env:GITHUB_ENV'
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          packages=(binutils patchelf libasound2t64 libdbus-1-3 libfontconfig1
+                    libglib2.0-0t64 libjpeg-turbo8 libpixman-1-0 libpulse0
+                    libx11-xcb1 libxcb1 libxkbcommon-x11-0 libxkbcommon0 zlib1g libzstd1)
+          missing=()
+          for package in "${packages[@]}"; do
+            if [ "$(dpkg-query -W -f '${db:Status-Status}' "$package" 2>/dev/null)" != installed ]; then
+              missing+=("$package")
+            fi
+          done
+          if [ "${#missing[@]}" -eq 0 ]; then
+            exit 0
+          fi
+          for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list; do
+            if [ -f "$source" ]; then
+              sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' "$source"
+            fi
+          done
+          apt_options=(-o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends "${missing[@]}"
       - uses: ./.github/actions/setup
+        if: runner.os != 'Linux'
         with:
           phase: package
           arch: ${{ inputs.arch }}
@@ -166,6 +195,31 @@ jobs:
         env:
           TARGET: ${{ inputs.target }}
         run: '& $env:LISEM_CI_PYTHON tools/ci.py --target $env:TARGET --phase package'
+      - name: Verify the bundled SDK outside the checkout
+        id: sdk
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: python3 tools/ci.py --target "$TARGET" --phase sdk --package-dir artifacts/packages
+      - name: Verify the bundled SDK (Windows)
+        id: sdk-windows
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          $env:Path = $env:LISEM_SDK_HOST_PATH
+          & $env:LISEM_CI_PYTHON tools/ci.py --target $env:TARGET --phase sdk --package-dir artifacts/packages
+      - name: Upload contract results
+        if: ${{ !cancelled() && (steps.sdk.outcome == 'success' || steps.sdk.outcome == 'failure' || steps.sdk-windows.outcome == 'success' || steps.sdk-windows.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sdk-contract-${{ inputs.target }}
+          path: |
+            artifacts/ci/sdk-contract/*.xml
+            artifacts/ci/sdk-contract/*.json
+            artifacts/ci/sdk-contract/*.log
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload candidate package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
