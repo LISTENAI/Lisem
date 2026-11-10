@@ -108,6 +108,12 @@ const MODELS: &[Model] = &[
         ports: &["SCL", "SDA", "INT"],
     },
     Model {
+        id: "axs15231e-touch-ve4",
+        category: "input",
+        description: "AXS15231E vE4 single-contact reporting and scan heartbeat",
+        ports: &["SCL", "SDA", "INT", "RESET"],
+    },
+    Model {
         id: "sc919-touch-v1",
         category: "input",
         description: "SC919 v1 scan interface with ideal differential AFE; guest computes coordinates",
@@ -188,7 +194,9 @@ fn parameter_schema(id: &str) -> Value {
     match id {
         "spi-nor" => schema!(SerialNor),
         "fs1815cn-v1" | "ls8500" => schema!(Nor),
-        "st7789" | "sc919" | "axs15231e" => schema!(Controller),
+        "st7789" | "sc919" => schema!(Controller),
+        "axs15231e" => schema!(AxsController),
+        "axs15231e-touch-ve4" => schema!(AxsTouch),
         "jd79651c" => schema!(Epaper),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -246,6 +254,7 @@ fn example(id: &str) -> Value {
         "backlight" | "audio-amplifier" | "signal-probe" => json!({"active_level":1}),
         "gc0328" | "bf3901" => json!({"rotation_clockwise":90}),
         "cst328" | "sc919-touch-v1" => json!({"rotation_clockwise":270}),
+        "axs15231e-touch-ve4" => json!({"width":180,"height":720,"rotation_clockwise":270}),
         "button" => json!({"pressed_level":0,"released_level":1}),
         "quadrature-encoder" => json!({"edges_per_detent":2}),
         "resistor-keypad" => {
@@ -267,7 +276,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
             | ("quadrature-encoder", "A" | "B")
             | ("st7789" | "sc919" | "axs15231e", "TE")
             | ("jd79651c", "BUSY")
-            | ("cst328" | "sc919-touch-v1" | "ls8500", "INT")
+            | ("cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
             | (
                 "gc0328" | "bf3901",
@@ -349,6 +358,7 @@ fn constraints(id: &str) -> Value {
             "Single-gate command mode with 180x720 GRAM; viewport and mounting are declared by the panel.",
             "Requires one display-panel and backlight, with board-declared QSPI, RESET and TE pads.",
             "RGB565 writes and vertical TE; normal refresh timing is estimated at 60 Hz.",
+            "boot_te declares module startup TE configuration; defaults off and reloads only on hardware reset.",
             "Only the documented DCS subset is supported; external-flash loading, video mode and touch are not implied."
         ]),
         "sc919" => json!([
@@ -386,6 +396,12 @@ fn constraints(id: &str) -> Value {
             "SCL/SDA use a supported chip I2C route; pixel data and clocks use chip camera pads.",
             "PWDN and RESET are optional and may use GPIO expander pins.",
             "Host image or live camera supplies a 640x480 RGB888 scene; firmware configures sensor sampling and capture."
+        ]),
+        "axs15231e-touch-ve4" => json!([
+            "Fixed vE4 protocol at I2C address 0x3b; single contact with 12-bit coordinates.",
+            "Active-low scan notification; checksummed reports stay latched until all 15 bytes are read.",
+            "Reset requires 5 ms low and 200 ms recovery; scan and heartbeat timing are estimates.",
+            "Unknown commands are rejected; external Flash programming is not implemented."
         ]),
         "sc919-touch-v1" => json!([
             "One touch controller per board, fixed I2C address 0x28 and active-low RESET/INT.",
@@ -433,7 +449,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "pwm-led" | "ls8500"
+            "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -545,6 +561,7 @@ fn interfaces(id: &str) -> Value {
         "cst328" => Some(0x1d),
         "fs1815cn-v1" => Some(0x34),
         "sc919-touch-v1" => Some(0x28),
+        "axs15231e-touch-ve4" => Some(0x3b),
         "ls8500" => Some(0x54),
         _ => None,
     };

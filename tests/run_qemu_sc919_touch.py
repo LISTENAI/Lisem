@@ -8,9 +8,9 @@ BASE = 0x46d00000
 OUTPUT = ROOT / 'artifacts/qemu' / ('sc919-touch-' + time.strftime('%Y%m%d-%H%M%S'))
 
 
-def transfer(m, data=(), count=0):
+def transfer(m, data=(), count=0, address=0x28):
     m.write(BASE + 0x28, 5)
-    m.write(BASE + 0x1c, 0x28)
+    m.write(BASE + 0x1c, address)
     m.write(BASE + 0x24, 0x1e00 | (0x100 if count else 0) | (count or len(data)))
     sent, received = 0, []
     m.write(BASE + 0x28, 1)

@@ -433,6 +433,7 @@ impl Board {
                 "cst328" => 0x1d,
                 "fs1815cn-v1" => 0x34,
                 "sc919-touch-v1" => 0x28,
+                "axs15231e-touch-ve4" => 0x3b,
                 EXTIO => serde_json::from_value::<Extio>(device.parameters.clone())?.address,
                 "husb320-ba" => serde_json::from_value::<TypeC>(device.parameters.clone())?.address,
                 _ => continue,
@@ -478,7 +479,7 @@ impl Board {
         ensure!(
             self.devices
                 .values()
-                .filter(|d| matches!(d.model.as_str(), "cst328" | "sc919-touch-v1"))
+                .filter(|d| matches!(d.model.as_str(), "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4"))
                 .count()
                 <= 1,
             "At most one touch controller is supported"
@@ -601,8 +602,14 @@ impl Board {
                     );
                 }
             } else {
-                let controller: Controller = serde_json::from_value(lcd.parameters.clone())?;
-                properties["inverted"] = json!(controller.panel_inverted);
+                if lcd.model == "axs15231e" {
+                    let p: AxsController = serde_json::from_value(lcd.parameters.clone())?;
+                    properties["inverted"] = json!(p.panel_inverted);
+                    properties["boot_te"] = json!(p.boot_te);
+                } else {
+                    let p: Controller = serde_json::from_value(lcd.parameters.clone())?;
+                    properties["inverted"] = json!(p.panel_inverted);
+                }
                 let (bl_id, bl) = light.unwrap();
                 let backlight: Active = serde_json::from_value(bl.parameters.clone())?;
                 ensure!(backlight.active_level <= 1, "Invalid backlight polarity");
@@ -853,26 +860,38 @@ impl Board {
                             json!(format!("x-lisa-button-{index}"));
                     }
                 }
-                "cst328" | "sc919-touch-v1" => {
-                    let p: Touch = serde_json::from_value(device.parameters.clone())?;
+                "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" => {
+                    let axs = device.model == "axs15231e-touch-ve4";
+                    let (width, height, rotation) = if axs {
+                        let p: AxsTouch = serde_json::from_value(device.parameters.clone())?;
+                        ensure!((1..=4096).contains(&p.width) && (1..=4096).contains(&p.height), "Invalid touch dimensions");
+                        (p.width, p.height, p.rotation_clockwise)
+                    } else {
+                        let p: Touch = serde_json::from_value(device.parameters.clone())?;
+                        (240, 320, p.rotation_clockwise)
+                    };
                     ensure!(
-                        ROTATIONS.contains(&p.rotation_clockwise),
+                        ROTATIONS.contains(&rotation),
                         "Invalid touch rotation"
                     );
                     let scl = self.chip_pad(&format!("{id}.SCL"))?;
                     let sda = self.chip_pad(&format!("{id}.SDA"))?;
                     let irq = self.chip_pad(&format!("{id}.INT"))?;
                     plan["touch"] = json!({"SCL":scl,"SDA":sda,"INT":irq});
-                    if device.model == "sc919-touch-v1" {
+                    if device.model == "sc919-touch-v1" || axs {
                         ensure!(
                             self.chip != "venusa",
-                            "SC919 touch is not supported on VenusA"
+                            "This touch controller is not supported on VenusA"
                         );
                         plan["touch"]["model"] = json!(device.model);
                         plan["touch"]["RESET"] = json!(self.chip_pad(&format!("{id}.RESET"))?);
                     }
-                    compiled["touch"] = json!({"model":device.model,"address":if device.model == "cst328" {"0x1d"} else {"0x28"},"width":240,
-                        "height":320,"rotation_clockwise":p.rotation_clockwise,
+                    if axs {
+                        plan["touch"]["width"] = json!(width);
+                        plan["touch"]["height"] = json!(height);
+                    }
+                    compiled["touch"] = json!({"model":device.model,"address":if axs {"0x3b"} else if device.model == "cst328" {"0x1d"} else {"0x28"},"width":width,
+                        "height":height,"rotation_clockwise":rotation,
                         "label":device.label.as_deref().unwrap_or("触摸屏")});
                     compiled["runtime"]["touch_property"] = json!("x-lisa-touch");
                 }
@@ -1044,6 +1063,7 @@ impl Board {
             "resistor-keypad",
             "cst328",
             "sc919-touch-v1",
+            "axs15231e-touch-ve4",
             "husb320-ba",
             EXTIO,
         ];
@@ -1168,6 +1188,25 @@ struct Viewport {
     width: u32,
     #[schemars(range(min = 1, max = 720))]
     height: u32,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AxsTouch {
+    #[schemars(range(min = 1, max = 4096))]
+    width: u32,
+    #[schemars(range(min = 1, max = 4096))]
+    height: u32,
+    #[serde(default)]
+    #[schemars(schema_with = "models::rotation_schema")]
+    rotation_clockwise: u32,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AxsController {
+    #[serde(default)]
+    panel_inverted: bool,
+    #[serde(default)]
+    boot_te: bool,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -1493,6 +1532,17 @@ mod tests {
                 "SDA":{"endpoints":["chip.PA21","touch.SDA"]},
                 "INT":{"endpoints":["chip.PA19","touch.INT"]},
                 "RESET":{"endpoints":["chip.PA22","touch.RESET"],"pull":"up"}},"links":[]});
+        let mut axs = valid.clone();
+        axs["devices"]["touch"] = json!({"model":"axs15231e-touch-ve4",
+            "parameters":{"width":180,"height":720,"rotation_clockwise":270}});
+        let compiled = compile(&axs).unwrap();
+        assert_eq!(compiled["assembly"]["touch"]["width"], 180);
+        assert_eq!(compiled["touch"]["height"], 720);
+        assert_eq!(compiled["touch"]["address"], "0x3b");
+        for value in [0, 4097] {
+            axs["devices"]["touch"]["parameters"]["height"] = json!(value);
+            assert!(compile(&axs).is_err());
+        }
         for chip in ["ls2663", "ls2684"] {
             let mut raw = valid.clone(); raw["chip"] = json!(chip);
             let compiled = compile(&raw).unwrap();
