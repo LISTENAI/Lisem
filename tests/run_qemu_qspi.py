@@ -26,7 +26,9 @@ def continuous_dma():
             m.write(DMA + 0x54, RAM); m.write(DMA + 0x5c, BASE + 0x2c)
             m.write(DMA + 0x2c, 76800); m.write(DMA + 0x270, 1)
             m.write(DMA + 0x28, 17); m.write(DMA, 0x14453)
-            m.write(AP + 0x1c, 1); m.write(BASE + 0x30, 16)
+            # Admit a full FIFO for the sustained-throughput case. A zero
+            # watermark intentionally allows the FIFO to empty between bursts.
+            m.write(AP + 0x1c, 1); m.write(BASE + 0x30, 16 | (15 << 16))
             m.write(DMA + 0x1f8, 4)
             m.command('clock_step 999'); assert m.read(DMA + 0x1fc) == RAM
             m.command('clock_step 1'); assert m.read(DMA + 0x1fc) == RAM + 32

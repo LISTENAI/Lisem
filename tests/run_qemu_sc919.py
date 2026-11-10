@@ -123,12 +123,17 @@ def dma_and_scan():
         m.write(BASE + 0x10, 0xf80)
         m.write(BASE + 0x20, 0x01800000)
         m.write(BASE + 0x68, 479)
-        m.write(BASE + 0x24, 0x12)
         for off, value in [(0x54,0x20010000),(0x5c,BASE+0x2c),(0x2c,240),
-                           (0x270,1),(0x28,1),(0,0x204453)]:
+                           (0x270,1),(0x28,1),(0,0x200453)]:
             m.write(0x45900000 + off, value)
         m.write(0x4580001c, 1)
-        m.write(BASE + 0x30, 16)
+        m.write(BASE + 0x30, 16 | (2 << 16))
+        m.command('clock_step 10000')
+        # With the shifter stopped, threshold 2 admits exactly three words.
+        # Free FIFO space alone must not request the rest of the DMA block.
+        assert (m.read(BASE + 0x34) >> 16) & 31 == 3
+        assert not m.read(0x45900158) & 1
+        m.write(BASE + 0x24, 0x12)
         m.command('clock_step 1000000')
         assert m.read(0x45900158) & 1
         assert not m.read(BASE + 0x34) & 1

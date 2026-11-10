@@ -58,8 +58,8 @@ __attribute__((used)) static void run(void)
     R(DMA + 0x3a0) = 0x808;
     check(R(DMA + 0x3a0) == 8); // No request before TXDMAEN.
     R(SPI + 0x30) = 16;
-    check(R(DMA + 0x3a0) == 8); // FIFO fills, but no CMD yet.
-    check(((R(SPI + 0x34) >> 16) & 31) == 16);
+    check(R(DMA + 0x3a0) == 8); // DMA waits above the default zero watermark.
+    check(((R(SPI + 0x34) >> 16) & 31) == 1);
     R(SPI + 0x24) = 0;
     wait_spi();
     check(R(DMA + 0x3a0) == 0);
