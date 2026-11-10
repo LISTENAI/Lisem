@@ -7,7 +7,7 @@ export CARGO_TARGET_DIR
 
 QEMU_TESTS := \
     qemu-board qemu-pwm-led qemu-ls8500 qemu-fs1815 qemu-extio qemu-typec qemu-adc qemu-aes qemu-aon-timer qemu-audio qemu-bluetooth \
-    qemu-ble-central qemu-bluetooth-aes qemu-bluetooth-activity qemu-bluetooth-history qemu-bluetooth-link qemu-bluetooth-rx qemu-calendar qemu-camera qemu-camera-capture qemu-camera-input \
+    qemu-ble-central qemu-bluetooth-aes qemu-bluetooth-activity qemu-bluetooth-history qemu-bluetooth-link qemu-bluetooth-rx qemu-calendar qemu-bf3901 qemu-camera qemu-camera-capture qemu-camera-input \
     qemu-clock-notify qemu-counter-chain qemu-cpu qemu-cpu-clocks \
     qemu-ecc qemu-events qemu-desktop qemu-display qemu-epd qemu-dsp qemu-dma qemu-dma2d qemu-dma2d-memory qemu-dualtimer qemu-dvp-clock \
     qemu-gpio qemu-host-audio qemu-host-display qemu-host-network qemu-host-network-capture \

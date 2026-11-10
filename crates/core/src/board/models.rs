@@ -87,6 +87,12 @@ const MODELS: &[Model] = &[
         ports: &["EN"],
     },
     Model {
+        id: "bf3901",
+        category: "camera",
+        description: "SCCB camera sensor with single-lane serial raw pixel output",
+        ports: &["SCL", "SDA", "MCLK", "PCLK", "VSYNC", "D0", "PWDN", "RESET"],
+    },
+    Model {
         id: "gc0328",
         category: "camera",
         description: "SCCB-controlled camera sensor with parallel pixel output",
@@ -186,7 +192,7 @@ fn parameter_schema(id: &str) -> Value {
         "jd79651c" => schema!(Epaper),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
-        "gc0328" => schema!(Camera),
+        "gc0328" | "bf3901" => schema!(Camera),
         "cst328" | "sc919-touch-v1" => schema!(Touch),
         "button" => schema!(Button),
         "quadrature-encoder" => schema!(Rotary),
@@ -238,7 +244,7 @@ fn example(id: &str) -> Value {
             json!({"viewport":{"x":0,"y":0,"width":240,"height":240},"rotation_clockwise":90})
         }
         "backlight" | "audio-amplifier" | "signal-probe" => json!({"active_level":1}),
-        "gc0328" => json!({"rotation_clockwise":90}),
+        "gc0328" | "bf3901" => json!({"rotation_clockwise":90}),
         "cst328" | "sc919-touch-v1" => json!({"rotation_clockwise":270}),
         "button" => json!({"pressed_level":0,"released_level":1}),
         "quadrature-encoder" => json!({"edges_per_detent":2}),
@@ -264,7 +270,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
             | ("cst328" | "sc919-touch-v1" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
             | (
-                "gc0328",
+                "gc0328" | "bf3901",
                 "PCLK" | "HSYNC" | "VSYNC" | "D0" | "D1" | "D2" | "D3" | "D4" | "D5" | "D6" | "D7"
             )
     )
@@ -292,7 +298,7 @@ fn signals(m: &Model) -> Vec<Value> {
             let kind = if analog(m.id) { "voltage" } else { "digital" };
             let required = !matches!(
                 (m.id, *port),
-                ("gc0328", "PWDN" | "RESET")
+                ("gc0328" | "bf3901", "PWDN" | "RESET")
                     | ("husb320-ba", "INT_N" | "ID")
                     | ("sd-card-slot", "CD")
             ) && !(m.id == EXTIO && port.starts_with('P'));
@@ -368,6 +374,13 @@ fn constraints(id: &str) -> Value {
             "Refresh deadlines are estimates; missing OTP LUTs use three PLL scan frames. Optional otp_luts has 56,42,42,42,42 bytes.",
             "Three-wire SPI, color, OTP programming, external temperature sensing and cascade are rejected."
         ]),
+        "bf3901" => json!([
+            "One camera per board; SCCB address 0x6e, native array 248x328.",
+            "MCLK uses the chip camera clock; PCLK and D0 connect to one SPI controller's clock and MOSI; VSYNC can use CS or a frame GPIO.",
+            "Single-lane raw and processed-raw Bayer output, PLL bypass and crop; other serializers and subsampling are unsupported.",
+            "Host supplies a 640x480 RGB888 optical scene, center-cropped to the sensor array. Analog image processing is idealized; no analog image-quality calibration is modeled.",
+            "PWDN and RESET are optional; absent host input produces no frames."
+        ]),
         "gc0328" => json!([
             "One camera per board; SCCB slave address is fixed at 0x21.",
             "SCL/SDA use a supported chip I2C route; pixel data and clocks use chip camera pads.",
@@ -420,7 +433,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "pwm-led" | "ls8500"
+            "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "pwm-led" | "ls8500"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -528,6 +541,7 @@ fn data_signals(id: &str) -> Value {
 fn interfaces(id: &str) -> Value {
     let address = match id {
         "gc0328" => Some(0x21),
+        "bf3901" => Some(0x6e),
         "cst328" => Some(0x1d),
         "fs1815cn-v1" => Some(0x34),
         "sc919-touch-v1" => Some(0x28),
@@ -535,7 +549,7 @@ fn interfaces(id: &str) -> Value {
         _ => None,
     };
     if let Some(address) = address {
-        return json!([{ "protocol":if id == "gc0328" {"sccb"} else {"i2c"},
+        return json!([{ "protocol":if matches!(id, "gc0328" | "bf3901") {"sccb"} else {"i2c"},
             "address_7bit":address,"clock":"SCL","data":"SDA" }]);
     }
     match id {
@@ -610,8 +624,8 @@ mod tests {
             ..Default::default()
         };
         let result = query_models(&category).unwrap();
-        assert_eq!(result["models"].as_array().unwrap().len(), 1);
-        assert_eq!(result["models"][0]["model"], "gc0328");
+        assert_eq!(result["models"].as_array().unwrap().len(), 2);
+        assert!(result["models"].as_array().unwrap().iter().any(|m| m["model"] == "bf3901"));
         assert!(result["models"][0].get("parameter_schema").is_none());
         let exact = query_models(&ModelQuery {
             model: Some("GC0328".into()),
@@ -647,7 +661,7 @@ mod tests {
             ..category
         })
         .unwrap();
-        assert_eq!(detailed["models"], exact["models"]);
+        assert!(detailed["models"].as_array().unwrap().contains(camera));
     }
 
     #[test]

@@ -429,6 +429,7 @@ impl Board {
             let address = match device.model.as_str() {
                 "ls8500" => 0x54,
                 "gc0328" => 0x21,
+                "bf3901" => 0x6e,
                 "cst328" => 0x1d,
                 "fs1815cn-v1" => 0x34,
                 "sc919-touch-v1" => 0x28,
@@ -669,26 +670,50 @@ impl Board {
                 "Display controller and backlight require a display panel"
             );
         }
-        if let Some((id, camera)) = self.single("gc0328")? {
+        let parallel_camera = self.single("gc0328")?;
+        let serial_camera = self.single("bf3901")?;
+        ensure!(
+            parallel_camera.is_none() || serial_camera.is_none(),
+            "Only one camera is supported"
+        );
+        if let Some((id, camera)) = parallel_camera.or(serial_camera) {
             let p: Camera = serde_json::from_value(camera.parameters.clone())?;
             ensure!(
                 ROTATIONS.contains(&p.rotation_clockwise),
                 "Invalid camera rotation"
             );
             let mut pads = BTreeMap::new();
-            for port in [
-                "SCL", "SDA", "MCLK", "PCLK", "HSYNC", "VSYNC", "D0", "D1", "D2", "D3", "D4", "D5",
-                "D6", "D7",
-            ] {
+            let ports: &[&str] = if camera.model == "bf3901" {
+                &["SCL", "SDA", "MCLK", "PCLK", "VSYNC", "D0"]
+            } else {
+                &["SCL", "SDA", "MCLK", "PCLK", "HSYNC", "VSYNC", "D0", "D1",
+                  "D2", "D3", "D4", "D5", "D6", "D7"]
+            };
+            for &port in ports {
                 pads.insert(port, self.chip_pad(&format!("{id}.{port}"))?);
+            }
+            if camera.model == "bf3901" {
+                // LS26 SPI pin routes, in clock/MOSI order.
+                let routes = [
+                    (0x28202208208u64, 0x14101104104u64),
+                    (0x802020820, 0x28201208208),
+                    (0x14102104104, 0x2004082082),
+                ];
+                ensure!(
+                    self.chip != "venusa" && pads["MCLK"] == 26 &&
+                    routes.iter().any(|(clock, data)|
+                        clock & (1u64 << pads["PCLK"]) != 0 &&
+                        data & (1u64 << pads["D0"]) != 0),
+                    "Unsupported serial camera pad route"
+                );
             }
             for port in ["RESET", "PWDN"] {
                 if self.net(&format!("{id}.{port}")).is_some() {
                     pads.insert(port, self.chip_pad(&format!("{id}.{port}"))?);
                 }
             }
-            plan["camera"] = json!({"pads":pads});
-            compiled["camera"] = json!({"model":"gc0328","width":640,"height":480,
+            plan["camera"] = json!({"model":camera.model,"pads":pads});
+            compiled["camera"] = json!({"model":camera.model,"width":640,"height":480,
                 "label":camera.label.as_deref().unwrap_or("摄像头"),"rotation_clockwise":p.rotation_clockwise});
         }
         for (id, device) in &self.devices {
@@ -1013,6 +1038,7 @@ impl Board {
             "audio-amplifier",
             "fs1815cn-v1",
             "gc0328",
+            "bf3901",
             "sd-card-slot",
             "voltage-divider",
             "resistor-keypad",
@@ -1678,6 +1704,28 @@ mod tests {
                 .to_string()
                 .contains("Duplicate I2C")
         );
+    }
+
+    #[test]
+    fn serial_camera_assembly_validates_ports_and_routes() {
+        let mut raw = json!({"schema_version":1,"id":"serial-camera","name":"Camera",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},
+            "devices":{"sensor":{"model":"bf3901","parameters":{}}},"nets":{},"links":[]});
+        for (port, pad) in [("SCL", "PB1"), ("SDA", "PB0"), ("MCLK", "PA26"),
+                            ("PCLK", "PA25"), ("D0", "PA24"), ("VSYNC", "PA22")] {
+            raw["nets"][port] = json!({"endpoints":[format!("chip.{pad}"),format!("sensor.{port}")]});
+        }
+        let compiled = compile(&raw).unwrap();
+        assert_eq!(compiled["camera"]["model"], "bf3901");
+        assert_eq!(compiled["assembly"]["camera"]["model"], "bf3901");
+        assert_eq!(compiled["assembly"]["camera"]["pads"].as_object().unwrap().len(), 6);
+        raw["nets"]["VSYNC"]["endpoints"][0] = json!("chip.PA3");
+        assert!(compile(&raw).is_ok()); // A frame GPIO need not be a peripheral CS.
+        raw["nets"]["D0"]["endpoints"][0] = json!("chip.PA27");
+        assert!(compile(&raw).is_err());
+        raw["nets"]["D0"]["endpoints"][0] = json!("chip.PA24");
+        raw["nets"].as_object_mut().unwrap().remove("MCLK");
+        assert!(compile(&raw).is_err());
     }
 
     #[test]
