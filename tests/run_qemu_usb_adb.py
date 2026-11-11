@@ -65,7 +65,7 @@ class ADB(USB):
         self.wait(lambda: self.adb()['connected'], advance=False)
 
     def enumerate(self, config=None):
-        config = configuration(self.packet) if config is None else config
+        config = configuration(self.packet, in_ep=self.in_ep, out_ep=self.out_ep) if config is None else config
         self.write(14, 0)
         self.write(1, 0x60 if self.packet > 64 else 0x40)
         self.write(6, 0xffff, 'w')
@@ -152,6 +152,8 @@ class ADB(USB):
 def transport(packet):
     u = ADB('transport-%d' % packet, packet)
     try:
+        if packet == 512:
+            u.in_ep, u.out_ep = 15, 8
         assert u.adb()['enabled'] is False and u.adb()['listen'] is None
         assert u.adb('invalid-command', error=True)
         u.connect(); u.enumerate()
@@ -185,7 +187,7 @@ def transport(packet):
             assert not u.adb()["connected"]
             u.socket.close(); u.connect()
             u.in_ep, u.out_ep = 5, 4
-            u.enumerate(configuration(packet, in_ep=5, out_ep=4))
+            u.enumerate()
             fresh = message(command=b'CNXN')
             u.socket.sendall(fresh)
             assert u.receive_packet() == fresh

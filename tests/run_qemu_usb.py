@@ -17,6 +17,10 @@ def functional(hart):
         def write(off, value, width='b'):
             m.command('write%s 0x%x %d' % (width, BASE + off, value))
 
+        def masks():
+            return read(6, 'w'), read(8, 'w'), read(11)
+
+        assert masks() == (0xffff, 0xfffe, 0x06)
         for reset in ('soft', 'module', 'system'):
             for channel in range(6):
                 write(0x204 + 16 * channel, 0, 'l')
@@ -25,16 +29,16 @@ def functional(hart):
             assert read(0x60) == 0x80 and read(0x7f) == 0
             write(0, 0xff)
             assert read(0) == 127
-            write(14, 7)
-            assert read(14) == 7
-            for endpoint in range(8):
+            write(14, 15)
+            assert read(14) == 15
+            for endpoint in range(16):
                 write(14, endpoint)
                 write(0x62, 3 + endpoint % 6)
                 write(0x64, endpoint * 64, 'w')
                 write(0x10, 64 + endpoint * 8, 'w')
                 write(0x12, 0x48 if endpoint else 0xc0)
                 assert read(0x12) == read(0x18, 'w') == 0
-            for endpoint in range(8):
+            for endpoint in range(16):
                 write(14, endpoint)
                 assert read(0x62) == 3 + endpoint % 6
                 assert read(0x64, 'w') == endpoint * 64
@@ -59,12 +63,12 @@ def functional(hart):
                 write(0x7f, 3)
                 assert read(1) == 0x60  # ARCS soft reset retains pull-up and speed configuration.
                 write(1, 0)
-                assert read(6, "w") == 0x12ff and read(8, "w") == 0xff34 and read(11) == 255
-                write(6, 0, "w"); write(8, 0, "w"); write(11, 0)
+                assert masks() == (0x12ff, 0xff34, 0xff)
             elif reset == 'module': m.write(0x4600000c, 0x200)
             else: m.qmp_command('system_reset')
-            assert read(6, 'w') == read(8, 'w') == read(11) == 0
-            for endpoint in range(8):
+            if reset != 'soft':
+                assert masks() == (0xffff, 0xfffe, 0x06)
+            for endpoint in range(16):
                 write(14, endpoint)
                 assert read(0x10, 'w') == 0
                 assert read(0x62) == (3 + endpoint % 6 if reset == 'soft' else 0)
@@ -78,9 +82,9 @@ def functional(hart):
 
 def rejection():
     commands = ['writeb 0x41000001 4', 'writeb 0x41000001 8',
-                'writeb 0x41000060 2', 'writeb 0x4100000e 8',
+                'writeb 0x41000060 2', 'writeb 0x4100000e 16',
                 'writeb 0x4100000f 1', 'writeb 0x4100007f 4',
-                'readb 0x41000180', 'readw 0x41000101',
+                'readb 0x410001fa', 'readw 0x41000101',
                 'readl 0x41000100',
                 'writeb 0x41000062 10', 'readb 0x4100001f',
                 'writel 0x41000204 1', 'readl 0x41000260',
