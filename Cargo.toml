@@ -4,7 +4,7 @@ default-members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "1.4.1"
+version = "1.4.2"
 
 [profile.dev]
 debug = 0
