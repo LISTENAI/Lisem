@@ -86,10 +86,11 @@ def test_sd_exclusive_live_medium(native_client, tmp_path):
                     assert run.sd.status() is None
 
 
-def test_recording_lifecycle_and_deadline(native_client, tmp_path):
+@pytest.mark.parametrize("max_seconds", [5, 1800])
+def test_recording_lifecycle_and_deadline(native_client, tmp_path, max_seconds):
     with native_client.temporary_instance(board="arcs-mini") as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
-            recording = run.audio.record(tmp_path / "empty.wav", max_seconds=5)
+            recording = run.audio.record(tmp_path / "empty.wav", max_seconds=max_seconds)
             with pytest.raises(Rejected, match="Previous audio recording"):
                 run.audio.record(tmp_path / "conflict.wav")
             # Status/control traffic continues while the observer drains.

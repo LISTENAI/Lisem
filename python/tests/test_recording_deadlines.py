@@ -1,10 +1,13 @@
 """Control RPC scheduling and host time around recording stop requests."""
 
 from contextlib import contextmanager
+import base64
 import json
 import queue
+import struct
 import threading
 from types import SimpleNamespace
+import wave
 
 import pytest
 
@@ -100,9 +103,9 @@ def clock(monkeypatch):
 
 
 @contextmanager
-def held_recording(tmp_path, clock):
-    run = ControlledRun(tmp_path, clock)
-    capture = recording.AudioRecording(run, tmp_path / 'recording.wav', max_seconds=1)
+def held_recording(tmp_path, clock, *, max_seconds=1, run_type=ControlledRun):
+    run = run_type(tmp_path, clock)
+    capture = recording.AudioRecording(run, tmp_path / 'recording.wav', max_seconds=max_seconds)
     try:
         assert run.read_entered.wait(5), 'Pump did not reach the read barrier'
         yield run, capture
@@ -278,3 +281,76 @@ def test_timely_stop_still_has_bounded_drain(tmp_path, clock, monkeypatch):
         assert 'could not be drained in time' in str(failure)
         assert run.calls == ['start', 'read', 'stop', 'read', 'discard']
         assert capture.metadata['status'] == 'failed'
+
+
+class ContinuousRun(ControlledRun):
+    """Keep one frame cursor while host time crosses the old duration limit."""
+
+    raw = b''.join(struct.pack('<QIhBB', ns, 16000, sample, pa, 0)
+                   for ns, sample, pa in [(62500, 123, 1), (125000, -456, 0),
+                                         (187500, 789, 1)])
+
+    def _call(self, method, params, **options):
+        packet = super()._call(method, params, **options)
+        index = {'start': 0, 'read': 1, 'stop': 2}.get(params['action'])
+        if index is not None:
+            packet.update(offset=index, data=base64.b64encode(
+                self.raw[index * 16:(index + 1) * 16]).decode(),
+                virtual_ns=(index + 1) * 62500)
+        return packet
+
+
+@pytest.mark.parametrize('duration', [900, 1500, 1800, 1800.1, 3600, 86400])
+def test_long_deadline_keeps_one_recording_and_raw_frames(
+    tmp_path, clock, monkeypatch, duration
+):
+    with held_recording(tmp_path, clock, max_seconds=duration,
+                        run_type=ContinuousRun) as (run, capture):
+        clock.set(100 + duration - .5)
+        thread, result = stop_caller(capture, monkeypatch)
+        run.read_release.set()
+        assert outcome(thread, result).status == 'completed'
+        assert run.calls == ['start', 'read', 'stop']
+        assert capture.raw_path.read_bytes() == run.raw
+        with wave.open(str(capture.path)) as audio:
+            assert audio.getnframes() == 3
+            assert audio.readframes(3) == struct.pack('<hhh', 123, -456, 789)
+        assert capture.metadata['max_seconds'] == duration
+        assert capture.metadata['frames'] == 3
+        assert capture.metadata['ended_ns'] == 187500
+
+
+def test_long_deadline_still_expires_and_confirms_stop(tmp_path, clock):
+    with held_recording(tmp_path, clock, max_seconds=3600) as (run, capture):
+        clock.set(3700)
+        run.read_release.set()
+        assert capture._done.wait(5)
+        with pytest.raises(OperationTimeout, match='deadline expired'):
+            capture.stop()
+        assert capture._released
+        assert run.calls == ['start', 'read', 'stop', 'discard']
+
+
+@pytest.mark.parametrize('duration', [0, -1, float('inf'), float('-inf'), float('nan'),
+                                      True, False, '1500', None, 10**1000])
+def test_duration_rejected_before_creating_files_or_starting(
+    tmp_path, clock, duration
+):
+    run = ControlledRun(tmp_path, clock)
+    with pytest.raises(ValueError, match='max_seconds'):
+        recording.AudioRecording(run, tmp_path / 'invalid.wav', max_seconds=duration)
+    assert not run.calls
+    assert not list(tmp_path.iterdir())
+
+
+def test_long_recording_retains_raw_size_limit(tmp_path, clock):
+    with held_recording(tmp_path, clock, max_seconds=86400) as (run, capture):
+        capture.frames = 1024**3 // 16
+        packet = run.packet(offset=capture.frames,
+                            data=base64.b64encode(b'\0' * 16).decode())
+        try:
+            with pytest.raises(HistoryLost, match='1 GiB limit'):
+                capture._accept(packet)
+            assert capture.raw_path.stat().st_size == 0
+        finally:
+            capture.frames = 0

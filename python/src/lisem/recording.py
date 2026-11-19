@@ -1,6 +1,7 @@
 """Explicit, bounded DAC recording with a lossless timestamped sidecar."""
 import base64
 from contextlib import AbstractContextManager
+import math
 import os
 from pathlib import Path
 import struct
@@ -62,8 +63,16 @@ class AudioRecording(AbstractContextManager):
     sample:i16, PA:u8, reserved:u8; the raw stream is preserved byte for byte.
     """
     def __init__(self, run, path, *, max_seconds):
-        if not isinstance(max_seconds, (int, float)) or not 0 < max_seconds <= 600:
-            raise ValueError("max_seconds must be >0 and <=600 host seconds")
+        if (isinstance(max_seconds, bool)
+                or not isinstance(max_seconds, (int, float))
+                or max_seconds <= 0):
+            raise ValueError("max_seconds must be positive finite host seconds")
+        try:
+            deadline = time.monotonic() + max_seconds
+        except OverflowError:
+            raise ValueError("max_seconds must produce a finite host deadline") from None
+        if not math.isfinite(deadline):
+            raise ValueError("max_seconds must produce a finite host deadline")
         self.run = run
         self.path = Path(path).resolve()
         if self.path.is_relative_to(run.instance.client.data_dir / "devices"):
@@ -103,7 +112,7 @@ class AudioRecording(AbstractContextManager):
         self._thread = None
         self.sequence = None
         self.frames = 0
-        self.deadline = time.monotonic() + max_seconds
+        self.deadline = deadline
         self.metadata = {"status": "starting", "run": run.id, "device_id": run.instance.id,
                          "path": str(self.path), "raw_path": str(self.raw_path),
                          "frame_format": "little-endian ns:u64,rate:u32,sample:i16,pa:u8,reserved:u8",
