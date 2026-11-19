@@ -32,6 +32,44 @@
 `Path`，同名输出会覆盖。像素时刻取自 `metadata["frame"]["virtual_ns"]`，
 同帧序号与运行身份一起保留。
 
+`run.capture_display(*, max_frames=128, max_seconds=5)` 显式采集主屏幕后续
+发布的帧，适用于短暂画面的诊断。默认不采集、不写文件；开始确认后才执行
+待观察的输入。每个 Run 同时最多保留一个采集，`max_frames` 为 1～4096 的
+整数，`max_seconds` 为 0.001～60 的有限宿主秒数；包含元数据的原生缓冲
+不能超过 64 MiB，尺寸与帧数超过上限时拒绝开始。
+
+```python
+with run.capture_display(max_frames=128, max_seconds=5) as capture:
+    run.set_inputs({"usb_det": True})
+    # 在宿主期限前，按当前用例的判据完成观察。
+    capture.stop()
+    for frame in capture.frames():
+        print(frame.metadata["frame"])  # sequence、virtual_ns、host_monotonic_ns
+        # 只有需要保存诊断图片时，才调用 frame.save(path)。
+```
+
+采集位于原生显示发布处，保存同一帧的 BGRA 像素、序号和时刻；停止后读取
+不依赖截图轮询。它覆盖开始确认至停止确认之间实际发布的帧，不补造开始前
+的画面，也不保证固件尚未发布便覆盖的绘制内容可见。不推进虚拟时间，不阻塞
+模拟 CPU；显示发布本身不等于真实屏幕扫描时序或完整的业务动画周期。
+
+| 成员 | 返回与含义 |
+| --- | --- |
+| `capture.status()` | 当前状态和采集身份、帧数、容量、起止发布边界；失败状态原样返回 |
+| `capture.stop()` | 确认停止；成功返回 `Delivery("completed", metadata)`，同一采集可重复确认 |
+| `capture.frames()` | 停止后按发布顺序迭代 `DisplayFrame`，校验序号连续性与帧身份 |
+| `frame.bgra`、`frame.metadata` | 原始 BGRA8 字节及尺寸、Run、采集标识、同帧序号和时刻 |
+| `frame.screenshot()`、`frame.save(path)` | 转为 `Screenshot`，或显式保存 PNG 与元数据 |
+| `capture.close()` | 丢弃原生缓冲；此后不能读帧。调用者应先停止并检查结果 |
+
+队列满不覆盖旧帧：状态变为 `overflow`，`stop()` 和默认读取报告
+`HistoryLost`；宿主期限到达为 `expired`，报告 `OperationTimeout`；运行
+结束或芯片复位中断采集时报告 `RunEnded`，旧 Run 句柄仍受 `StaleRun` 校验。
+失败后可显式用 `frames(allow_incomplete=True)` 读取已保留证据，不将其当作
+完整采集。上下文退出检查停止结果并释放缓冲；应在上下文内完成帧读取。
+原异常和附加清理错误分别保留。正常状态轮询不携带历史像素，采集结果不自动
+进入附件或运行归档。
+
 `run.display_status()` 返回即时字典：`available`、`instance_id`、`run`、
 `sampled_virtual_ns`、`displays`。显示项按板型器件 ID 索引，无器件时为空。
 每项包含 `controller_id`、`enabled` 及 `backlight`：

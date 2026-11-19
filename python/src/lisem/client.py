@@ -574,6 +574,12 @@ class Run(AbstractContextManager):
     def inputs(self):
         return self._call("signals", mutation=False)
 
+    def capture_display(self, *, max_frames=128, max_seconds=5):
+        from .display import DisplayCapture
+        if "display_capture" not in self.instance.worker.features:
+            raise CompatibilityError("This Lisem build lacks display capture support")
+        return DisplayCapture(self, max_frames=max_frames, max_seconds=max_seconds)
+
     def screenshot(self):
         value = self._call("screenshot", mutation=False)
         if value.get("run") != self.id or value.get("source") != "active_run":
@@ -646,7 +652,10 @@ class Run(AbstractContextManager):
             (directory / f"watch-{i}-uart-{watch.channel}.bin").write_bytes(watch.observed)
             _json(directory / f"watch-{i}.json", {"start_cursor": watch.start_cursor,
                 "cursor": watch.cursor, "lost": watch.lost, "channel": watch.channel})
+        from .display import DisplayCapture
         for i, task in enumerate(self.tasks):
+            if isinstance(task, DisplayCapture):
+                _json(directory / f"display-capture-{i}.json", task.metadata)
             if isinstance(task, SignalTrace):
                 _json(directory / f"signal-{i}.json", {"capture": task.capture,
                       "run": self.id, "pages": task.pages, "events": task.events})

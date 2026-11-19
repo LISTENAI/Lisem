@@ -10,7 +10,7 @@ QEMU_TESTS := \
     qemu-ble-central qemu-bluetooth-aes qemu-bluetooth-activity qemu-bluetooth-history qemu-bluetooth-link qemu-bluetooth-rx qemu-calendar qemu-bf3901 qemu-camera qemu-camera-capture qemu-camera-input \
     qemu-clock-notify qemu-counter-chain qemu-cpu qemu-cpu-clocks \
     qemu-ecc qemu-events qemu-desktop qemu-display qemu-epd qemu-dsp qemu-dma qemu-dma2d qemu-dma2d-memory qemu-dualtimer qemu-dvp-clock \
-    qemu-gpio qemu-host-audio qemu-host-display qemu-host-network qemu-host-network-capture \
+    qemu-gpio qemu-host-audio qemu-host-display qemu-display-capture qemu-host-network qemu-host-network-capture \
     qemu-hsu qemu-i2c qemu-icount qemu-jit-state qemu-jpeg qemu-jpeg-encode \
     qemu-mailbox qemu-pacing qemu-psram qemu-remap qemu-rf \
     qemu-rom qemu-rotary qemu-sd qemu-serial qemu-qspi qemu-axs15231e qemu-sc919 qemu-sc919-touch qemu-signals qemu-signal-trace qemu-soc-clocks qemu-storage \

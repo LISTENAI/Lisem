@@ -378,6 +378,7 @@ impl Manager {
             | "audio"
             | "audio_cancel"
             | "audio_record"
+            | "display_capture"
             | "uart_read"
             | "signals"
             | "signal_trace"

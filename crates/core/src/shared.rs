@@ -1,6 +1,6 @@
 //! Named, kernel-backed memory shared by the worker, QEMU and native clients.
 //! No filesystem-backed mapping is used for normal audio or display traffic.
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::{
@@ -165,6 +165,15 @@ impl Regions {
             registry,
             names: Vec::new(),
         })
+    }
+    pub fn release(&mut self, id: &str) -> Result<()> {
+        let name = id.strip_prefix("shm:").context("Invalid shared memory identity")?;
+        if let Some(index) = self.names.iter().position(|n| n == name) {
+            unlink(name);
+            self.names.remove(index);
+            crate::storage::write_json(&self.registry, &serde_json::json!(self.names))?;
+        }
+        Ok(())
     }
     pub fn allocate(&mut self) -> Result<String> {
         let name = format!("lsm-{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);

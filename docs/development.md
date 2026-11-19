@@ -24,6 +24,9 @@ QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库�
 - `make test`：Python 验证工具与 Rust workspace 测试。
 - `make check-qemu`：CPU、时钟、器件、存储、控制和宿主传输回归。
 
+`make qemu-display-capture` 验证原生发布帧的顺序、像素、容量溢出、宿主期限、
+复位和身份隔离，以及观察不推进虚拟时间；SDK 覆盖分块读取与清理。
+
 单项测试使用 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
 `make qemu-serial` 验证 ARCS 和 VenusA 的 SPI、I2S 控制器及数字接线。
 `make qemu-signal-trace qemu-extio` 验证数字源的初始状态、GPIO/PinMux/EXTIO

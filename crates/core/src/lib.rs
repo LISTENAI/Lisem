@@ -8,6 +8,7 @@ mod camera_capture;
 mod camera_input;
 pub mod catalog;
 pub mod display;
+mod display_capture;
 pub mod identity;
 pub mod manager;
 pub mod rpc;

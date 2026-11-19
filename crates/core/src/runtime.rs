@@ -1206,6 +1206,7 @@ pub struct Runtime {
     session: Option<Session>,
     last_state: Value,
     last_frame: Option<Frame>,
+    display_capture: Option<crate::display_capture::Capture>,
     last_uart: Vec<transport::Output>,
     pending_camera: Option<(u64, u64, CameraSource)>,
     pending_sd: Option<(u64, Value)>,
@@ -1238,6 +1239,7 @@ impl Runtime {
             session: None,
             last_state: Value::Null,
             last_frame: None,
+            display_capture: None,
             last_uart: Vec::new(),
             pending_camera: None,
             pending_sd: None,
@@ -1687,7 +1689,7 @@ impl Runtime {
         let board = self.catalog.device(&self.id)?;
         let capabilities = Backend::for_device(&self.catalog, &board)?.capabilities;
         let required = match method {
-            "screenshot" => capabilities.screen,
+            "screenshot" | "display_capture" => capabilities.screen,
             "usb_adb" => capabilities.usb_adb,
             "sd_card" => capabilities.sd,
             "camera" => capabilities.camera,
@@ -1711,6 +1713,7 @@ impl Runtime {
             "status" => self.status(),
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");
+                self.display_capture = None;
                 self.pending_sd = None;
                 self.pending_signals = None;
                 self.pending_access_point = None;
@@ -2514,6 +2517,59 @@ impl Runtime {
                 value["run"] = json!(session.output);
                 value["instance_id"] = json!(self.id);
                 Ok(value)
+            }
+            "display_capture" => {
+                let run = params.get("run").filter(|r| r.is_string())
+                    .context("Display capture requires a run identifier")?;
+                let action = params["action"].as_str().context("Missing capture action")?;
+                if action == "start" {
+                    ensure!(self.display_capture.is_none(), "Release the previous display capture first");
+                    let capacity = params["capacity"].as_u64().context("Missing capture capacity")?;
+                    let max_ms = params["max_ms"].as_u64().context("Missing capture deadline")?;
+                    ensure!((1..=4096).contains(&capacity) && (1..=60000).contains(&max_ms),
+                        "Capture requires 1..4096 frames and 1..60000 host milliseconds");
+                    let session = self.session.as_mut().filter(|s| !s.finished)
+                        .context("Instance is not running")?;
+                    let raw = session.qmp.get("x-lisem-display-capture", &mut session.uart)?;
+                    let info: Value = serde_json::from_str(raw.as_str().context("Invalid capture geometry")?)?;
+                    let width = info["width"].as_u64().context("Missing display width")? as usize;
+                    let height = info["height"].as_u64().context("Missing display height")? as usize;
+                    ensure!((1..=2048).contains(&width) && (1..=2048).contains(&height)
+                        && 128 + capacity as usize * (24 + width * height * 4) <= crate::display_capture::LIMIT,
+                        "Display capture exceeds 64 MiB");
+                    let id = session._regions.allocate()?;
+                    self.display_capture = Some(crate::display_capture::Capture::pending(id.clone(), run.clone()));
+                    // Keep the identity and region on uncertain delivery. Run shutdown
+                    // retains ownership until QEMU has stopped and releases both.
+                    session.qmp.set("x-lisem-display-capture", json!(json!({"action":"start",
+                        "capture":id,"capacity":capacity,"max_ms":max_ms}).to_string()), &mut session.uart)?;
+                    self.display_capture.as_mut().unwrap().open(width, height, capacity as usize)?;
+                } else {
+                    ensure!(["status", "read", "stop", "discard"].contains(&action), "Invalid capture action");
+                    let capture = self.display_capture.as_ref().context("No display capture")?;
+                    ensure!(params["capture"] == capture.id && *run == capture.run,
+                        "Display capture belongs to another operation");
+                    if action == "stop" || action == "discard" {
+                        if let Some(session) = self.session.as_mut().filter(|s| !s.finished) {
+                            session.qmp.set("x-lisem-display-capture", json!(json!({"action":action,
+                                "capture":capture.id}).to_string()), &mut session.uart)?;
+                            if action == "discard" { session._regions.release(&capture.id)?; }
+                        }
+                        if action == "discard" {
+                            let id = capture.id.clone();
+                            self.display_capture = None;
+                            return Ok(json!({"capture":id,"run":run,"status":"discarded"}));
+                        }
+                    }
+                }
+                let capture = self.display_capture.as_ref().unwrap();
+                let running = self.session.as_ref().is_some_and(|s| !s.finished);
+                if action == "read" {
+                    let index = params["index"].as_u64().context("Missing frame index")?;
+                    let offset = params["offset"].as_u64().context("Missing frame offset")?;
+                    let limit = params["limit"].as_u64().context("Missing frame limit")?;
+                    capture.read(index.try_into()?, offset.try_into()?, limit.try_into()?, running)
+                } else { capture.status(running) }
             }
             "display_status" => {
                 ensure!(params["run"].is_string(), "Display observation requires a run identifier");
