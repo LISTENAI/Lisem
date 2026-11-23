@@ -498,6 +498,7 @@ impl Session {
         fs::create_dir_all(output.join("live"))?;
         let mut command = crate::process::command(assets.qemu());
         command.stdin(Stdio::null());
+        command.env("LISEM_MODEM_NETWORK", if options.network { "1" } else { "0" });
         backend.configure(
             &mut command,
             instance,
@@ -1710,6 +1711,23 @@ impl Runtime {
         }
         match method {
             "hello" => Ok(crate::rpc::hello()),
+            "modem" => {
+                ensure!(params["run"].is_string(), "Modem control requires a run identifier");
+                let device = board["hardware"]["board"]["assembly"]["modem"]["id"].as_str()
+                    .context("This board has no modem")?;
+                ensure!(params["modem"].as_str() == Some(device), "Unknown modem device");
+                let session = self.session.as_mut().filter(|s| !s.finished)
+                    .context("Instance is not running")?;
+                if let Some(present) = params.get("sim_present") {
+                    ensure!(present.is_boolean(), "SIM presence must be boolean");
+                    session.qmp.set("x-lisem-modem-sim-present", present.clone(), &mut session.uart)?;
+                }
+                let raw = session.qmp.get("x-lisem-modem-status", &mut session.uart)?;
+                let mut state: Value = serde_json::from_str(raw.as_str().context("Invalid modem state")?)?;
+                state["run"] = json!(session.output);
+                state["id"] = json!(device);
+                Ok(state)
+            }
             "status" => self.status(),
             "start" => {
                 ensure!(self.session.is_none(), "Instance is already running");

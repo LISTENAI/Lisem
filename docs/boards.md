@@ -166,6 +166,28 @@ ST7789 的显示 RAM 为 240 × 320，面板的 `viewport` 指定可见区域的
 
 `ambient` 是板型中器件的 ID。输入使用整数 lux，范围须符合该模型的能力目录。
 
+## UART 蜂窝模组
+
+`ml307c-gc-cn` 提供 ML307C-GC-CN 的 AT/socket 子集，器件无 JSON 参数。
+`TX`、`RX` 按模组方向命名。LS26 当前支持 UART2 的两组接线：
+模组 TX/RX 分别连接 PA8/PA9，或 PB7/PB6。固件须配置相应 AF4 和 UART 时钟。
+端口为 8N1，初始 115200 baud，可通过 `AT+IPR` 切至 460800 或 921600。
+
+```json
+"devices": {
+  "cellular": {"model": "ml307c-gc-cn"}
+},
+"nets": {
+  "MODEM_TX": {"endpoints": ["cellular.TX", "chip.PA8"]},
+  "MODEM_RX": {"endpoints": ["cellular.RX", "chip.PA9"]}
+}
+```
+
+这段配置须与完整板型合并。每根 UART 网络仅连接一个芯片焊盘和模组端口，
+不支持与 SD 等器件共线。每个板型最多一个模组；安装后
+UART2 由模组占用，不提供宿主串口连接或字节注入。内置板型不默认安装模组。
+具体命令、网络与 SIM 限制见 [UART 蜂窝模组](devices/modems.md)。
+
 ## 更新已有板型
 
 修改 JSON 后，以相同 `id` 再次导入即可更新板型；使用该板型的实例须先下电，

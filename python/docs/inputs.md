@@ -118,3 +118,13 @@ WAV 绝对 `path`，access_point 提供 bool `enabled`，power_off 排在最后�
 `children` 可含 `button`、`audio` 最终状态。超时尝试取消，确认未知时报告
 `DeliveryUnknown`。复位、下电及 Run 关闭取消旧输入。预置热点动作只影响
 本轮可用性，持久化使用 Wi-Fi 接口。WAV 注入与录制见[观测与采集](observations.md)。
+
+## UART 模组
+
+`run.modem(modem, *, sim_present=None)` 返回板型器件的状态字典。
+`modem` 为器件 ID；省略 `sim_present` 仅观察，布尔值改变本轮 SIM 插入状态。
+拔卡关闭真实 socket 并解除 PDP，返回不代表固件已处理拔卡。
+状态包含 `run`、`id`、`sim_present`、`registered`、`pdp_active`、
+`host_network`、`baud`、`connected_sockets`、UART 字节计数和溢出标志。
+宿主网络须在运行创建时显式启用。当前 ML307C 模型提供 IPv4 TCP／UDP
+缓存模式，不提供未经验证的 SIM 热插拔 URC；注册状态不代表云业务成功。

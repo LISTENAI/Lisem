@@ -23,7 +23,17 @@ pub(super) struct Model {
     pub ports: &'static [&'static str],
 }
 
+/// Models using the shared UART modem assembly and run controls.
+pub(super) fn is_uart_modem(id: &str) -> bool {
+    matches!(id, "ml307c-gc-cn")
+}
+
 const MODELS: &[Model] = &[
+    Model {
+        id: "ml307c-gc-cn", category: "network",
+        description: "ML307C UART AT subset with bounded TCP/UDP host transport",
+        ports: &["TX", "RX"],
+    },
     Model {
         id: "spi-nor", category: "storage",
         description: "Serial NOR with independently declared capacity and chip select",
@@ -198,7 +208,7 @@ fn parameter_schema(id: &str) -> Value {
     }
     match id {
         "spi-nor" => schema!(SerialNor),
-        "fs1815cn-v1" | "ls8500" => schema!(Nor),
+        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" => schema!(Nor),
         "st7789" | "sc919" => schema!(Controller),
         "axs15231e" => schema!(AxsController),
         "axs15231e-touch-ve4" => schema!(AxsTouch),
@@ -251,7 +261,7 @@ pub(super) fn apply_parameter_schemas(board: &mut Value) {
 fn example(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
-        "fs1815cn-v1" | "ls8500" => json!({}),
+        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" => json!({}),
         "st7789" | "sc919" | "axs15231e" => json!({"panel_inverted":true}),
         "jd79651c" => json!({}),
         "display-panel" => {
@@ -280,6 +290,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
     matches!(
         (model, port),
         ("button" | "resistor-keypad" | "voltage-divider", "OUT")
+            | ("ml307c-gc-cn", "TX")
             | ("quadrature-encoder", "A" | "B")
             | ("hold-reset", "RESET_N")
             | ("st7789" | "sc919" | "axs15231e", "TE")
@@ -338,6 +349,13 @@ fn links(id: &str) -> Value {
 
 fn constraints(id: &str) -> Value {
     match id {
+        "ml307c-gc-cn" => json!([
+            "One module; dedicated point-to-point LS26 UART2 nets, module TX/RX to PA8/PA9 or PB7/PB6; firmware selects AF4.",
+            "8N1, no flow control; 115200 at module reset, IPR supports 460800 and 921600.",
+            "Ideal available cellular service with SIM present; no RF, carrier, billing or modem TLS model.",
+            "TCP cached mode 2 and UDP mode 3, raw encoding only; host networking must be enabled.",
+            "SIM removal ends connections and changes queried state; unsolicited SIM hot-plug notifications are not implemented."
+        ]),
         "spi-nor" => json!([
             "Capacity is a power of two from 64 KiB through 16 MiB; 24-bit addressing only.",
             "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
@@ -462,7 +480,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "hold-reset" | "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500"
+            "hold-reset" | "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500" | "ml307c-gc-cn"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -583,6 +601,9 @@ fn interfaces(id: &str) -> Value {
             "address_7bit":address,"clock":"SCL","data":"SDA" }]);
     }
     match id {
+        "ml307c-gc-cn" => json!([{"protocol":"uart","TX":"TX","RX":"RX",
+            "frame":"8N1","initial_baud":115200,"baud_rates":[115200,460800,921600],
+            "flow_control":false}]),
         EXTIO | "husb320-ba" => {
             json!([{"protocol":"i2c","address_parameter":"address","clock":"SCL","data":"SDA"}])
         }
@@ -632,7 +653,12 @@ pub fn wiring(chip: &str) -> Value {
         }
         json!([route])
     };
-    json!({"pads":pads,"i2c":i2c,"spi":spi,"qspi":qspi,"adc":adc,"sd":sd,
+    let uart: Vec<_> = if chip == "venusa" { Vec::new() } else {
+        UART2_MODULE_ROUTES.iter().map(|(module_tx, module_rx)|
+            json!({"controller":2,"TX":endpoint(*module_rx),"RX":endpoint(*module_tx),
+                "pinmux_function":4,"board_peer":true})).collect()
+    };
+    json!({"pads":pads,"uart":uart,"i2c":i2c,"spi":spi,"qspi":qspi,"adc":adc,"sd":sd,
         "nor":{"model":"spi-nor","capacity_min_bytes":65536,"capacity_max_bytes":16777216,
             "capacity_power_of_two":true,"chip_selects":if chip == "venusa" {json!([0])} else {json!([0,1])}},
         "reset_input":if chip == "venusa" {Value::Null} else {json!("chip.RESET_N")},

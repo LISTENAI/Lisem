@@ -546,6 +546,15 @@ class Run(AbstractContextManager):
         self.tasks.append(task)
         return task.wait(timeout=timeout)
 
+    def modem(self, modem, *, sim_present=None):
+        """Observe a board modem or change SIM presence in this run."""
+        params = {"modem": modem}
+        if sim_present is not None:
+            if not isinstance(sim_present, bool):
+                raise ValueError("sim_present must be bool")
+            params["sim_present"] = sim_present
+        return self._call("modem", params, mutation=sim_present is not None)
+
     def rotary(self, rotary, detents, *, edge_ms=10, timeout=10):
         """Deliver quadrature detents; positive rotation makes A lead B."""
         state = self._call("rotary", dict(id=self.instance.id, rotary=rotary,

@@ -140,6 +140,7 @@ pub fn pad(value: &str, chip: &str) -> Result<u8> {
 }
 
 const SUPPORTED_CHIPS: [&str; 3] = ["ls2663", "ls2684", "venusa"];
+const UART2_MODULE_ROUTES: &[(u8, u8)] = &[(8, 9), (39, 38)];
 const EXTIO_ADC_PINS: [u8; 8] = [66, 65, 84, 90, 91, 93, 94, 92];
 const NOR_BYTES: u64 = 16 * 1024 * 1024;
 const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
@@ -476,6 +477,9 @@ impl Board {
                     "download":false,"signals":true,"signal_trace":true,"events":false,"button_sequence":false,"audio":false}});
         }
         let assembly = self.assemble(&mut compiled)?;
+        if assembly.get("modem").is_some() {
+            compiled["uart_channels"] = json!([0, 1]);
+        }
         compiled["assembly"] = assembly;
         crate::signals::definitions(&compiled)?;
         Ok(compiled)
@@ -731,6 +735,21 @@ impl Board {
         }
         for (id, device) in &self.devices {
             match device.model.as_str() {
+                model if models::is_uart_modem(model) => {
+                    let _: Nor = serde_json::from_value(device.parameters.clone())?;
+                    ensure!(self.chip != "venusa" && plan.get("modem").is_none(),
+                        "UART modems require one module and an LS26 UART adapter");
+                    for port in ["TX", "RX"] {
+                        let endpoint = format!("{id}.{port}");
+                        let (_, net) = self.net(&endpoint).context("Unconnected modem port")?;
+                        ensure!(net.endpoints.len() == 2,
+                            "Modem UART requires a dedicated point-to-point net");
+                    }
+                    let tx = self.chip_pad(&format!("{id}.TX"))?;
+                    let rx = self.chip_pad(&format!("{id}.RX"))?;
+                    ensure!(UART2_MODULE_ROUTES.contains(&(tx, rx)), "Unsupported modem UART2 pad route");
+                    plan["modem"] = json!({"id":id,"model":model,"TX":tx,"RX":rx});
+                }
                 "ls8500" => {
                     let _: Nor = serde_json::from_value(device.parameters.clone())?;
                     ensure!(self.chip != "venusa" && self.single("ls8500")?.is_some(),
@@ -1106,7 +1125,8 @@ impl Board {
         }
         for d in self.devices.values() {
             ensure!(
-                used_models.contains(&d.model.as_str()) || d.model == "display-panel",
+                used_models.contains(&d.model.as_str()) || d.model == "display-panel"
+                    || models::is_uart_modem(&d.model),
                 "Unassembled device model"
             );
         }
@@ -1868,6 +1888,39 @@ mod tests {
     }
 
     use std::path::Path;
+
+    #[test]
+    fn modem_routes_reserve_the_uart_and_reject_unsupported_wiring() {
+        let mut raw = json!({"schema_version":1,"id":"modem-test","name":"Modem",
+            "chip":"ls2684","storage":{"flash_bytes":16777216},"devices":{},"nets":{}});
+        raw["devices"]["cellular"] = json!({"model":"ml307c-gc-cn"});
+        raw["nets"]["MODEM_TX"] = json!({"endpoints":["cellular.TX","chip.PA8"]});
+        raw["nets"]["MODEM_RX"] = json!({"endpoints":["cellular.RX","chip.PA9"]});
+        let compiled = compile(&raw).unwrap();
+        assert_eq!(compiled["uart_channels"], json!([0, 1]));
+        assert_eq!(compiled["assembly"]["modem"], json!({"id":"cellular","model":"ml307c-gc-cn","TX":8,"RX":9}));
+        let mut duplicate = raw.clone();
+        duplicate["devices"]["other"] = json!({"model":"ml307c-gc-cn"});
+        duplicate["nets"]["OTHER_TX"] = json!({"endpoints":["other.TX","chip.PB7"]});
+        duplicate["nets"]["OTHER_RX"] = json!({"endpoints":["other.RX","chip.PB6"]});
+        assert!(compile(&duplicate).is_err());
+        let mut shared = raw.clone();
+        shared["devices"]["probe"] = json!({"model":"signal-probe","parameters":{"active_level":1}});
+        shared["nets"]["MODEM_RX"]["endpoints"].as_array_mut().unwrap().push(json!("probe.IN"));
+        assert!(compile(&shared).unwrap_err().to_string().contains("point-to-point"));
+        for (path, value) in [
+            ("/nets/MODEM_RX/endpoints/1", json!("chip.PA10")),
+            ("/nets/MODEM_TX/endpoints/1", json!("chip.PA9")),
+            ("/chip", json!("venusa")),
+            ("/devices/cellular/model", json!("listenai-at-modem")),
+            ("/devices/cellular/model", json!("ec801e")),
+            ("/devices/cellular", json!({"model":"ml307c-gc-cn","parameters":{"baud":921600}})),
+        ] {
+            let mut bad = raw.clone();
+            *bad.pointer_mut(path).unwrap() = value;
+            assert!(compile(&bad).is_err(), "accepted {path}");
+        }
+    }
 
     #[test]
     fn nor_capacity_is_declared_per_device() {

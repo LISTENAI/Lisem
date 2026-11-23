@@ -75,6 +75,12 @@ lisem --json ble INSTANCE_ID --run RUN --request '{"action":"open"}'
 由调用方写入文件。原始值可能包含凭据，正常运行不自动保存链路归档。
 单次 CLI 命令退出后保留中心端；完成后显式 `close`，或结束自有运行。
 
+## UART 模组
+
+板型接入 ML307C-GC-CN 后，通过 `lisem modem` 观察或改变 SIM 插入状态。
+参数与模型限制见 [UART 蜂窝模组](devices/modems.md)。联网使用 `start --network`，
+板型占用的 UART2 不提供宿主串口注入。
+
 ## 连续接收串口
 
 `uart-receive` 将原始字节写入新文件，接收可跨复位、上下电持续运行：

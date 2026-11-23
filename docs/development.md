@@ -28,6 +28,8 @@ QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库�
 复位和身份隔离，以及观察不推进虚拟时间；SDK 覆盖分块读取与清理。
 
 单项测试使用 `make qemu-audio`、`make qemu-display`、`make qemu-uart` 等入口。
+`make qemu-ml307` 使用本机回环 TCP／UDP 验证两组 UART2 接线、波特率切换、
+二进制长度边界、发送中拔卡和独立模组的暖复位状态；不依赖外部云服务。
 `make qemu-serial` 验证 ARCS 和 VenusA 的 SPI、I2S 控制器及数字接线。
 `make qemu-signal-trace qemu-extio` 验证数字源的初始状态、GPIO/PinMux/EXTIO
 边沿、PWM 虚拟时刻、游标容量及复位结束；`tests/run_mcp.py` 追加公共采集接口、

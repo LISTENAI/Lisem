@@ -379,6 +379,7 @@ impl Manager {
             | "audio_cancel"
             | "audio_record"
             | "display_capture"
+            | "modem"
             | "uart_read"
             | "signals"
             | "signal_trace"

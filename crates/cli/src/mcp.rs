@@ -41,6 +41,17 @@ struct Run {
 }
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct Modem {
+    id: String,
+    run: String,
+    /// Board device ID.
+    modem: String,
+    /// Omit to observe; changes last only for this run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sim_present: Option<bool>,
+}
+#[derive(Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct Create {
     board: String,
     name: Option<String>,
@@ -496,6 +507,8 @@ fn tools() -> Vec<Tool> {
         ),
         definition::<lisem_core::rotary::Request>("lisem_rotary",
             "Rotate a board quadrature encoder on virtual time. Positive detents make A lead B; sends physical GPIO phases, not firmware key events. Poll status with the returned sequence and run; cancel retains delivered edges and physical phase. Reset cancels remaining motion. Completion means input delivery only. Rejects overlapping motion and stale controls.", false),
+        definition::<Modem>("lisem_modem",
+            "Observe a board UART modem or change SIM presence for the current run. Removing SIM deactivates PDP and closes real host sockets. Does not synthesize unverified SIM hot-plug URCs. Registration is an ideal cellular environment, not proof of internet or cloud success. Host forwarding requires start network=true. Firmware owns AT commands and application protocols.", false),
         definition::<Signals>("lisem_signals",
             "Enumerate or edit typed external board inputs. Digital values drive GPIO levels; voltage values pass through the board divider and ADC; illuminance values set the optical scene measured by the board sensor. Changes are saved per instance after runtime confirmation and survive reset. A pending response is not confirmation: poll this tool until change.request matches and status is applied or rejected. Firmware interprets inputs; inspect its response separately.", false),
         definition::<lisem_core::signal_trace::Request>("lisem_signal_trace",
@@ -630,6 +643,7 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_camera_devices" => call(manager, "camera_devices", arguments::<Empty>(value)?)?,
         "lisem_camera_input" => manager.call("camera", camera_params(value)?)?,
         "lisem_button" => call(manager, "button", arguments::<Button>(value)?)?,
+        "lisem_modem" => call(manager, "modem", arguments::<Modem>(value)?)?,
         "lisem_rotary" => call(manager, "rotary", arguments::<lisem_core::rotary::Request>(value)?)?,
         "lisem_signal_trace" => call(manager, "signal_trace", arguments::<lisem_core::signal_trace::Request>(value)?)?,
         "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,

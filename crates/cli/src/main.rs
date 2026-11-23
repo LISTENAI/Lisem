@@ -124,6 +124,15 @@ enum Action {
     ButtonSequence(ButtonSequenceArgs),
     /// Rotate a quadrature encoder or inspect/cancel its virtual-time sequence.
     Rotary(RotaryArgs),
+    /// Observe a board modem or change its SIM presence for the current run.
+    Modem {
+        id: String,
+        modem: String,
+        #[arg(long)]
+        run: String,
+        #[arg(long, action=clap::ArgAction::Set)]
+        sim_present: Option<bool>,
+    },
     /// Inspect typed board inputs, or set a JSON object of values (null restores defaults).
     Signals { id: String, #[arg(long)] set: Option<String>, #[arg(long)] run: Option<String> },
     /// List digital sources or record transitions at their virtual event times.
@@ -601,6 +610,11 @@ fn run() -> Result<i32> {
         )?,
         Action::Logs(LogsArgs { id, channel, cursor, limit }) => manager.call("uart_read", json!({"id":id,"channel":channel,"cursor":cursor,"limit":limit}))?,
         Action::Shutdown { id } => manager.call("shutdown", json!({"id": id}))?,
+        Action::Modem { id, modem, run, sim_present } => {
+            let mut params = json!({"id":id,"modem":modem,"run":run});
+            if let Some(present) = sim_present { params["sim_present"] = json!(present); }
+            manager.call("modem", params)?
+        }
         Action::Runtime { .. } | Action::Bridge | Action::Mcp | Action::Rpc => unreachable!(),
     };
     if let Some((id, timeout)) = foreground {
