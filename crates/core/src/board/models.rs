@@ -165,6 +165,12 @@ const MODELS: &[Model] = &[
         ports: &["IN"],
     },
     Model {
+        id: "aw8737a",
+        category: "audio",
+        description: "AW8737AQNR analog amplifier with latched SHDN pulse control",
+        ports: &["SHDN"],
+    },
+    Model {
         id: "voltage-divider",
         category: "analog",
         description: "External voltage scaled into an ADC input",
@@ -184,6 +190,12 @@ const MODELS: &[Model] = &[
             "SCL", "SDA", "PA1", "PA2", "PC0", "PC1", "PC2", "PC3", "PC4", "PC7", "PD0", "PD1",
             "PD2", "PD3", "PD4", "PD5", "PD6",
         ],
+    },
+    Model {
+        id: "gxa574",
+        category: "gpio-expander",
+        description: "GXA574 8-bit quasi-bidirectional I2C GPIO expander",
+        ports: &["SCL", "SDA", "P0", "P1", "P2", "P3", "P4", "P5", "P6", "P7"],
     },
     Model {
         id: "husb320-ba",
@@ -208,7 +220,7 @@ fn parameter_schema(id: &str) -> Value {
     }
     match id {
         "spi-nor" => schema!(SerialNor),
-        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" => schema!(Nor),
+        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" | "aw8737a" => schema!(Nor),
         "st7789" | "sc919" => schema!(Controller),
         "axs15231e" => schema!(AxsController),
         "axs15231e-touch-ve4" => schema!(AxsTouch),
@@ -225,6 +237,7 @@ fn parameter_schema(id: &str) -> Value {
         "voltage-divider" => schema!(Divider),
         "sd-card-slot" => schema!(Slot),
         EXTIO => schema!(Extio),
+        GXA574 => schema!(Gxa574),
         "husb320-ba" => schema!(TypeC),
         _ => unreachable!(),
     }
@@ -261,7 +274,7 @@ pub(super) fn apply_parameter_schemas(board: &mut Value) {
 fn example(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"capacity_bytes":8388608,"chip_select":0}),
-        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" => json!({}),
+        "fs1815cn-v1" | "ls8500" | "ml307c-gc-cn" | "aw8737a" => json!({}),
         "st7789" | "sc919" | "axs15231e" => json!({"panel_inverted":true}),
         "jd79651c" => json!({}),
         "display-panel" => {
@@ -281,6 +294,7 @@ fn example(id: &str) -> Value {
         "voltage-divider" => json!({"numerator":2,"denominator":5}),
         "sd-card-slot" => json!({"detect_active_level":0}),
         EXTIO => json!({"address":extio_address()}),
+        "gxa574" => json!({"address":0x20}),
         "husb320-ba" => json!({"address":typec_address()}),
         _ => unreachable!(),
     }
@@ -316,7 +330,7 @@ fn signals(m: &Model) -> Vec<Value> {
             {
                 "output"
             } else if *port == "SDA"
-                || (m.id == EXTIO && port.starts_with('P'))
+                || ((m.id == EXTIO || m.id == "gxa574") && port.starts_with('P'))
                 || (m.id == "sd-card-slot" && *port != "CLK")
             {
                 "bidirectional"
@@ -329,7 +343,7 @@ fn signals(m: &Model) -> Vec<Value> {
                 ("gc0328" | "bf3901", "PWDN" | "RESET")
                     | ("husb320-ba", "INT_N" | "ID")
                     | ("sd-card-slot", "CD")
-            ) && !(m.id == EXTIO && port.starts_with('P'));
+            ) && !((m.id == EXTIO || m.id == "gxa574") && port.starts_with('P'));
             json!({"name":port,"direction":direction,"kind":kind,"required":required})
         })
         .collect()
@@ -338,7 +352,7 @@ fn signals(m: &Model) -> Vec<Value> {
 fn links(id: &str) -> Value {
     match id {
         "spi-nor" => json!({"inputs":["bus"],"sources":["chip.flash.data"]}),
-        "fs1815cn-v1" => json!({"inputs":["analog"],"sources":["chip.codec.dac"]}),
+        "fs1815cn-v1" | "aw8737a" => json!({"inputs":["analog"],"sources":["chip.codec.dac"]}),
         "st7789" | "sc919" | "axs15231e" | "jd79651c" => json!({"outputs":["pixels"]}),
         "backlight" => json!({"outputs":["brightness"]}),
         "display-panel" => json!({"inputs":["pixels","brightness"]}),
@@ -356,9 +370,15 @@ fn constraints(id: &str) -> Value {
             "TCP cached mode 2 and UDP mode 3, raw encoding only; host networking must be enabled.",
             "SIM removal ends connections and changes queried state; unsolicited SIM hot-plug notifications are not implemented."
         ]),
+        "aw8737a" => json!([
+            "LS26 Codec DAC analog input; SHDN may use a GPIO expander. One amplifier per board.",
+            "SHDN selects modes 1..4 with 0.75..10 us pulses, 500 us latch/off and 40 ms startup timing.",
+            "Normalized PCM playback and post-PA MIC1 reference; analog gain, RC filters, NCN, power and acoustics are not modeled.",
+            "Invalid pulse sequences disable startup and are reported; hold SHDN low for 500 us to recover."
+        ]),
         "spi-nor" => json!([
             "Capacity is a power of two from 64 KiB through 16 MiB; 24-bit addressing only.",
-            "CS0 uses the dedicated select. LS26 CS1 requires PA11; firmware configures PinMux.",
+            "CS0 uses the dedicated select. LS26 CS1 uses the board-declared PA10 or PA11; firmware configures PinMux.",
             "Each populated device has its own persistent binary image."
         ]),
         "ls8500" => json!(["One sensor per board; fixed I2C address 0x54 and active-low INT.",
@@ -466,6 +486,11 @@ fn constraints(id: &str) -> Value {
             "One expander per board; protocol version is part of the model ID.",
             "SCL/SDA use a chip I2C route; GPIO endpoints can drive modeled controls and observe board inputs."
         ]),
+        GXA574 => json!([
+            "One expander per board; supported I2C address is 0x20 (A0/A1/A2 low).",
+            "P0..P7 are quasi-bidirectional: write 0 to drive low, write 1 to release with a weak pull-up.",
+            "SCL/SDA use a chip I2C route; ADC, PWM and interrupt output are not implemented."
+        ]),
         "husb320-ba" => json!([
             "One role controller per board; partner link accepts chip.usb0.host on supported chips."
         ]),
@@ -480,7 +505,7 @@ fn describe(m: &Model, details: bool) -> Value {
         value["signals"] = json!(signals(m));
         value["supported_chips"] = if matches!(
             m.id,
-            "hold-reset" | "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500" | "ml307c-gc-cn"
+            "hold-reset" | "bf3901" | "resistor-keypad" | "fs1815cn-v1" | "sc919" | "axs15231e" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "pwm-led" | "ls8500" | "ml307c-gc-cn" | "aw8737a"
         ) {
             json!(["ls2663", "ls2684"])
         } else {
@@ -551,6 +576,10 @@ pub(super) fn rotary_edges_schema(_: &mut schemars::SchemaGenerator) -> schemars
     schemars::json_schema!({"type":"integer", "enum":[2,4]})
 }
 
+pub(super) fn gxa574_address_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    serde_json::from_value(json!({"type":"integer","enum":[32],"default":32})).unwrap()
+}
+
 pub(super) fn extio_address_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({"type":"integer", "enum":EXTIO_ADDRESSES,
         "description":"7-bit I2C slave address selected by hardware strap."})
@@ -567,7 +596,7 @@ fn data_signals(id: &str) -> Value {
             "required":true,"sources":["chip.flash.data"]}]),
         "ls8500" => json!([{"name":"illuminance","direction":"input",
             "kind":"illuminance","unit":"lux","required":false,"source":"board-input"}]),
-        "fs1815cn-v1" => json!([{"name":"analog","direction":"input",
+        "fs1815cn-v1" | "aw8737a" => json!([{"name":"analog","direction":"input",
             "kind":"analog-audio","required":true,"sources":["chip.codec.dac"],
             "chips":["ls2663","ls2684"]}]),
         "st7789" | "sc919" | "axs15231e" | "jd79651c" => json!([{"name":"pixels","direction":"output","kind":"pixels","required":true}]),
@@ -604,7 +633,7 @@ fn interfaces(id: &str) -> Value {
         "ml307c-gc-cn" => json!([{"protocol":"uart","TX":"TX","RX":"RX",
             "frame":"8N1","initial_baud":115200,"baud_rates":[115200,460800,921600],
             "flow_control":false}]),
-        EXTIO | "husb320-ba" => {
+        EXTIO | GXA574 | "husb320-ba" => {
             json!([{"protocol":"i2c","address_parameter":"address","clock":"SCL","data":"SDA"}])
         }
         "spi-nor" => json!([{"protocol":"spi-memory","bus":"bus","select":"CS",

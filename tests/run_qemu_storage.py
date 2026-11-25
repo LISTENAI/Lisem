@@ -238,21 +238,25 @@ def functional():
         m.close()
 
 
-def dual_flash(first=8 << 20, second=4 << 20):
+def dual_flash(first=8 << 20, second=4 << 20, cs1_pad=11):
     plan = {'version': 1, 'chip': 'ls2684', 'buttons': [], 'indicators': [],
-            'nor': [{'chip_select':0,'capacity_bytes':first}, {'chip_select':1,'capacity_bytes':second}]}
+            'nor': [{'chip_select':0,'capacity_bytes':first}, {'chip_select':1,'capacity_bytes':second}],
+            'nor_cs1': {'CS': cs1_pad}}
     original = bytearray(b'\xff' * first)
     other = bytearray(b'\xff' * second)
     original[0x1000:0x1004] = b'CS00'
     other[0x1000:0x1004] = b'CS11'
     otp = bytes(range(256)) * 2
-    m = Machine(OUTPUT / f'dual-{first}-{second}', board='arcs-board', assembly=plan,
+    m = Machine(OUTPUT / f'dual-{first}-{second}-pa{cs1_pad}', board='arcs-board', assembly=plan,
                 flash=original, flash_cs1=other, otp=otp)
     try:
         # CS1 must remain electrically disconnected until firmware selects it.
         m.write(FLASH + 0x58, 0xffff0006)
         assert command(m, 0x9f, length=3) == b'\xff' * 3
-        m.write(0x4750002c, 1)
+        other_pad = 10 if cs1_pad == 11 else 11
+        m.write(0x47500000 + 4 * other_pad, 1)
+        assert command(m, 0x9f, length=3) == b'\xff' * 3
+        m.write(0x47500000 + 4 * cs1_pad, 1)
         assert command(m, 0x9f, length=3) == bytes([0xef, 0x40, second.bit_length()-1])
         m.write(FLASH + 0x54, 0x0fff0000)
         m.write(FLASH + 0x58, 0xffff0000)
@@ -290,7 +294,7 @@ def dual_flash(first=8 << 20, second=4 << 20):
         assert (m.directory / 'otp.bin').read_bytes() == otp
     finally:
         m.close()
-    m = Machine(OUTPUT / f'dual-reopen-{first}-{second}', board='arcs-board', assembly=plan,
+    m = Machine(OUTPUT / f'dual-reopen-{first}-{second}-pa{cs1_pad}', board='arcs-board', assembly=plan,
                 flash=persisted, flash_cs1=persisted_other, otp=otp)
     try:
         assert memory(m, 0x31002000, 4) == b'CS11'
@@ -320,6 +324,7 @@ def reject(name, commands):
 def main():
     functional()
     dual_flash()
+    dual_flash(cs1_pad=10)
     dual_flash(4 << 20, 16 << 20)
     dual_flash(16 << 20, 16 << 20)
     for i, commands in enumerate((

@@ -153,6 +153,7 @@ const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
     ("ls2684", 23, 22, 0),
     ("ls2684", 20, 21, 0),
     ("ls2684", 33, 32, 1),
+    ("ls2684", 19, 18, 1),
 ];
 
 fn spi_routes(chip: &str) -> &'static [(u64, u64)] {
@@ -161,7 +162,7 @@ fn spi_routes(chip: &str) -> &'static [(u64, u64)] {
     } else {
         &[
             (0x28202208208, 0x14101104104),
-            (0x802020820, 0x28201208208),
+            (0x802020820 | (1 << 17), 0x28201208208 | (1 << 15)),
             (0x14102104104, 0x2004082082),
         ]
     }
@@ -188,6 +189,11 @@ const EXTIO_ADDRESSES: [u8; 2] = [0x6c, 0x15];
 const TYPEC_ADDRESSES: [u8; 2] = [0x31, 0x21];
 
 const EXTIO: &str = "listenai-extio-ch32v003-v1.3";
+const GXA574: &str = "gxa574";
+
+fn expander_model(model: &str) -> bool {
+    model == EXTIO || model == GXA574
+}
 
 fn extio_pin(port: &str) -> Option<u8> {
     let text = port.strip_prefix('P')?;
@@ -204,6 +210,39 @@ fn extio_pin(port: &str) -> Option<u8> {
     }
     (port == format!("P{}{}", char::from(b'A' + bank as u8), bit))
         .then_some(64 + bank as u8 * 8 + bit)
+}
+
+fn gxa574_pin(port: &str) -> Option<u8> {
+    port.strip_prefix('P')?
+        .parse::<u8>()
+        .ok()
+        .filter(|pin| *pin < 8)
+        .map(|pin| 64 + pin)
+}
+
+fn expander_pin(model: &str, port: &str) -> Option<u8> {
+    match model {
+        EXTIO => extio_pin(port),
+        GXA574 => gxa574_pin(port),
+        _ => None,
+    }
+}
+
+fn expander_address(model: &str, parameters: &Value) -> Result<u8> {
+    let address = if model == GXA574 {
+        serde_json::from_value::<Gxa574>(parameters.clone())?.address
+    } else {
+        serde_json::from_value::<Extio>(parameters.clone())?.address
+    };
+    ensure!(
+        if model == GXA574 {
+            address == 0x20
+        } else {
+            EXTIO_ADDRESSES.contains(&address)
+        },
+        "Unsupported GPIO expander address"
+    );
+    Ok(address)
 }
 
 fn ports(model: &str) -> Result<&'static [&'static str]> {
@@ -226,7 +265,7 @@ impl Board {
             ensure!(bus == "chip.flash.data",
                 "NOR requires a serial memory controller link");
             if p.chip_select == 1 {
-                ensure!(self.chip_pad(&format!("{id}.CS"))? == 11, "Unsupported SPIB CS1 pad route");
+                ensure!(matches!(self.chip_pad(&format!("{id}.CS"))?, 10 | 11), "Unsupported SPIB CS1 pad route");
             } else {
                 ensure!(!self.nets.values().any(|n| n.endpoints.contains(&format!("{id}.CS"))),
                     "Primary NOR uses the controller's dedicated chip select");
@@ -260,8 +299,9 @@ impl Board {
             if endpoint.starts_with("chip.") {
                 pads.push(pad(endpoint, &self.chip)?);
             } else if let Some((id, port)) = endpoint.split_once('.') {
-                if self.devices.get(id).is_some_and(|d| d.model == EXTIO) {
-                    if let Some(pin) = extio_pin(port) {
+                if let Some(device) = self.devices.get(id) {
+                    let pin = expander_pin(&device.model, port);
+                    if let Some(pin) = pin {
                         pads.push(pin);
                     }
                 }
@@ -282,6 +322,13 @@ impl Board {
             .collect::<Vec<_>>();
         ensure!(matches.len() <= 1, "At most one {model} is supported");
         Ok(matches.first().map(|(id, dev)| (id.as_str(), *dev)))
+    }
+
+    fn expander(&self) -> Result<Option<(&str, &Device)>> {
+        let mut matches = self.devices.iter().filter(|(_, d)| expander_model(&d.model));
+        let first = matches.next();
+        ensure!(matches.next().is_none(), "At most one GPIO expander is supported");
+        Ok(first.map(|(id, d)| (id.as_str(), d)))
     }
 
     fn linked(&self, endpoint: &str) -> Result<String> {
@@ -307,6 +354,7 @@ impl Board {
             "Board assembly is unavailable for chip {}",
             self.chip
         );
+        self.expander()?;
         let flash_devices = self.flash_devices()?;
         let flash_bytes: u64 = flash_devices.iter().map(|v| v.capacity_bytes as u64).sum();
         ensure!(self.storage.flash_bytes == 0 || self.storage.flash_bytes == flash_bytes,
@@ -388,8 +436,7 @@ impl Board {
                 .filter(|endpoint| {
                     endpoint.starts_with("chip.P")
                         || endpoint.split_once('.').is_some_and(|(id, port)| {
-                            self.devices.get(id).is_some_and(|d| d.model == EXTIO)
-                                && extio_pin(port).is_some()
+                            self.devices.get(id).is_some_and(|d| expander_pin(&d.model, port).is_some())
                         })
                 })
                 .count();
@@ -413,7 +460,7 @@ impl Board {
                             && target.model == "husb320-ba"
                             && input == "partner")
                             || (signal == "codec.dac"
-                                && target.model == "fs1815cn-v1"
+                                 && matches!(target.model.as_str(), "fs1815cn-v1" | "aw8737a")
                                 && input == "analog"))),
                     "Unsupported chip resource link"
                 );
@@ -441,7 +488,7 @@ impl Board {
                 "fs1815cn-v1" => 0x34,
                 "sc919-touch-v1" => 0x28,
                 "axs15231e-touch-ve4" => 0x3b,
-                EXTIO => serde_json::from_value::<Extio>(device.parameters.clone())?.address,
+                EXTIO | GXA574 => expander_address(&device.model, &device.parameters)?,
                 "husb320-ba" => serde_json::from_value::<TypeC>(device.parameters.clone())?.address,
                 _ => continue,
             };
@@ -465,7 +512,7 @@ impl Board {
             );
         }
         let mut compiled = json!({"id":self.id,"name":self.name,"chip":self.chip,
-            "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some() || self.single("fs1815cn-v1")?.is_some(),
+            "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some() || self.single("fs1815cn-v1")?.is_some() || self.single("aw8737a")?.is_some(),
             "buttons":[],"rotaries":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
                 "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
@@ -495,17 +542,21 @@ impl Board {
             "At most one touch controller is supported"
         );
         let mut plan = compiled["assembly"].clone();
+        for (id, device) in &self.devices {
+            if device.model == "spi-nor" {
+                let p: SerialNor = serde_json::from_value(device.parameters.clone())?;
+                if p.chip_select == 1 {
+                    plan["nor_cs1"] = json!({"CS":self.chip_pad(&format!("{id}.CS"))?});
+                }
+            }
+        }
         plan["nor"] = json!(self.flash_devices()?.iter().map(|v| json!({
             "id":v.id,"chip_select":v.chip_select,"capacity_bytes":v.capacity_bytes
         })).collect::<Vec<_>>());
-        if let Some((id, dev)) = self.single(EXTIO)? {
-            let p: Extio = serde_json::from_value(dev.parameters.clone())?;
-            ensure!(
-                EXTIO_ADDRESSES.contains(&p.address),
-                "Invalid EXTIO address strap"
-            );
+        if let Some((id, dev)) = self.expander()? {
+            let address = expander_address(&dev.model, &dev.parameters)?;
             plan["extio"] = json!({"id":id,"SCL":self.chip_pad(&format!("{id}.SCL"))?,
-                "SDA":self.chip_pad(&format!("{id}.SDA"))?,"address":p.address});
+                "SDA":self.chip_pad(&format!("{id}.SDA"))?,"address":address,"model":dev.model});
         }
         if let Some((id, dev)) = self.single("husb320-ba")? {
             let p: TypeC = serde_json::from_value(dev.parameters.clone())?;
@@ -529,8 +580,7 @@ impl Board {
                 for endpoint in &net.endpoints {
                     let is_pin = endpoint.starts_with("chip.P")
                         || endpoint.split_once('.').is_some_and(|(id, port)| {
-                            self.devices.get(id).is_some_and(|d| d.model == EXTIO)
-                                && extio_pin(port).is_some()
+                            self.devices.get(id).is_some_and(|d| expander_pin(&d.model, port).is_some())
                         });
                     if is_pin {
                         pulls.push(json!({"pad":self.chip_pad(endpoint)?,"level":pull=="up"}));
@@ -713,7 +763,7 @@ impl Board {
                 // LS26 SPI pin routes, in clock/MOSI order.
                 let routes = [
                     (0x28202208208u64, 0x14101104104u64),
-                    (0x802020820, 0x28201208208),
+                    (0x802020820 | (1 << 17), 0x28201208208 | (1 << 15)),
                     (0x14102104104, 0x2004082082),
                 ];
                 ensure!(
@@ -772,6 +822,17 @@ impl Board {
                     compiled["indicators"].as_array_mut().unwrap().push(json!({"id":id,
                         "label":device.label.as_deref().unwrap_or(id),"kind":"led","color":p.color,
                         "device":id,"property":"enabled","duty_property":"effective_duty"}));
+                }
+                "aw8737a" => {
+                    let _: Nor = serde_json::from_value(device.parameters.clone())?;
+                    ensure!(self.chip != "venusa" && self.single("aw8737a")?.is_some(),
+                            "AW8737A requires an LS26 chip and one amplifier");
+                    ensure!(self.single("audio-amplifier")?.is_none() && self.single("fs1815cn-v1")?.is_none(),
+                            "Only one amplifier is supported");
+                    ensure!(self.links.iter().any(|link| link.from == "chip.codec.dac"
+                        && link.to == format!("{id}.analog")), "AW8737A requires Codec DAC analog input");
+                    plan["amplifier"] = json!({"model":"aw8737a","id":id,
+                        "pad":self.chip_pad(&format!("{id}.SHDN"))?,"active_level":1});
                 }
                 "fs1815cn-v1" => {
                     let _: Nor = serde_json::from_value(device.parameters.clone())?;
@@ -853,7 +914,7 @@ impl Board {
                             .unwrap()
                             .last_mut()
                             .unwrap();
-                        row["device"] = json!(self.single(EXTIO)?.unwrap().0);
+                        row["device"] = json!(self.expander()?.context("Missing GPIO expander")?.0);
                         row["bank"] = json!(char::from(b'A' + pin / 8).to_string());
                         row["pin"] = json!(pin % 8);
                     }
@@ -1068,7 +1129,7 @@ impl Board {
                                 .position(|p| *p == pin)
                                 .context("EXTIO pin has no ADC route")?
                                 as u8,
-                            Some(self.single(EXTIO)?.unwrap().0),
+                            Some(self.single(EXTIO)?.context("Selected expander has no ADC input")?.0),
                         )
                     };
                     let mut row = json!({"id":id,"label":label,"description":description,"type":"voltage",
@@ -1099,6 +1160,7 @@ impl Board {
             "ls8500",
             "signal-probe",
             "audio-amplifier",
+            "aw8737a",
             "fs1815cn-v1",
             "gc0328",
             "bf3901",
@@ -1109,7 +1171,7 @@ impl Board {
             "sc919-touch-v1",
             "axs15231e-touch-ve4",
             "husb320-ba",
-            EXTIO,
+            EXTIO, GXA574,
         ];
         for net in self.nets.values() {
             ensure!(
@@ -1163,6 +1225,16 @@ struct Slot {
     #[serde(default)]
     #[schemars(range(max = 1))]
     detect_active_level: u8,
+}
+
+fn gxa574_address() -> u8 { 0x20 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Gxa574 {
+    #[serde(default = "gxa574_address")]
+    #[schemars(schema_with = "models::gxa574_address_schema")]
+    address: u8,
 }
 
 fn extio_address() -> u8 {
@@ -1355,9 +1427,10 @@ pub fn trace_sources(compiled: &Value) -> Result<Value> {
         }
     }
     for (id, device) in &board.devices {
-        if device.model == EXTIO {
-            for port in ports(EXTIO)? {
-                if let Some(endpoint) = extio_pin(port) {
+        if expander_model(&device.model) {
+            for port in ports(&device.model)? {
+                let endpoint = expander_pin(&device.model, port);
+                if let Some(endpoint) = endpoint {
                     pins.insert(format!("{id}.{port}"), endpoint);
                 }
             }
@@ -1558,14 +1631,19 @@ mod tests {
             "devices":{
                 "first":{"model":"spi-nor","parameters":{"capacity_bytes":8388608,"chip_select":0}},
                 "second":{"model":"spi-nor","parameters":{"capacity_bytes":4194304,"chip_select":1}}},
-            "nets":{"CS1":{"endpoints":["chip.PA11","second.CS"]}},
+            "nets":{"CS1":{"endpoints":["chip.PA10","second.CS"]}},
             "links":[{"from":"chip.flash.data","to":"first.bus"},
                      {"from":"chip.flash.data","to":"second.bus"}]});
         assert_eq!(compile(&valid).unwrap()["assembly"]["nor"][1]["capacity_bytes"], 4194304);
+        for pin in [10, 11] {
+            let mut routed = valid.clone();
+            routed["nets"]["CS1"]["endpoints"][0] = json!(format!("chip.PA{pin}"));
+            assert_eq!(compile(&routed).unwrap()["assembly"]["nor_cs1"]["CS"], pin);
+        }
         for (path, value) in [
             ("/devices/second/parameters/capacity_bytes", json!(3000000)),
             ("/chip", json!("venusa")),
-            ("/nets/CS1/endpoints/0", json!("chip.PA10")),
+            ("/nets/CS1/endpoints/0", json!("chip.PA9")),
             ("/links/0/from", json!("chip.unknown")),
             ("/devices/second/parameters", json!({"capacity":8})),
             ("/links", json!([])),

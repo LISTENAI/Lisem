@@ -307,6 +307,13 @@ def analog_keypad():
             key(i,True);assert sample()==value
             m.qmp_command('system_reset');assert sample()==value
             key(i,False);assert sample()==938
+        # Updating another analog input must not erase a held key's divider.
+        key(1,True);assert sample()==317
+        for uv in (900000,1680000):
+            m.qmp_command('qom-set',{'path':'/machine','property':'x-lisa-signals',
+                'value':json.dumps({'pads':{},'adc_uv':{'7':uv}})})
+            assert sample()==317
+        key(1,False);assert sample()==938
         # 5.1k || 10k against a 10k pull-up gives 833168 uV, code 236.
         key(1,True);key(2,True);assert sample()==236
         key(1,False);assert sample()==469
