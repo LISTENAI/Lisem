@@ -13,9 +13,12 @@ assert len(CONFIG) == 82
 
 
 class USB:
-    def __init__(self, name, direct=False):
+    def __init__(self, name, direct=False, board="arcs-mini"):
         self.direct = direct
-        self.m = Machine(OUTPUT / name, budget_ns=20_000_000_000)
+        self.m = Machine(OUTPUT / board / name, budget_ns=20_000_000_000, board=board)
+        if board.startswith('venusa'):
+            self.m.write(0x43100034, 4)
+            self.m.write(0x43100040, (1 << 18) | (1 << 14))
     def read(self, off, width='b'):
         if self.direct and 0x10 <= off <= 0x19: off += 0xf0
         return self.m.command(f'read{width} 0x{0x41000000+off:x}')
@@ -71,8 +74,8 @@ class USB:
     def close(self): self.m.close()
 
 
-def enumerate_device(direct=False):
-    u = USB('enumeration-direct' if direct else 'enumeration', direct)
+def enumerate_device(direct=False, board="arcs-mini"):
+    u = USB('enumeration-direct' if direct else 'enumeration', direct, board)
     try:
         assert u.status()['status'] == 'disconnected'
         assert u.command('enumerate', error=True)
@@ -122,9 +125,9 @@ def enumerate_device(direct=False):
     finally: u.close()
 
 
-def failures():
+def failures(board="arcs-mini"):
     for failure in ('stall','timeout','malformed','disconnect','controller-reset','address','oversize'):
-        u = USB(failure)
+        u = USB(failure, board=board)
         try:
             u.start(); u.setup()
             if failure == 'stall': u.write(0x12,32); u.step()
@@ -142,7 +145,7 @@ def failures():
             assert state['configuration'] == 0
             if failure == 'address': assert state['error'] == 'address-not-applied'
         finally: u.close()
-    u = USB('trace')
+    u = USB('trace', board=board)
     try:
         for _ in range(70): u.command('connect'); u.command('disconnect')
         state = u.status()
