@@ -117,6 +117,12 @@ const MODELS: &[Model] = &[
         ],
     },
     Model {
+        id: "cst836u",
+        category: "input",
+        description: "CST836U normal single-contact reporting with level interrupt",
+        ports: &["SCL", "SDA", "INT", "RESET"],
+    },
+    Model {
         id: "cst328",
         category: "input",
         description: "I2C touch controller with interrupt output",
@@ -224,6 +230,7 @@ fn parameter_schema(id: &str) -> Value {
         "st7789" | "sc919" => schema!(Controller),
         "axs15231e" => schema!(AxsController),
         "axs15231e-touch-ve4" => schema!(AxsTouch),
+        "cst836u" => schema!(Cst836u),
         "jd79651c" => schema!(Epaper),
         "display-panel" => schema!(Panel),
         "backlight" => schema!(Active),
@@ -283,6 +290,7 @@ fn example(id: &str) -> Value {
         }
         "backlight" | "audio-amplifier" | "signal-probe" => json!({"active_level":1}),
         "gc0328" | "bf3901" => json!({"rotation_clockwise":90}),
+        "cst836u" => json!({"width":240,"height":320,"rotation_clockwise":90}),
         "cst328" | "sc919-touch-v1" => json!({"rotation_clockwise":270}),
         "axs15231e-touch-ve4" => json!({"width":180,"height":720,"rotation_clockwise":270}),
         "button" => json!({"pressed_level":0,"released_level":1}),
@@ -310,7 +318,7 @@ pub(super) fn fixed_output(model: &str, port: &str) -> bool {
             | ("hold-reset", "RESET_N")
             | ("st7789" | "sc919" | "axs15231e", "TE")
             | ("jd79651c", "BUSY")
-            | ("cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "ls8500", "INT")
+            | ("cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "cst836u" | "ls8500", "INT")
             | ("husb320-ba", "INT_N" | "ID")
             | (
                 "gc0328" | "bf3901",
@@ -343,6 +351,7 @@ fn signals(m: &Model) -> Vec<Value> {
                 (m.id, *port),
                 ("gc0328" | "bf3901", "PWDN" | "RESET")
                     | ("st7789", "RESET" | "TE")
+                    | ("cst836u", "RESET")
                     | ("husb320-ba", "INT_N" | "ID")
                     | ("sd-card-slot", "CD")
                     | ("audio-amplifier", "IN")
@@ -463,6 +472,9 @@ fn constraints(id: &str) -> Value {
             "Normal scan mode with 6x8 active and 2x8 reference channels, plus requested frequency scans; other geometries and SWK are unsupported.",
             "Ideal AFE uses 20 ms scans, 100 us notification pulses and local electrode coupling; these are model parameters, not measured panel timing."
         ]),
+        "cst836u" => json!(["Normal single-contact polling, 12-bit coordinates and active-low level INT. RESET may be omitted for a fixed released input.",
+            "Power-on and reset require 100 ms; deep sleep requires hardware reset to resume.",
+            "Event flags remain zero. Gesture, factory, proximity and multiple contacts are unsupported; unconfigured identity reads are rejected."]),
         "cst328" => json!(["One touch controller per board; I2C address is fixed at 0x1d."]),
         "button" => json!([
             "Pressed and released levels must differ; at most 16 board buttons including keypad keys."
@@ -637,7 +649,7 @@ fn interfaces(id: &str) -> Value {
         "ml307c-gc-cn" => json!([{"protocol":"uart","TX":"TX","RX":"RX",
             "frame":"8N1","initial_baud":115200,"baud_rates":[115200,460800,921600],
             "flow_control":false}]),
-        EXTIO | GXA574 | "husb320-ba" => {
+        EXTIO | GXA574 | "husb320-ba" | "cst836u" => {
             json!([{"protocol":"i2c","address_parameter":"address","clock":"SCL","data":"SDA"}])
         }
         "spi-nor" => json!([{"protocol":"spi-memory","bus":"bus","select":"CS",

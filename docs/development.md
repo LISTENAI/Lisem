@@ -31,6 +31,8 @@ QEMU 修改提交到 `LISTENAI/qemu` 的 `listenai` 分支，再更新本仓库�
 `make qemu-ml307` 使用本机回环 TCP／UDP 验证两组 UART2 接线、波特率切换、
 二进制长度边界、发送中拔卡和独立模组的暖复位状态；不依赖外部云服务。
 `make qemu-serial` 验证 ARCS 和 VenusA 的 SPI、I2S 控制器及数字接线。
+`make qemu-cst836u` 验证两芯片 I²C 单点读取、事务快照、低电平通知、
+初始化等待、深睡与硬件复位，以及未知身份和不支持命令的拒绝。
 `make qemu-signal-trace qemu-extio` 验证数字源的初始状态、GPIO/PinMux/EXTIO
 边沿、PWM 虚拟时刻、游标容量及复位结束；`tests/run_mcp.py` 追加公共采集接口、
 运行隔离和下电后的读取验证。

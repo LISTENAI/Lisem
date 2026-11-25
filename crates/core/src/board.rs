@@ -537,6 +537,7 @@ impl Board {
                 "gc0328" => 0x21,
                 "bf3901" => 0x6e,
                 "cst328" => 0x1d,
+                "cst836u" => serde_json::from_value::<Cst836u>(device.parameters.clone())?.address,
                 "fs1815cn-v1" => 0x34,
                 "sc919-touch-v1" => 0x28,
                 "axs15231e-touch-ve4" => 0x3b,
@@ -588,7 +589,7 @@ impl Board {
         ensure!(
             self.devices
                 .values()
-                .filter(|d| matches!(d.model.as_str(), "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4"))
+                .filter(|d| matches!(d.model.as_str(), "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "cst836u"))
                 .count()
                 <= 1,
             "At most one touch controller is supported"
@@ -1042,11 +1043,18 @@ impl Board {
                             json!(format!("x-lisa-button-{index}"));
                     }
                 }
-                "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" => {
+                "cst328" | "sc919-touch-v1" | "axs15231e-touch-ve4" | "cst836u" => {
                     let axs = device.model == "axs15231e-touch-ve4";
+                    let cst = if device.model == "cst836u" {
+                        Some(serde_json::from_value::<Cst836u>(device.parameters.clone())?)
+                    } else { None };
                     let (width, height, rotation) = if axs {
                         let p: AxsTouch = serde_json::from_value(device.parameters.clone())?;
                         ensure!((1..=4096).contains(&p.width) && (1..=4096).contains(&p.height), "Invalid touch dimensions");
+                        (p.width, p.height, p.rotation_clockwise)
+                    } else if let Some(p) = &cst {
+                        ensure!((1..=4096).contains(&p.width) && (1..=4096).contains(&p.height), "Invalid touch dimensions");
+                        ensure!((8..=0x77).contains(&p.address), "Invalid touch address");
                         (p.width, p.height, p.rotation_clockwise)
                     } else {
                         let p: Touch = serde_json::from_value(device.parameters.clone())?;
@@ -1068,11 +1076,19 @@ impl Board {
                         plan["touch"]["model"] = json!(device.model);
                         plan["touch"]["RESET"] = json!(self.chip_pad(&format!("{id}.RESET"))?);
                     }
-                    if axs {
+                    if let Some(p) = &cst {
+                        plan["touch"]["model"] = json!(device.model);
+                        plan["touch"]["address"] = json!(p.address);
+                        if let Some(id) = p.chip_type { plan["touch"]["chip_type"] = json!(id); }
+                        if self.net(&format!("{id}.RESET")).is_some() {
+                            plan["touch"]["RESET"] = json!(self.chip_pad(&format!("{id}.RESET"))?);
+                        }
+                    }
+                    if axs || cst.is_some() {
                         plan["touch"]["width"] = json!(width);
                         plan["touch"]["height"] = json!(height);
                     }
-                    compiled["touch"] = json!({"model":device.model,"address":if axs {"0x3b"} else if device.model == "cst328" {"0x1d"} else {"0x28"},"width":width,
+                    compiled["touch"] = json!({"model":device.model,"address":format!("0x{:02x}", cst.as_ref().map(|p| p.address).unwrap_or(if axs {0x3b} else if device.model == "cst328" {0x1d} else {0x28})),"width":width,
                         "height":height,"rotation_clockwise":rotation,
                         "label":device.label.as_deref().unwrap_or("触摸屏")});
                     compiled["runtime"]["touch_property"] = json!("x-lisa-touch");
@@ -1246,6 +1262,7 @@ impl Board {
             "voltage-divider",
             "resistor-keypad",
             "cst328",
+            "cst836u",
             "sc919-touch-v1",
             "axs15231e-touch-ve4",
             "husb320-ba",
@@ -1364,6 +1381,25 @@ struct AnalogKey {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct Touch {
+    #[serde(default)]
+    #[schemars(schema_with = "models::rotation_schema")]
+    rotation_clockwise: u32,
+}
+
+fn cst836u_address() -> u8 { 0x15 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Cst836u {
+    #[schemars(range(min = 1, max = 4096))]
+    width: u32,
+    #[schemars(range(min = 1, max = 4096))]
+    height: u32,
+    #[serde(default = "cst836u_address")]
+    #[schemars(range(min = 8, max = 119))]
+    address: u8,
+    #[serde(default)]
+    chip_type: Option<u16>,
     #[serde(default)]
     #[schemars(schema_with = "models::rotation_schema")]
     rotation_clockwise: u32,
@@ -1746,6 +1782,34 @@ mod tests {
             *invalid.pointer_mut(path).unwrap() = value;
             assert!(compile(&invalid).is_err(), "accepted {path}");
         }
+    }
+
+    #[test]
+    fn cst836u_geometry_identity_and_optional_reset() {
+        let mut board: Value = serde_json::from_str(
+            include_str!("../../../boards/venusa-rd-evb.json")).unwrap();
+        board["devices"]["touch"] = json!({"model":"cst836u",
+            "parameters":{"width":240,"height":320,"rotation_clockwise":90}});
+        board["devices"].as_object_mut().unwrap().remove("pa");
+        board["nets"].as_object_mut().unwrap().remove("PA_EN");
+        for signal in ["SCL", "SDA"] {
+            let net = board["nets"].as_object_mut().unwrap().values_mut().find(|net|
+                net["endpoints"].as_array().unwrap().contains(&json!(format!("camera.{signal}")))).unwrap();
+            net["endpoints"].as_array_mut().unwrap().push(json!(format!("touch.{signal}")));
+        }
+        board["nets"]["TOUCH_INT"] = json!({"endpoints":["chip.PA0","touch.INT"],"pull":"up"});
+        let v = compile(&board).unwrap();
+        assert_eq!(v["touch"]["address"], "0x15");
+        assert_eq!(v["touch"]["rotation_clockwise"], 90);
+        assert!(v["assembly"]["touch"].get("RESET").is_none());
+        assert!(v["assembly"]["touch"].get("chip_type").is_none());
+        board["devices"]["touch"]["parameters"]["address"] = json!(0x21);
+        assert!(compile(&board).is_err()); // Collision with the shared camera.
+        board["devices"]["touch"]["parameters"]["address"] = json!(0x16);
+        board["devices"]["touch"]["parameters"]["chip_type"] = json!(0x1234);
+        assert_eq!(compile(&board).unwrap()["assembly"]["touch"]["chip_type"], 0x1234);
+        board["devices"]["touch"]["parameters"]["width"] = json!(4097);
+        assert!(compile(&board).is_err());
     }
 
     #[test]
