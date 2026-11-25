@@ -233,7 +233,8 @@ fn parameter_schema(id: &str) -> Value {
         "quadrature-encoder" => schema!(Rotary),
         "hold-reset" => schema!(HoldReset),
         "resistor-keypad" => schema!(Keypad),
-        "led" | "pwm-led" | "signal-probe" | "audio-amplifier" => schema!(Indicator),
+        "led" | "pwm-led" | "signal-probe" => schema!(Indicator),
+        "audio-amplifier" => schema!(Amplifier),
         "voltage-divider" => schema!(Divider),
         "sd-card-slot" => schema!(Slot),
         EXTIO => schema!(Extio),
@@ -341,8 +342,10 @@ fn signals(m: &Model) -> Vec<Value> {
             let required = !matches!(
                 (m.id, *port),
                 ("gc0328" | "bf3901", "PWDN" | "RESET")
+                    | ("st7789", "RESET" | "TE")
                     | ("husb320-ba", "INT_N" | "ID")
                     | ("sd-card-slot", "CD")
+                    | ("audio-amplifier", "IN")
             ) && !((m.id == EXTIO || m.id == "gxa574") && port.starts_with('P'));
             json!({"name":port,"direction":direction,"kind":kind,"required":required})
         })
@@ -422,6 +425,7 @@ fn constraints(id: &str) -> Value {
         "st7789" | "backlight" => json!([
             "One controller, one panel and one backlight must be connected together.",
             "Connect controller.pixels to panel.pixels and backlight.brightness to panel.brightness.",
+            "ST7789 RESET may be omitted for a fixed released input; omitted TE has no MCU connection. SCK, SDI, CS and DC are required.",
             "Viewport must fit 240x320 controller RAM; width and height must be positive."
         ]),
         "display-panel" => json!([
@@ -468,7 +472,7 @@ fn constraints(id: &str) -> Value {
             "Key IDs must be unique among all board buttons."
         ]),
         "audio-amplifier" => {
-            json!(["One amplifier per board; GPIO enable also gates board speaker feedback."])
+            json!(["One amplifier per board; use IN with active_level, or fixed_enable without IN. Enable gates playback and board speaker feedback."])
         }
         "signal-probe" | "led" => json!([
             "State snapshots expose driven level and active polarity; output edge capture is unavailable."
@@ -663,7 +667,7 @@ pub fn wiring(chip: &str) -> Value {
                 .map(|channel| json!({"pin":endpoint(pin),"channel":channel}))
         })
         .collect();
-    let i2c: Vec<_> = I2C_ROUTES.iter().filter(|(id, _, _, _)| *id == chip)
+    let i2c: Vec<_> = i2c_routes().iter().filter(|(id, _, _, _)| *id == chip)
         .map(|(_, scl, sda, bus)| json!({"controller":bus,"SCL":endpoint(*scl),"SDA":endpoint(*sda)})).collect();
     let sd: BTreeMap<_, _> = ["CLK", "CMD", "DAT0", "DAT1", "DAT2", "DAT3"]
         .into_iter()
@@ -682,12 +686,18 @@ pub fn wiring(chip: &str) -> Value {
         }
         json!([route])
     };
+    let dvp = if chip == "venusa" {
+        let routes: BTreeMap<_, _> = VENUSA_DVP_ROUTES.iter()
+            .map(|(signal, pads)| (*signal, pads.iter().copied().map(endpoint).collect::<Vec<_>>()))
+            .collect();
+        json!({"pinmux_function":13,"receiver_data_bits":[4,5,6,7,8,9,10,11],"routes":routes})
+    } else { Value::Null };
     let uart: Vec<_> = if chip == "venusa" { Vec::new() } else {
         UART2_MODULE_ROUTES.iter().map(|(module_tx, module_rx)|
             json!({"controller":2,"TX":endpoint(*module_rx),"RX":endpoint(*module_tx),
                 "pinmux_function":4,"board_peer":true})).collect()
     };
-    json!({"pads":pads,"uart":uart,"i2c":i2c,"spi":spi,"qspi":qspi,"adc":adc,"sd":sd,
+    json!({"pads":pads,"uart":uart,"i2c":i2c,"spi":spi,"qspi":qspi,"dvp":dvp,"adc":adc,"sd":sd,
         "nor":{"model":"spi-nor","capacity_min_bytes":65536,"capacity_max_bytes":16777216,
             "capacity_power_of_two":true,"chip_selects":if chip == "venusa" {json!([0])} else {json!([0,1])}},
         "reset_input":if chip == "venusa" {Value::Null} else {json!("chip.RESET_N")},

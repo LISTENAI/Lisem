@@ -43,7 +43,8 @@ class Epaper:
         for key in ('SCK', 'SDI'):
             m.write(pinmux + 4 * self.pads[key], 5 if self.venusa or not moved else 6)
         for key in ('CS', 'DC', 'RESET', 'BUSY'):
-            m.write(pinmux + 4 * self.pads[key], 1 if self.venusa else 0)
+            # VenusA PA0..31 use core selector 0 for GPIO, as do these ARCS pads.
+            m.write(pinmux + 4 * self.pads[key], 0)
         for bank in range(2):
             mask = sum(1 << (pad % 32) for key, pad in self.pads.items()
                        if key in ('CS', 'DC', 'RESET') and pad // 32 == bank)

@@ -85,6 +85,45 @@ def playback_48k():
     print('48 kHz host playback: passband, anti-aliasing, raw capture, sample edges and reset PASS')
 
 
+def fixed_amplifier():
+    for chip in ('ls2684', 'venusa'):
+        for enabled in (False, True):
+            directory = OUTPUT / ('fixed-pa-' + chip + '-' + str(int(enabled)))
+            directory.mkdir()
+            memory, stream = endpoint(directory / 'stream.bin')
+            stream.capture = 0
+            assembly = {'version': 1, 'chip': chip, 'buttons': [],
+                        'amplifier': {'enabled': enabled}}
+            machine = Machine(directory / 'qemu', assembly=assembly,
+                              board='venusa-rd-evb' if chip == 'venusa' else 'arcs-board',
+                              host_audio=directory / 'stream.bin')
+            try:
+                for iteration in range(2):
+                    if iteration:
+                        machine.qmp_command('system_reset')
+                    if chip == 'venusa':
+                        apc, codec = 0x44700000, 0x44800000
+                        machine.write(0x43100034, 0xc600)
+                        machine.write(apc, 3)
+                        machine.write(apc + 0x0c, 7)
+                        machine.write(apc + 0x34, 1000 << 16)
+                        for off, value in [(0, 3), (0x34, 0), (0x38, 0x10), (0x44, 1), (0x2c, 0x63)]:
+                            machine.write(codec + off, value)
+                    else:
+                        configure(machine, 16000, values=[1000], adc=False)
+                    before = stream.output_write
+                    machine.command('clock_step 62500')
+                    assert stream.output_write == before + 1, (chip, enabled, iteration, before, stream.output_write)
+                    assert stream.output[before].value == 1000
+                    assert bool(stream.output[before].enabled) == enabled
+                    assert not stream.host_error and not stream.guest_error
+            finally:
+                machine.close()
+                del stream
+                memory.close()
+    print('Fixed amplifier: raw DAC, host enable and reset on both chips PASS')
+
+
 def main():
     OUTPUT.mkdir(parents=True)
     binary = OUTPUT / 'test-stream'
@@ -132,6 +171,7 @@ def main():
         finally:
             m.close(); del s; memory.close()
     playback_48k()
+    fixed_amplifier()
     # First sampling event maps a fresh input window, independent of boot time.
     directory = OUTPUT / 'epoch'; directory.mkdir()
     memory, s = endpoint(directory / 'stream.bin')

@@ -17,6 +17,9 @@ def gpio(board):
     mux = 0x44100000 if venusa else 0x47500000
     m = Machine(OUTPUT / board, board=board)
     try:
+        if venusa:
+            m.write(0x45100004, 6)  # PB1 AON routes to the core GPIO mux.
+            m.write(mux + 4 * 33, 0)
         def request(value, error=False):
             return m.qmp_command('qom-set', {'path': '/machine',
                 'property': 'x-lisa-signal-trace', 'value': json.dumps(value)}, error=error)
@@ -72,7 +75,7 @@ def gpio(board):
         m.input(33, True)
         assert snapshot()['events'][-1]['level'] and not snapshot()['events'][-1]['driven']
         m.write(base + 0x28, 2)
-        m.write(mux + 4 * 33, 1 | 0x1000000)  # PinMux output override low.
+        m.write(mux + 4 * 33, (0 if venusa else 1) | 0x1000000)  # GPIO output override low.
         assert snapshot()['events'][-1]['driven'] and not snapshot()['events'][-1]['level']
         m.qmp_command('system_reset')
         reset = snapshot()

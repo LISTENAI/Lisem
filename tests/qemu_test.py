@@ -51,7 +51,7 @@ class Machine:
         if camera_input is not None:
             env[prefix + 'CAMERA_SHM'] = camera_input
         if host_audio is not None:
-            env['ARCS_QEMU_HOST_AUDIO'] = str(host_audio)
+            env[prefix + 'HOST_AUDIO'] = str(host_audio)
         env.pop('ARCS_QEMU_DESKTOP', None)
         if desktop:
             (directory / 'live').mkdir()

@@ -116,6 +116,19 @@ lisem board-models --schema
 连接 `SHDN`。宿主播放按功放实际使能状态门控；PCM 保持归一化，不模拟
 模拟增益、压限、升压电路、温度保护或扬声器声学特性。
 
+### 固定功放使能
+
+通用 `audio-amplifier` 可通过 `IN` 接 GPIO，并用 `active_level` 指定有效电平。
+若使能脚由板级固定偏置控制，使用 `fixed_enable`，不声明 `IN` 连线或
+`active_level`：
+
+```json
+"speaker": {"model": "audio-amplifier", "parameters": {"fixed_enable": true}}
+```
+
+`false` 表示固定关闭。使能状态控制宿主播放及板级反馈，原始 DAC 样本仍完整保留。
+该模型表示理想使能，不模拟具体功放的模拟增益、电源或声学特性。
+
 ### NOR 存储
 
 每颗 NOR 使用独立的 `spi-nor` 器件，参数 `capacity_bytes` 声明字节容量，
@@ -125,6 +138,50 @@ lisem board-models --schema
 
 实例镜像的组织方式见[存储架构](architecture.md#存储与外部连接)，
 写入偏移见[写入原始二进制](usage.md#写入原始二进制)。
+
+### VenusA PSRAM 与引脚路由
+
+VenusA 板型可用顶层 `memory.psram_bytes` 指定 Xccela PSRAM 容量，支持
+`8388608`（8 MiB）和 `16777216`（16 MiB）。省略或设为 `0` 时使用 8 MiB；
+内置 RD EVB 保持 8 MiB。此字段独立于 `spi-nor` 的 Flash 容量，不用于
+推断芯片丝印或封装。16 MiB 配置提供独立的高半区及对应容量识别寄存器。
+
+SPI0/SPI1 的普通串行数据与片选、I²C0/I²C1 和 PWM0–PWM7 按芯片
+PinMux 表路由。板型只声明物理接线，固件负责写入 Core IOMUX；PB0–PB5
+还须在 AON IOMUX 选择 NORMAL，才能连接 Core 信号。GPIOA 和 PB0–PB5
+使用 Core 功能 0；PB6–PB21 的 GPIO 路径使用功能 1。PB6–PB21 是模拟器
+对 GPIOC、SDIO 和 Flash 复用引脚的 GPIO bank 编号，不是额外封装引脚。
+
+I²C 接线须能唯一确定控制器，支持的组合见 `wiring.i2c`；同一控制器上的
+器件共用 SCL/SDA。SPI 的重复输入选择不具有已验证的仲裁行为，明确报错。
+I²S0/I²S1 支持各自 Core 功能 9/10 的时钟、帧同步和串行数据路线，
+同一信号只能选择一个引脚；运行中改变正在传输的路线明确报错。
+路由支持不代表实现了复用表中的全部外设；视频 SPI/QSPI 等模式仍按控制器
+实际能力校验。
+
+`resistor-keypad.OUT` 可接 PB0–PB3，分别对应 GPADC VIN0–VIN3。
+固件须将对应 AON 引脚设置为功能 4、模拟选择 0，再配置 ADC 的参考电压
+和输入分压。模型按实际电阻计算电压，支持同时按键；复位保留外部按键
+状态。未接通模拟路径时采样明确报错。
+
+### VenusA 摄像头引脚
+
+GC0328 的 SCCB 接线由 `wiring.venusa.i2c` 查询；MCLK、PCLK、HSYNC、
+VSYNC 和数据线由 `wiring.venusa.dvp` 查询。像素及传感器时钟路线须启用
+Core Function 13，PB0–PB5
+还须接通 AON NORMAL。当前八位像素使用接收器 D4–D11，不能把低八位接线
+当作等价路线。RESET 和 PWDN 可不接 MCU，分别保持释放和低电平。
+
+### 未接 MCU 的器件信号
+
+可省略的信号以 `board-models` 中的 `signals[].required` 为准。
+ST7789 的 `RESET` 不接 MCU 时可省略，表示复位输入固定释放；软件复位
+仍由屏幕命令执行。`TE` 可省略，表示屏幕同步输出没有接入 MCU，不能据此
+产生 GPIO 中断。SCK、SDI、CS 和 DC 仍须接线。
+
+GC0328 的 `PWDN`、`RESET` 可省略，分别表示固定解除掉电和固定释放复位。
+这些约定表达板级固定状态，不模拟上电 RC 波形；需要 GPIO 控制时应声明
+真实接线。其他器件的输入不能仅因未接 MCU 就任意省略，须按各自模型契约配置。
 
 ### 数据接口与屏幕示例
 

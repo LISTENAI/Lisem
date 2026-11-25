@@ -22,7 +22,10 @@ def run(chip):
     try:
         if venusa: m.write(0x43100034, 0x802)
         else: m.write(0x45800008, 0x208000)
-        for pin in (scl, sda): m.write((0x44100000 if venusa else 0x47500000)+4*pin, 8)
+        for pin in (scl, sda):
+            if venusa:
+                m.write(0x45100000 + 4 * (pin - 32), 6)  # AON routes PB1/2 to the core mux.
+            m.write((0x44100000 if venusa else 0x47500000)+4*pin, 8)
         m.write(bus+0x2c, 5 | (200 << 4))
 
         def transfer(data=None, read=False, stop=True, reset=True):

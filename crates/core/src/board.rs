@@ -27,6 +27,8 @@ pub struct Board {
     pub chip: String,
     #[serde(default)]
     pub storage: Storage,
+    #[serde(default, skip_serializing_if = "Memory::is_default")]
+    pub memory: Memory,
     #[schemars(length(max = 64))]
     pub devices: BTreeMap<String, Device>,
     #[schemars(length(max = 128))]
@@ -44,6 +46,18 @@ pub struct Board {
 pub struct Storage {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flash_bytes: u64,
+}
+
+/// Physical memory geometry; zero retains the chip's default configuration.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Memory {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub psram_bytes: u64,
+}
+
+impl Memory {
+    fn is_default(&self) -> bool { self.psram_bytes == 0 }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
@@ -151,8 +165,15 @@ const SUPPORTED_CHIPS: [&str; 3] = ["ls2663", "ls2684", "venusa"];
 const UART2_MODULE_ROUTES: &[(u8, u8)] = &[(8, 9), (39, 38)];
 const EXTIO_ADC_PINS: [u8; 8] = [66, 65, 84, 90, 91, 93, 94, 92];
 const NOR_BYTES: u64 = 16 * 1024 * 1024;
+const VENUSA_DVP_ROUTES: &[(&str, &[u8])] = &[
+    ("MCLK", &[17, 20, 35]), ("PCLK", &[10, 13, 16, 23, 34]),
+    ("HSYNC", &[8, 11, 14, 21, 32]), ("VSYNC", &[9, 12, 15, 22, 33]),
+    ("D0", &[3, 18, 24]), ("D1", &[2, 25, 36]),
+    ("D2", &[1, 26, 37]), ("D3", &[0, 27]),
+    ("D4", &[28]), ("D5", &[29]), ("D6", &[30]), ("D7", &[31]),
+];
+
 const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
-    ("venusa", 34, 33, 1),
     ("ls2663", 39, 38, 0),
     ("ls2663", 23, 22, 0),
     ("ls2663", 20, 21, 0),
@@ -164,9 +185,26 @@ const I2C_ROUTES: &[(&str, u8, u8, u8)] = &[
     ("ls2684", 19, 18, 1),
 ];
 
+fn i2c_routes() -> Vec<(&'static str, u8, u8, u8)> {
+    let masks: [(u64, u64); 2] = [
+        (0xa96a3895555u64 | 0x500000000000, 0x15695c76aaaa | 0xa00000000000),
+        (0xa00000000000 | 0x52d4712aaaa, 0x400000000000 | 0xad2b8ed5555),
+    ];
+    let mut routes = I2C_ROUTES.to_vec();
+    for scl in 0..54 {
+        for sda in 0..54 {
+            if scl == sda { continue; }
+            let buses: Vec<_> = masks.iter().enumerate().filter(|(_, (clock, data))|
+                clock & (1 << scl) != 0 && data & (1 << sda) != 0).collect();
+            if buses.len() == 1 { routes.push(("venusa", scl, sda, buses[0].0 as u8)); }
+        }
+    }
+    routes
+}
+
 fn spi_routes(chip: &str) -> &'static [(u64, u64)] {
     if chip == "venusa" {
-        &[(1 << 16, 1 << 19), (1 << 22, 1 << 23)]
+        &[(0x50208410408, 0x81002082040), (0x44828420804, 0xa0200808020)]
     } else {
         &[
             (0x28202208208, 0x14101104104),
@@ -363,6 +401,12 @@ impl Board {
             self.chip
         );
         self.expander()?;
+        ensure!(
+            self.memory.psram_bytes == 0
+                || (self.chip == "venusa"
+                    && [8 * 1024 * 1024, 16 * 1024 * 1024].contains(&self.memory.psram_bytes)),
+            "Unsupported PSRAM geometry for chip {}", self.chip
+        );
         let flash_devices = self.flash_devices()?;
         let flash_bytes: u64 = flash_devices.iter().map(|v| v.capacity_bytes as u64).sum();
         ensure!(self.storage.flash_bytes == 0 || self.storage.flash_bytes == flash_bytes,
@@ -502,7 +546,7 @@ impl Board {
             };
             let scl = self.chip_pad(&format!("{id}.SCL"))?;
             let sda = self.chip_pad(&format!("{id}.SDA"))?;
-            let bus = I2C_ROUTES
+            let bus = i2c_routes()
                 .iter()
                 .find(|(chip, clock, data, _)| *chip == self.chip && *clock == scl && *data == sda)
                 .map(|(_, _, _, bus)| *bus)
@@ -557,6 +601,11 @@ impl Board {
                     plan["nor_cs1"] = json!({"CS":self.chip_pad(&format!("{id}.CS"))?});
                 }
             }
+        }
+        if self.chip == "venusa" {
+            plan["psram_bytes"] = json!(if self.memory.psram_bytes == 0 {
+                8 * 1024 * 1024
+            } else { self.memory.psram_bytes });
         }
         plan["nor"] = json!(self.flash_devices()?.iter().map(|v| json!({
             "id":v.id,"chip_select":v.chip_select,"capacity_bytes":v.capacity_bytes
@@ -701,6 +750,10 @@ impl Board {
                 &["SCK", "SDI", "CS", "DC", "RESET", "TE"]
             };
             for &port in ports {
+                if lcd.model == "st7789" && matches!(port, "RESET" | "TE")
+                    && self.net(&format!("{lcd_id}.{port}")).is_none() {
+                    continue;
+                }
                 pads.insert(port, self.chip_pad(&format!("{lcd_id}.{port}"))?);
             }
             if quad {
@@ -781,6 +834,11 @@ impl Board {
                         data & (1u64 << pads["D0"]) != 0),
                     "Unsupported serial camera pad route"
                 );
+            }
+            if self.chip == "venusa" && camera.model == "gc0328" {
+                for &(port, allowed) in VENUSA_DVP_ROUTES {
+                    ensure!(allowed.contains(&pads[port]), "Unsupported DVP pad route for {port}");
+                }
             }
             for port in ["RESET", "PWDN"] {
                 if self.net(&format!("{id}.{port}")).is_some() {
@@ -908,7 +966,19 @@ impl Board {
                     compiled["runtime"]["buttons"][id] = json!(format!("x-lisa-button-{index}"));
                 }
                 "led" | "audio-amplifier" | "signal-probe" => {
-                    let p: Indicator = serde_json::from_value(device.parameters.clone())?;
+                    let p: Indicator = if device.model == "audio-amplifier" {
+                        let amp: Amplifier = serde_json::from_value(device.parameters.clone())?;
+                        ensure!(plan["amplifier"].is_null(), "Only one amplifier is supported");
+                        if let Some(enabled) = amp.fixed_enable {
+                            ensure!(self.net(&format!("{id}.IN")).is_none() && amp.active_level.is_none(),
+                                "Fixed amplifier enable cannot also use a GPIO or polarity");
+                            plan["amplifier"] = json!({"enabled":enabled});
+                            continue;
+                        }
+                        Indicator {active_level: amp.active_level.context("GPIO amplifier requires active_level")?, color: amp.color}
+                    } else {
+                        serde_json::from_value(device.parameters.clone())?
+                    };
                     ensure!(p.active_level <= 1, "Invalid indicator polarity");
                     let pad = self.chip_pad(&format!("{id}.IN"))?;
                     compiled["indicators"].as_array_mut().unwrap().push(json!({"id":id,
@@ -936,7 +1006,7 @@ impl Board {
                 }
                 "resistor-keypad" => {
                     ensure!(
-                        self.single("resistor-keypad")?.is_some() && self.chip != "venusa",
+                        self.single("resistor-keypad")?.is_some(),
                         "This chip has no keypad ADC adapter"
                     );
                     let p: Keypad = serde_json::from_value(device.parameters.clone())?;
@@ -1205,7 +1275,12 @@ impl Board {
 }
 
 fn adc_channel(chip: &str, pad: u8) -> Result<u8> {
-    ensure!(chip != "venusa", "VenusA analog pad routing is unavailable");
+    if chip == "venusa" {
+        return match pad {
+            32..=35 => Ok(pad - 32),
+            _ => bail!("Pad has no GPADC VIN route"),
+        };
+    }
     // LS26 User Manual v1.0, Appendix ana_iomux: PB2..PB7 -> VIN0..VIN5.
     // GPADC result channels 0..3 are internal sources, so VIN0 starts at 4.
     Ok(match pad {
@@ -1379,6 +1454,17 @@ struct Rotary {
 struct Indicator {
     #[schemars(range(max = 1))]
     active_level: u8,
+    #[serde(default)]
+    color: Option<String>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct Amplifier {
+    #[serde(default)]
+    #[schemars(range(max = 1))]
+    active_level: Option<u8>,
+    #[serde(default)]
+    fixed_enable: Option<bool>,
     #[serde(default)]
     color: Option<String>,
 }
@@ -1843,6 +1929,97 @@ mod tests {
         let mut raw = example();
         raw["devices"]["screen"]["parameters"]["viewport"]["x"] = json!(u32::MAX);
         assert!(compile(&raw).is_err());
+    }
+
+    #[test]
+    fn st7789_optional_control_signals_preserve_required_data_nets() {
+        let mut board = example();
+        for signal in ["RESET", "TE"] {
+            board["nets"].as_object_mut().unwrap().retain(|_, net|
+                !net["endpoints"].as_array().unwrap().contains(&json!(format!("lcd.{signal}"))));
+        }
+        let plan = compile(&board).unwrap();
+        assert!(plan["assembly"]["panel"]["pads"].get("RESET").is_none());
+        assert!(plan["assembly"]["panel"]["pads"].get("TE").is_none());
+        board["nets"].as_object_mut().unwrap().retain(|_, net|
+            !net["endpoints"].as_array().unwrap().contains(&json!("lcd.DC")));
+        assert!(compile(&board).is_err());
+        for (pad, channel) in [(32, 0), (33, 1), (34, 2), (35, 3)] {
+            assert_eq!(adc_channel("venusa", pad).unwrap(), channel);
+        }
+        assert!(adc_channel("venusa", 36).is_err());
+    }
+
+    #[test]
+    fn amplifier_enable_requires_either_gpio_or_fixed_state() {
+        let mut board: Value = serde_json::from_str(
+            include_str!("../../../boards/venusa-rd-evb.json")).unwrap();
+        board["devices"]["pa"]["parameters"] = json!({"fixed_enable":true});
+        assert!(compile(&board).is_err());
+        board["nets"].as_object_mut().unwrap().remove("PA_EN");
+        for enabled in [true, false] {
+            board["devices"]["pa"]["parameters"] = json!({"fixed_enable":enabled});
+            let compiled = compile(&board).unwrap();
+            assert_eq!(compiled["assembly"]["amplifier"], json!({"enabled":enabled}));
+            assert_eq!(compiled["audio"], true);
+        }
+        board["devices"]["pa"]["parameters"] = json!({});
+        assert!(compile(&board).is_err());
+        board["devices"]["pa"]["parameters"] = json!({"fixed_enable":true,"active_level":1});
+        assert!(compile(&board).is_err());
+    }
+
+    #[test]
+    fn venusa_dvp_routes_preserve_receiver_bit_order() {
+        let mut board: Value = serde_json::from_str(
+            include_str!("../../../boards/venusa-rd-evb.json")).unwrap();
+        for (port, pad) in [("MCLK", 17), ("PCLK", 10), ("HSYNC", 8),
+                            ("VSYNC", 9), ("D0", 3), ("D1", 2), ("D2", 1), ("D3", 0)] {
+            for net in board["nets"].as_object_mut().unwrap().values_mut() {
+                if net["endpoints"].as_array().unwrap().contains(&json!(format!("camera.{port}"))) {
+                    net["endpoints"][0] = json!(format!("chip.PA{pad}"));
+                }
+            }
+        }
+        // Remove the optional amplifier sharing the selected data input pad.
+        board["devices"].as_object_mut().unwrap().remove("pa");
+        board["nets"].as_object_mut().unwrap().retain(|_, net|
+            !net["endpoints"].as_array().unwrap().contains(&json!("pa.IN")));
+        assert_eq!(compile(&board).unwrap()["assembly"]["camera"]["pads"]["D0"], 3);
+        for net in board["nets"].as_object_mut().unwrap().values_mut() {
+            if net["endpoints"].as_array().unwrap().contains(&json!("camera.D0")) {
+                net["endpoints"][0] = json!("chip.PA7");
+            }
+        }
+        assert!(compile(&board).unwrap_err().to_string().contains("DVP pad route"));
+    }
+
+    #[test]
+    fn venusa_memory_and_alternate_sccb_routes() {
+        let mut board: Value = serde_json::from_str(
+            include_str!("../../../boards/venusa-rd-evb.json")).unwrap();
+        assert_eq!(compile(&board).unwrap()["assembly"]["psram_bytes"], 8 * 1024 * 1024);
+        board["memory"] = json!({"psram_bytes":16 * 1024 * 1024});
+        for net in board["nets"].as_object_mut().unwrap().values_mut() {
+            if net["endpoints"].as_array().unwrap().contains(&json!("camera.SCL")) {
+                net["endpoints"][0] = json!("chip.PB0");
+            }
+        }
+        let plan = compile(&board).unwrap();
+        assert_eq!(plan["assembly"]["psram_bytes"], 16 * 1024 * 1024);
+        assert_eq!(plan["assembly"]["camera"]["pads"]["SCL"], 32);
+        for size in [1, 4 * 1024 * 1024, 12 * 1024 * 1024, 32 * 1024 * 1024] {
+            board["memory"]["psram_bytes"] = json!(size);
+            assert!(compile(&board).is_err());
+        }
+        let mut arcs = example();
+        arcs["memory"] = json!({"psram_bytes":16 * 1024 * 1024});
+        assert!(compile(&arcs).is_err());
+        assert!(i2c_routes().contains(&("venusa", 32, 33, 1)));
+        assert!(i2c_routes().contains(&("venusa", 34, 35, 0)));
+        assert!(!i2c_routes().iter().any(|(_, scl, sda, _)| scl == sda));
+        assert_ne!(spi_routes("venusa")[0].0 & (1 << 10), 0);
+        assert_ne!(spi_routes("venusa")[0].1 & (1 << 13), 0);
     }
 
     #[test]

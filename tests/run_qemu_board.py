@@ -199,18 +199,23 @@ def chip_variants():
     print('LS26 8/16 MiB PSRAM identity, read-only modes, resets and retained RAM: PASS')
 
 
-def venusa_screen():
+def venusa_screen(optional_controls=False):
     p = plan()
     p['chip'] = 'venusa'
     p['buttons'] = [{'id': 'aux', 'pad': 40, 'pressed_level': 0, 'released_level': 1}]
     p['panel']['pads'] = {'SCK': 16, 'SDI': 19, 'CS': 17, 'DC': 2, 'RESET': 3, 'TE': 8}
     p['panel']['backlight_pad'] = 9
     p['pulls'] = [{'pad': 37, 'level': True}]
-    m = Machine(OUTPUT / 'venusa-panel', board='venusa-board', assembly=p, desktop=True)
+    if optional_controls:
+        del p['panel']['pads']['RESET']
+        del p['panel']['pads']['TE']
+        p['panel']['pads'].update(SCK=10, SDI=13)
+    m = Machine(OUTPUT / ('venusa-panel-optional' if optional_controls else 'venusa-panel'),
+                board='venusa-board', assembly=p, desktop=True)
     spi = 0x43e00000
     try:
-        for pad in (16, 19): m.write(0x44100000 + 4 * pad, 5)
-        for pad in (17, 2, 3, 9): m.write(0x44100000 + 4 * pad, 1)
+        for pad in (p['panel']['pads']['SCK'], p['panel']['pads']['SDI']): m.write(0x44100000 + 4 * pad, 5)
+        for pad in (17, 2, 3, 9): m.write(0x44100000 + 4 * pad, 0)
         m.write(0x43600028, (1 << 17) | (1 << 2) | (1 << 3) | (1 << 9))
         m.write(0x43600024, (1 << 3) | (1 << 9))
         m.write(0x4310001c, 0x13800000)
@@ -263,6 +268,7 @@ def venusa_camera(subsample=False):
     bus, dvp = 0x43c00000, 0x42000800
     try:
         m.write(0x43100034, 0x802)
+        for pad in (1, 2, 3): m.write(0x45100000 + 4 * pad, 6)
         for pad in (33,34): m.write(0x44100000 + 4 * pad, 8)
         for pad in (*range(21,32),35): m.write(0x44100000 + 4 * pad, 13)
         m.write(0x43100028, 0x30000 | (24 << 7))
@@ -286,6 +292,48 @@ def venusa_camera(subsample=False):
         assert state['camera_input']['receiver_enabled']
         print('VenusA shared GC0328%s: SCCB, optical input, DVP clock/pixels and FIFO: PASS' %
               (' 2x2 subsampling' if subsample else ''))
+    finally:
+        m.close()
+
+
+def venusa_keypad():
+    p = {'version': 1, 'chip': 'venusa', 'indicators': [], 'psram_bytes': 16 << 20,
+         'keypad': {'channel': 2, 'supply_uv': 3300000, 'pull_up_ohms': 10000},
+         'buttons': [{'id': 'k%d' % i, 'pad': 34, 'pressed_level': 0,
+                      'released_level': 1, 'resistance_ohms': r}
+                     for i, r in enumerate([0, 10000, 10000])]}
+    m = Machine(OUTPUT / 'venusa-keypad', board='venusa-board', assembly=p)
+    try:
+        def key(index, pressed):
+            m.qmp_command('qom-set', {'path': '/machine',
+                'property': 'x-lisa-button-%d' % index, 'value': pressed})
+        def sample():
+            m.write(0x45100008, 4)  # PB2 AON analog, VIN2 selector zero.
+            m.write(0x4310002c, 1)
+            m.write(0x43500008, 0x24)  # VDDIO/3 reference and input divide-by-three.
+            m.write(0x43500004, 1)
+            m.write(0x43500078, 8)
+            m.write(0x4350000c, 4)
+            m.write(0x43500000, 0x010a0821)
+            assert m.read(0x43500078) & 8
+            return m.read(0x4350009c)
+        mr2 = m.read(0x44600808) & 255
+        assert mr2 & 7 == 5  # 128 Mbit density
+        assert (mr2 >> 3) & 3 == 3  # Matching 128 Mbit device ID
+        assert mr2 & 0x80  # Good die
+        m.write(0x38000000, 123); m.write(0x38800000, 456)
+        assert m.read(0x38000000) == 123 and m.read(0x38800000) == 456
+        assert sample() == 1023
+        key(1, True); assert sample() == 512
+        key(2, True); assert sample() == 341
+        key(0, True); assert sample() == 0
+        key(0, False); key(1, False); key(2, False)
+        assert sample() == 1023
+        key(1, True)
+        m.qmp_command('system_reset')
+        assert sample() == 512
+        key(1, False); assert sample() == 1023
+        print('VenusA board PSRAM geometry and resistor keypad ADC/reset: PASS')
     finally:
         m.close()
 
@@ -330,6 +378,8 @@ if __name__ == '__main__':
     screen_and_buttons()
     chip_variants()
     venusa_screen()
+    venusa_screen(optional_controls=True)
+    venusa_keypad()
     venusa_camera()
     venusa_camera(subsample=True)
     analog_keypad()
