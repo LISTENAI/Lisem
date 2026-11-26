@@ -26,14 +26,41 @@ agent 经 MCP 控制设备、读取串口和截图。同一套固件也可以在
 ## 快速开始
 
 下载对应系统与处理器架构的
-[应用包](https://github.com/LISTENAI/Lisem/releases)，解压后打开应用。
-支持 macOS、Windows 和 Linux，具体平台要求见对应版本的发布说明。
-macOS 也可以通过 Homebrew 安装：
+[应用包](https://github.com/LISTENAI/Lisem/releases)，
+具体平台要求见对应版本的发布说明。
+
+### Windows
+
+解压 ZIP 应用包，保留完整目录，双击 `lisem-desktop.exe` 打开应用。
+可为该文件创建桌面快捷方式。
+
+### Linux
+
+解压 `tar.gz` 应用包，保留完整目录，在该目录中运行：
+
+```sh
+./lisem-desktop
+```
+
+运行包内的 `./install-desktop.sh` 可添加应用菜单入口；
+移动应用目录后需重新运行该脚本。
+
+### macOS
+
+解压应用包，将 `Lisem.app` 拖入「应用程序」后打开。
+也可以通过 Homebrew 安装：
 
 ```sh
 brew install --cask listenai/tap/lisem
+```
+
+若系统提示应用无法验证，执行以下命令后重新打开：
+
+```sh
 sudo xattr -dr com.apple.quarantine /Applications/Lisem.app
 ```
+
+### 创建设备
 
 准备好目标板型的 LPK 固件包后：
 
