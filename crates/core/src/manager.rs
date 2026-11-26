@@ -386,6 +386,7 @@ impl Manager {
             | "sd_card"
             | "ble"
             | "usb_adb"
+            | "usb_cdc"
             | "events"
             | "uart_capture"
             | "button_sequence"

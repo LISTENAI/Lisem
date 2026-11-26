@@ -31,7 +31,7 @@ impl Output {
                 Self::Message(format!("Button {button}: {state}."))
             }
             Action::ButtonSequence(..) | Action::ButtonSequenceStatus(..) | Action::Rotary(..) => Self::Json,
-            Action::Ble { .. } | Action::UsbAdb { .. } | Action::SignalTrace(..) | Action::Signals { .. } | Action::SdCard(..) | Action::Events { .. } | Action::EventsStatus { .. } | Action::UartReceive { .. }
+            Action::Ble { .. } | Action::UsbAdb { .. } | Action::UsbCdc { .. } | Action::SignalTrace(..) | Action::Signals { .. } | Action::SdCard(..) | Action::Events { .. } | Action::EventsStatus { .. } | Action::UartReceive { .. }
             | Action::Camera(..)
             | Action::CameraDevices
             | Action::WifiEnvironment { .. }

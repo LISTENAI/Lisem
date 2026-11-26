@@ -176,7 +176,7 @@ struct Ble {
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-struct UsbAdb {
+struct UsbBridge {
     id: String,
     /// Current run identifier from lisem_status; required when changing enabled.
     run: Option<String>,
@@ -515,7 +515,9 @@ fn tools() -> Vec<Tool> {
             "List digital sources and board net aliases, or start/read/stop a bounded transition capture. Controls require the current run; read/stop also require the returned capture ID. Events contain drive enable, logical level and virtual_ns from device transitions; initial=true marks the starting state. Read after=0 initially, then use next_cursor. lost_events reports cursor overflow; interrupted/unknown is not confirmed completion. Capture stops on reset or power-off; stopped events remain readable until the next capture/run. No capture is active by default.", false),
         definition::<Ble>("lisem_ble",
             "Generic virtual BLE central. Require current run. Actions: capabilities; open (returns peer); scan; connect(address XX:XX:XX:XX:XX:XX, address_type public/random, returns connection/operation); discover(kind services/characteristics/descriptors, start/end); read(handle); write(handle,value hex,response default true); subscribe(handle=CCCD,value hex); disconnect; operation(operation ID); events(after/limit, reports lost); cancel(operation ID); trace(enabled, explicit raw link capture in bounded memory); close. All owned controls require peer; GATT and disconnect require current connection. Operations are asynchronous: poll operation until terminal. Write response confirms ATT only; write commands confirm link delivery. Plaintext legacy 1M, MTU23, long reads/writes <=512 bytes; required security is reported as interruption, never bypassed. Normal operation does not pause VM or save trace. Values may contain credentials; save evidence only explicitly.", false),
-        definition::<UsbAdb>("lisem_usb_adb",
+        definition::<UsbBridge>("lisem_usb_cdc",
+            "Inspect or explicitly enable the current run USB CDC ACM raw loopback TCP byte stream. Returns listen, connected, ready and error. ready requires real firmware enumeration and DTR acknowledgement. Reconnect after reset; incompatible descriptors fail. ADB and CDC bridges are mutually exclusive. Changes require current run.", false),
+        definition::<UsbBridge>("lisem_usb_adb",
             "Inspect or enable the running instance's USB ADB bridge. Returns enabled, listen (127.0.0.1:port), connected, status and error. Use host adb connect with listen, then adb -s ADDRESS shell or push. The firmware must expose a USB ADB interface; TCP listening alone does not confirm firmware readiness. Enabling is explicit and lasts for this run; disabling disconnects clients. USB re-enumeration may require adb connect again. Requires current run for changes.", false),
         definition::<SdCard>("lisem_sd_card",
             "Inspect, mount or eject a writable raw SD image, including while running. Image size must be a power of two, 8 MiB..32 GiB. Prepare its partition table, filesystem and test files before mounting; the firmware performs all card/filesystem operations. Writes persist directly in the image. One writer per image; mounting is saved per instance only after runtime confirmation.", false),
@@ -648,7 +650,8 @@ fn dispatch(manager: &mut Manager, name: &str, value: Value) -> Result<CallToolR
         "lisem_signal_trace" => call(manager, "signal_trace", arguments::<lisem_core::signal_trace::Request>(value)?)?,
         "lisem_signals" => call(manager, "signals", arguments::<Signals>(value)?)?,
         "lisem_ble" => call(manager, "ble", arguments::<Ble>(value)?)?,
-        "lisem_usb_adb" => call(manager, "usb_adb", arguments::<UsbAdb>(value)?)?,
+        "lisem_usb_cdc" => call(manager, "usb_cdc", arguments::<UsbBridge>(value)?)?,
+        "lisem_usb_adb" => call(manager, "usb_adb", arguments::<UsbBridge>(value)?)?,
         "lisem_sd_card" => {
             let request: SdCard = arguments(value)?;
             ensure!(!(request.eject && request.path.is_some()), "Choose image or eject");
@@ -815,15 +818,15 @@ mod tests {
 
     #[test]
     fn usb_adb_inspection_does_not_send_a_mutation() {
-        let request: UsbAdb = arguments(json!({"id":"instance"})).unwrap();
+        let request: UsbBridge = arguments(json!({"id":"instance"})).unwrap();
         let value = serde_json::to_value(request).unwrap();
         assert!(value.get("enabled").is_none());
-        let request: UsbAdb = arguments(json!({"id":"instance", "run":"current", "enabled":false})).unwrap();
+        let request: UsbBridge = arguments(json!({"id":"instance", "run":"current", "enabled":false})).unwrap();
         let value = serde_json::to_value(request).unwrap();
         assert_eq!(value["enabled"], false);
         assert_eq!(value["run"], "current");
-        assert!(arguments::<UsbAdb>(json!({"id":"instance", "enabled":"false"})).is_err());
-        assert!(arguments::<UsbAdb>(json!({"id":"instance", "address":"0.0.0.0:5555"})).is_err());
+        assert!(arguments::<UsbBridge>(json!({"id":"instance", "enabled":"false"})).is_err());
+        assert!(arguments::<UsbBridge>(json!({"id":"instance", "address":"0.0.0.0:5555"})).is_err());
     }
 
     #[test]

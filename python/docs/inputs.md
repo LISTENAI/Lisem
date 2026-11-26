@@ -85,6 +85,21 @@ DHCP；外网转发还需 `start(network=True)`。配置查询中的密码按凭
 `status`、`error` 的状态。开启后的 `listen` 是回环地址，供自行安装的 adb
 连接。监听、传输及固件 USB 状态分别观察；shell 由固件执行。
 
+## USB CDC ACM
+
+`run.usb_cdc.enable(*, timeout=10)`、`disable(*, timeout=10)` 和 `status()`
+控制本轮运行的 USB 串口桥接。开启后 `listen` 返回 `127.0.0.1:port`，客户端
+连接该 TCP 地址传输原始字节。每个方向有 64 KiB 缓冲，写入过快时施加背压。
+
+`connected` 表示 TCP 已连接；`ready` 表示已从固件描述符发现单个 CDC ACM
+功能，并完成 DTR/RTS 置位的控制请求。`error` 报告枚举、接口或传输失败。
+`pending_to_device`、`pending_to_host` 是待传字节数；`bytes_to_device` 和
+`bytes_from_device` 累计本轮 USB 交付字节。串口业务协议由调用工程解释。
+
+USB 复位、固件断连或控制器停钟会关闭现有 TCP 连接并取消旧传输；客户端须
+重新连接并等待 `ready`，新连接重新发现端点。关闭桥接或结束运行会关闭监听。
+ADB 与 CDC 桥接互斥。此入口不提供宿主串口设备或波特率、校验位设置。
+
 ## 预置动作任务
 
 `task = run.events(program)` 返回绑定当前运行的任务；`task.sequence` 为标识，

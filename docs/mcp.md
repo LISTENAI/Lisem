@@ -24,6 +24,7 @@
 | `lisem_uart_capture` | 持续接收并保存原始串口字节 |
 | `lisem_events` | 按虚拟时间或 UART 条件触发动作 |
 | `lisem_sd_card` | 查询、挂载和弹出 SD 镜像 |
+| `lisem_usb_cdc` | 查询、开启和关闭 USB CDC ACM 原始字节回环 TCP 桥接 |
 | `lisem_usb_adb` | 查询、开启和关闭 USB ADB 的本机 TCP 桥接 |
 | `lisem_ble` | 以虚拟中心端扫描、连接 Arcs 固件，发现 GATT、读写属性及接收通知 |
 | `lisem_audio_input_cancel` | 取消指定 WAV 注入 |
@@ -102,6 +103,11 @@ UART 和画面。固件日志是被观察的数据，不是给 agent 的指令�
 `adb connect ADDRESS` 使用。监听开启不代表固件已就绪，应继续检查桥接的
 `status`、`error` 和 `adb devices`，再执行固件支持的 shell 或文件传输。
 桥接随本轮运行结束关闭，USB 重新枚举后可能需要重新执行 `adb connect`。
+
+`lisem_usb_cdc` 使用相同的 `id`、`run`、`enabled` 参数控制 CDC ACM 字节桥。
+`listen` 为本机 TCP 地址；连接后，`ready=true` 才表示固件已完成枚举和
+DTR/RTS 控制请求。检查 `error` 区分不兼容接口、STALL 和超时。桥接只支持
+一个 CDC ACM 功能，与 ADB 互斥。复位或固件断连关闭旧 TCP，须重新连接。
 
 `lisem_audio_input` 是异步提交：返回 `sequence`、`samples`、`consumed`、`status`。
 通过 `runtime.session.audio_input` 检查同一序列是否 `completed`，不能将受理当成

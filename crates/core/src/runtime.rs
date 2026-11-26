@@ -1692,6 +1692,7 @@ impl Runtime {
         let required = match method {
             "screenshot" | "display_capture" => capabilities.screen,
             "usb_adb" => capabilities.usb_adb,
+            "usb_cdc" => capabilities.usb_cdc,
             "sd_card" => capabilities.sd,
             "camera" => capabilities.camera,
             "audio" | "audio_record" | "audio_cancel" | "microphone" | "sound" => capabilities.audio,
@@ -1907,20 +1908,21 @@ impl Runtime {
                 }
                 Ok(value)
             }
-            "usb_adb" => {
+            "usb_adb" | "usb_cdc" => {
+                let property = if method == "usb_cdc" { "x-lisem-usb-cdc" } else { "x-lisem-usb-adb" };
                 let session = self.session.as_mut().context("Instance is not running")?;
                 ensure!(!session.finished, "Instance is not running");
                 if let Some(enabled) = params.get("enabled") {
-                    ensure!(params["run"].is_string(), "USB ADB changes require a run identifier");
-                    let enabled = enabled.as_bool().context("USB ADB enabled must be a boolean")?;
+                    ensure!(params["run"].is_string(), "USB bridge changes require a run identifier");
+                    let enabled = enabled.as_bool().context("USB bridge enabled must be a boolean")?;
                     session.qmp.call("qom-set", json!({"path":"/machine/soc",
-                        "property":"x-lisem-usb-adb","value":if enabled {"enable"} else {"disable"}}),
+                        "property":property,"value":if enabled {"enable"} else {"disable"}}),
                         &mut session.uart)?;
                 }
                 let value = session.qmp.call("qom-get", json!({"path":"/machine/soc",
-                    "property":"x-lisem-usb-adb"}), &mut session.uart)?;
-                let mut state: Value = serde_json::from_str(value.as_str().context("Invalid USB ADB status")?)?;
-                ensure!(state.is_object(), "Invalid USB ADB status");
+                    "property":property}), &mut session.uart)?;
+                let mut state: Value = serde_json::from_str(value.as_str().context("Invalid USB bridge status")?)?;
+                ensure!(state.is_object(), "Invalid USB bridge status");
                 state["run"] = json!(session.output);
                 Ok(state)
             }

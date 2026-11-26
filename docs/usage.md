@@ -128,6 +128,20 @@ picocom --baud 115200 --imap lfcrlf /dev/ttysXXX
 的 **Raw** 模式连接。
 复位、上下电及退出 GUI 均保留端点，关闭通道或 `lisem shutdown` 才释放。
 
+## USB CDC ACM
+
+固件提供 CDC ACM 接口时，可通过本机 TCP 传输原始串口字节：
+
+```sh
+lisem usb-cdc INSTANCE_ID --enable --run RUN_ID
+lisem usb-cdc INSTANCE_ID
+lisem usb-cdc INSTANCE_ID --disable --run RUN_ID
+```
+
+使用返回的 `listen` 地址连接；`connected` 表示宿主连接，`ready` 表示 USB
+枚举及 DTR/RTS 请求已完成。ADB 与 CDC 桥接互斥。复位或固件断连会关闭
+现有连接，重新连接时再次枚举。具体字节协议及业务应答由固件决定。
+
 ## USB ADB
 
 固件提供 ADB 时，在 USB 菜单开启桥接并复制连接地址，使用宿主安装的 adb：

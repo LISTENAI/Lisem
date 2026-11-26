@@ -197,3 +197,32 @@ class USBADB(_Control):
         if state.get("run") != self.run.id:
             raise StaleRun("USB ADB status belongs to another Run")
         return state
+
+
+class USBCDC(_Control):
+    """Explicitly enable a real USB CDC ACM TCP bridge during this Run."""
+    def enable(self, *, timeout=10):
+        return self._set(True, timeout)
+
+    def disable(self, *, timeout=10):
+        return self._set(False, timeout)
+
+    def _set(self, enabled, timeout):
+        _deadline(timeout)
+        state = self._call("usb_cdc", {"enabled": enabled}, timeout=timeout)
+        self._check(state)
+        if state.get("enabled") is not enabled:
+            raise DeliveryUnknown("USB CDC ACM enabled state was not confirmed")
+        return state
+
+    def _check(self, state):
+        if state.get("run") != self.run.id:
+            raise StaleRun("USB CDC ACM status belongs to another Run")
+        if state.get("error"):
+            raise Rejected(f"USB CDC ACM: {state['error']}")
+
+    def status(self):
+        state = self._call("usb_cdc", mutation=False)
+        if state.get("run") != self.run.id:
+            raise StaleRun("USB CDC ACM status belongs to another Run")
+        return state

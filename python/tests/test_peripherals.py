@@ -49,6 +49,13 @@ def test_saved_and_live_peripherals(native_client, tmp_path):
             assert bridge["enabled"] and bridge["listen"].startswith("127.0.0.1:")
             assert run.usb_adb.status()["run"] == run.id
             assert not run.usb_adb.disable()["enabled"]
+            bridge = run.usb_cdc.enable()
+            assert bridge["enabled"] and not bridge["ready"]
+            assert bridge["listen"].startswith("127.0.0.1:")
+            assert run.usb_cdc.status()["run"] == run.id
+            with pytest.raises(Rejected):
+                run.usb_adb.enable()
+            assert not run.usb_cdc.disable()["enabled"]
             for operation in [lambda: device.wifi.configure([]), device.sd.eject,
                               device.camera.clear]:
                 with pytest.raises(Rejected, match="run identifier"):
@@ -62,10 +69,11 @@ def test_saved_and_live_peripherals(native_client, tmp_path):
             new = run.reset(download=True)
             try:
                 for operation in [lambda: run.wifi.configure([]), run.sd.eject,
-                                  run.usb_adb.enable, run.camera.clear]:
+                                  run.usb_adb.enable, run.usb_cdc.enable, run.camera.clear]:
                     with pytest.raises(StaleRun):
                         operation()
                 assert not new.usb_adb.status()["enabled"]
+                assert not new.usb_cdc.status()["enabled"]
                 assert new.sd.eject().status == "applied"
             finally:
                 new.close()

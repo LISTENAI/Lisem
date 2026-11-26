@@ -322,6 +322,7 @@ pub struct Capabilities {
     pub wifi: bool,
     pub sd: bool,
     pub usb_adb: bool,
+    pub usb_cdc: bool,
     pub download: bool,
     pub signals: bool,
     pub signal_trace: bool,

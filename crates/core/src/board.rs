@@ -568,12 +568,12 @@ impl Board {
             "flash_bytes":flash_bytes,"flash_devices":flash_devices,"uart_channels":[0,1,2],"audio":self.single("audio-amplifier")?.is_some() || self.single("fs1815cn-v1")?.is_some() || self.single("aw8737a")?.is_some(),
             "buttons":[],"rotaries":[],"indicators":[],"inputs":[],"definition":self,
             "runtime":{"machine":"arcs-board","capabilities":{"snapshot":true,"wifi":true,
-                "sd":false,"usb_adb":true,"download":true,"signals":true,"signal_trace":true,"events":true,
+                "sd":false,"usb_adb":true,"usb_cdc":true,"download":true,"signals":true,"signal_trace":true,"events":true,
                 "button_sequence":true}},
                 "assembly":{"version":1,"chip":self.chip,"buttons":[],"rotaries":[],"indicators":[]}});
         if self.chip == "venusa" {
             compiled["runtime"] = json!({"available":true,"machine":"venusa-board",
-                "capabilities":{"snapshot":true,"wifi":false,"sd":false,"usb_adb":false,
+                "capabilities":{"snapshot":true,"wifi":false,"sd":false,"usb_adb":false,"usb_cdc":true,
                     "download":false,"signals":true,"signal_trace":true,"events":false,"button_sequence":false,"audio":false}});
         }
         let assembly = self.assemble(&mut compiled)?;

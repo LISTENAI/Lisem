@@ -193,7 +193,7 @@ def main():
             definitions = client.rpc('tools/list', {})['result']['tools']
             names = {tool['name'] for tool in definitions}
             assert len(names) == len(definitions)
-            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals", "lisem_usb_adb", "lisem_signal_trace"} <= names
+            assert {"lisem_uart_capture", "lisem_audio_input_cancel", "lisem_events", "lisem_sd_card", "lisem_signals", "lisem_usb_adb", "lisem_usb_cdc", "lisem_signal_trace"} <= names
             assert {'lisem_screenshot', 'lisem_camera_input', 'lisem_camera_devices', 'lisem_button_sequence',
                     'lisem_button_sequence_status', 'lisem_button_sequence_cancel', 'lisem_access_point'} <= names
             assert 'lisem_set_wifi_environment' in names
@@ -307,6 +307,14 @@ def main():
             assert client.tool('lisem_usb_adb', {'id': identifier})['enabled'] is True
             adb = client.tool('lisem_usb_adb', {'id': identifier, 'run': run, 'enabled': False})
             assert adb['enabled'] is False and adb['listen'] is None and adb['connected'] is False, adb
+            for bad in ({}, {'run': 'stale'}):
+                client.tool('lisem_usb_cdc', {'id': identifier, 'enabled': True, **bad}, error=True)
+            cdc = client.tool('lisem_usb_cdc', {'id': identifier, 'run': run, 'enabled': True})
+            assert cdc['enabled'] and not cdc['ready'] and cdc['run'] == run
+            assert cdc['listen'].startswith('127.0.0.1:')
+            client.tool('lisem_usb_adb', {'id': identifier, 'run': run, 'enabled': True}, error=True)
+            cdc = client.tool('lisem_usb_cdc', {'id': identifier, 'run': run, 'enabled': False})
+            assert not cdc['enabled'] and cdc['listen'] is None
             inputs = {v['id']: v for v in client.tool('lisem_signals', {'id': identifier})['inputs']}
             assert inputs['usb_det']['value'] is False and inputs['battery_voltage']['value'] == 3800
             for bad in ({}, {'run': 'stale'}):

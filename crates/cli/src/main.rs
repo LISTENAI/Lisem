@@ -156,6 +156,16 @@ enum Action {
         #[arg(long)]
         run: Option<String>,
     },
+    /// Inspect or enable a loopback TCP bridge to the firmware USB CDC ACM interface.
+    UsbCdc {
+        id: String,
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        #[arg(long)]
+        disable: bool,
+        #[arg(long)]
+        run: Option<String>,
+    },
     /// Inspect, mount or eject a raw SD card image.
     SdCard(SdCardArgs),
     /// Arm a bounded event program from a JSON file.
@@ -555,6 +565,17 @@ fn run() -> Result<i32> {
                 params["enabled"] = json!(enable);
             }
             manager.call("usb_adb", params)?
+        }
+        Action::UsbCdc { id, enable, disable, run } => {
+            let mut params = json!({"id":id,"run":run});
+            if enable || disable {
+                if params["run"].is_null() {
+                    let state = manager.call("inspect", json!({"id":id}))?;
+                    params["run"] = state["runtime"]["session"]["output"].clone();
+                }
+                params["enabled"] = json!(enable);
+            }
+            manager.call("usb_cdc", params)?
         }
         Action::SdCard(SdCardArgs { id, image, eject, run }) => {
             let mut params = json!({"id":id});
