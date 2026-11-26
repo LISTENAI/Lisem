@@ -12,8 +12,11 @@ OUTPUT = ROOT / 'artifacts/qemu' / ('jpeg-encode-' + time.strftime('%Y%m%d-%H%M%
 BASE, AP, DMA, RAM = 0x45001800, 0x45800000, 0x45900000, 0x20018000
 
 
-def configure(m, fmt=2, gray=False, columns=2, restart=0, quant=8):
-    m.write(AP + 8, 0x8000); m.write(AP + 12, 0x80000000); m.write(AP, 0x4000)
+def configure(m, fmt=2, gray=False, columns=2, restart=0, quant=8, *, base=BASE, setup=None, dimensions=None):
+    if setup is None:
+        m.write(AP + 8, 0x8000); m.write(AP + 12, 0x80000000); m.write(AP, 0x4000)
+    else:
+        setup(m)
     hs, vs = (1 if gray or fmt == 2 else 2), (2 if not gray and fmt == 1 else 1)
     components = 1 if gray else 3
     blocks = hs * vs + (2 if components == 3 else 0)
@@ -37,21 +40,21 @@ def configure(m, fmt=2, gray=False, columns=2, restart=0, quant=8):
     entropy += int(bits, 2).to_bytes(len(bits) // 8, 'big').replace(b'\xff', b'\xff\x00')
     length = columns * blocks * 64
     for off, value in [(4, fmt << 1), (0x10, length), (0x14, 0), (0x18, length),
-                       (0x68, (columns * hs * 8) << 16 | (vs * 8)),
+                       (0x68, ((columns * hs * 8) << 16 | (vs * 8)) if dimensions is None else dimensions),
                        (0x804, components - 1 | (4 if restart else 0)), (0x808, columns - 1),
                        (0x80c, max(0, restart - 1)),
                        (0x810, (hs * vs - 1) << 4), (0x814, 7), (0x818, 7)]:
-        m.write(BASE + off, value)
+        m.write(base + off, value)
     # DEC_OU_FORMAT is inert in encode mode; the original SDK leaves it set.
-    m.write(BASE + 4, m.read(BASE + 4) | 8)
+    m.write(base + 4, m.read(base + 4) | 8)
     # Independent tables: DC categories have four-bit codes, AC symbols
     # (run/category, EOB, ZRL) have eight-bit codes. No SDK assets required.
-    for i in range(384): m.write(BASE + 0x5800 + i * 4, 0xfff)
+    for i in range(384): m.write(base + 0x5800 + i * 4, 0xfff)
     for table in range(2):
-        for i in range(162): m.write(BASE + 0x5800 + (table * 176 + i) * 4, 0x700 | i)
-        for i in range(12): m.write(BASE + 0x5800 + (352 + table * 16 + i) * 4, 0x300 | i)
-    for i in range(128): m.write(BASE + 0x3800 + i * 4, 2048 // quant)
-    for off in (0x800, 0x70, 8, 0x64, 12, 0x74): m.write(BASE + off, 1)
+        for i in range(162): m.write(base + 0x5800 + (table * 176 + i) * 4, 0x700 | i)
+        for i in range(12): m.write(base + 0x5800 + (352 + table * 16 + i) * 4, 0x300 | i)
+    for i in range(128): m.write(base + 0x3800 + i * 4, 2048 // quant)
+    for off in (0x800, 0x70, 8, 0x64, 12, 0x74): m.write(base + off, 1)
     return bytes(v for v in values for _ in range(64)), entropy
 
 
@@ -215,7 +218,7 @@ def rejected():
                 assert report['status'] == 'unsupported-mmio'
             else:
                 assert report['status'] == 'peripheral-error'
-                assert 'ARCS JPEG codec completion rejected:' in log
+                assert 'JPEG codec completion rejected:' in log
                 assert 'ARCS unsupported write' not in log
         finally: m.close()
     print('JPEG encode: undefined symbol, malformed table, mirror, early FIFO and busy table rejected: PASS')

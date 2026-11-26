@@ -15,7 +15,7 @@ QEMU_TESTS := \
     qemu-mailbox qemu-ml307 qemu-pacing qemu-psram qemu-remap qemu-rf \
     qemu-rom qemu-rotary qemu-sd qemu-serial qemu-qspi qemu-axs15231e qemu-sc919 qemu-sc919-touch qemu-signals qemu-signal-trace qemu-soc-clocks qemu-storage \
     qemu-sysctl qemu-cst836u qemu-touch qemu-trng qemu-uart qemu-usb qemu-usb-lab qemu-usb-adb qemu-usb-cdc \
-    qemu-venusa qemu-venusa-usb qemu-watchdog qemu-watchpoint qemu-wifi qemu-wifi-ap qemu-wifi-disconnect qemu-wifi-environment \
+    qemu-venusa qemu-venusa-usb qemu-venusa-jpeg qemu-watchdog qemu-watchpoint qemu-wifi qemu-wifi-ap qemu-wifi-disconnect qemu-wifi-environment \
     qemu-wifi-capture qemu-wifi-dma qemu-wifi-doze qemu-wifi-presence qemu-wifi-rx qemu-wifi-tx qemu-wifi-wpa2
 
 .PHONY: build headless run test test-core qemu-build check-qemu $(QEMU_TESTS)
