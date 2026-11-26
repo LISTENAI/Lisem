@@ -18,6 +18,41 @@ SUFFIX = '.exe' if WINDOWS else ''
 SYSTEM_ELF = re.compile(r'^(ld-linux.*|lib(c|m|dl|pthread|rt|resolv|util|anl)\.so\..*)$')
 
 
+def build_directories():
+    directories = [ROOT, Path.home()]
+    for name in ('CARGO_HOME', 'RUSTUP_HOME'):
+        if os.environ.get(name):
+            directories.append(Path(os.environ[name]).expanduser().absolute())
+    return tuple(directories)
+
+
+def contains_build_path(data, directories):
+    """Find a complete directory or its descendants, in native string encodings.
+
+    A short build home such as /root is not the source filename /root.rs.
+    Preserve checks for exact strings and paths embedded in compiler options.
+    """
+    endings = ('/', '\\', '\0', '\r', '\n', '\t', ' ', '"', "'")
+    for directory in directories:
+        for spelling in {str(directory), directory.as_posix()}:
+            for encoding in ('utf-8', 'utf-16-le'):
+                prefix = spelling.encode(encoding)
+                boundaries = tuple(value.encode(encoding) for value in endings)
+                starts = tuple(value.encode(encoding) for value in
+                               ('\0', '\r', '\n', '\t', ' ', '"', "'", '=', ':', '(', '['))
+                options = tuple(value.encode(encoding) for value in ('-I', '-L', 'file://'))
+                offset = 0
+                while (offset := data.find(prefix, offset)) >= 0:
+                    start = offset
+                    offset += len(prefix)
+                    # An absolute directory must begin a path, not be the
+                    # trailing component of an unrelated URI or source path.
+                    beginning = start == 0 or data.endswith(starts + options, 0, start)
+                    if beginning and (offset == len(data) or data.startswith(boundaries, offset)):
+                        return True
+    return False
+
+
 def output(*args):
     return subprocess.check_output(args, text=True, encoding="utf-8", timeout=30)
 
@@ -190,11 +225,9 @@ def package(bundle, target):
             for name in copied:
                 source = next(p for p in (runtime / 'bin').iterdir() if p.name.lower() == name)
                 shutil.copy2(source, staged / source.name)
-        forbidden = {str(p).encode() for p in (ROOT, Path.home())}
-        forbidden |= {p.as_posix().encode() for p in (ROOT, Path.home())}
-        forbidden |= {str(p).encode('utf-16-le') for p in (ROOT, Path.home())}
+        forbidden = build_directories()
         for path in staged.rglob('*'):
-            if path.is_file() and any(value in path.read_bytes() for value in forbidden):
+            if path.is_file() and contains_build_path(path.read_bytes(), forbidden):
                 raise RuntimeError(f'Build path embedded in {path.relative_to(staged)}')
         files = {p.relative_to(runtime).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                  for p in sorted(runtime.rglob('*')) if p.is_file()}
