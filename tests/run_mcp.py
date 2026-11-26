@@ -148,7 +148,7 @@ def catalog_checks(binary, data, client):
 
 
 def trace_end_checks(client):
-    item = client.tool('lisem_create', {'board':'arcs-mini','name':'Signal lifecycle'})
+    item = client.tool('lisem_create', {'board':'arcs-mini2','name':'Signal lifecycle'})
     identifier = item['id']
     for interrupted in (False, True):
         started = client.tool('lisem_power_on', {'id':identifier,'download':True,
@@ -204,18 +204,18 @@ def main():
             assert client.tool('lisem_list')['instances'] == []
             catalog_checks(args.binary.resolve(), data, client)
             boards = client.tool('lisem_catalog')['boards']
-            assert any(board['id'] == 'arcs-mini' for board in boards)
+            assert any(board['id'] == 'arcs-mini2' for board in boards)
             for arguments in ({'uid': 123}, {'uid': ''}, {'uid': '0102a37c102d9e65'},
                               {'allow_unprefixed_uid': True}, {'allow_unprefixed_uid': 'true'},
                               {'uid': 'ff00a37c102d9e6g', 'allow_unprefixed_uid': True}):
-                client.tool('lisem_create', dict(board='arcs-mini', **arguments), error=True)
-            custom = client.tool('lisem_create', {'board':'arcs-mini', 'uid':'FF00A37C102D9E65'})
+                client.tool('lisem_create', dict(board='arcs-mini2', **arguments), error=True)
+            custom = client.tool('lisem_create', {'board':'arcs-mini2', 'uid':'FF00A37C102D9E65'})
             assert custom['uid'] == 'ff00a37c102d9e65' and custom['id'] != custom['uid']
             client.tool('lisem_create', {'board':'arcs-mini3', 'uid':custom['uid'], 'allow_unprefixed_uid':True}, error=True)
             allowed = client.tool('lisem_create', {'board':'arcs-mini3', 'uid':'0102a37c102d9e65', 'allow_unprefixed_uid':True})
             assert allowed['uid'] == '0102a37c102d9e65'
-            client.tool('lisem_create', {'board':'arcs-mini', 'uid':'0102a37c102d9e66'}, error=True)
-            item = client.tool('lisem_create', {'board': 'arcs-mini', 'name': 'MCP test'})
+            client.tool('lisem_create', {'board':'arcs-mini2', 'uid':'0102a37c102d9e66'}, error=True)
+            item = client.tool('lisem_create', {'board': 'arcs-mini2', 'name': 'MCP test'})
             assert item['uid'].startswith('ff00') and len(item['uid']) == 16
             identifier = item['id']
             client.tool('lisem_usb_adb', {'id': identifier}, error=True)

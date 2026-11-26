@@ -25,7 +25,7 @@ def main():
             device = None
             paused = None
             try:
-                item = bridge.call('create', board='arcs-mini', name='AP presence')
+                item = bridge.call('create', board='arcs-mini2', name='AP presence')
                 device = item['id']
                 path = Path(item['path'])
                 flash = hashlib.sha256((path / 'flash.bin').read_bytes()).hexdigest()

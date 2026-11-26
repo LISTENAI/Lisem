@@ -50,7 +50,7 @@ def main():
 
         image = data / 'scene.png'
         png(image)
-        item = cli('create', '--board', 'arcs-mini')
+        item = cli('create', '--board', 'arcs-mini2')
         identifier = item['id']
         pid = None
         region_names = []

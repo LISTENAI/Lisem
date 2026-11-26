@@ -805,11 +805,11 @@ mod tests {
 
     #[test]
     fn create_uid_permission_is_explicit_and_typed() {
-        let request: Create = arguments(json!({"board":"arcs-mini","uid":"ff00a37c102d9e65"})).unwrap();
+        let request: Create = arguments(json!({"board":"arcs-mini2","uid":"ff00a37c102d9e65"})).unwrap();
         assert!(!request.allow_unprefixed_uid);
-        assert!(arguments::<Create>(json!({"board":"arcs-mini","uid":123})).is_err());
-        assert!(arguments::<Create>(json!({"board":"arcs-mini","allow_unprefixed_uid":"true"})).is_err());
-        let request: Create = arguments(json!({"board":"arcs-mini","uid":"0102a37c102d9e65","allow_unprefixed_uid":true})).unwrap();
+        assert!(arguments::<Create>(json!({"board":"arcs-mini2","uid":123})).is_err());
+        assert!(arguments::<Create>(json!({"board":"arcs-mini2","allow_unprefixed_uid":"true"})).is_err());
+        let request: Create = arguments(json!({"board":"arcs-mini2","uid":"0102a37c102d9e65","allow_unprefixed_uid":true})).unwrap();
         assert!(request.allow_unprefixed_uid);
     }
 

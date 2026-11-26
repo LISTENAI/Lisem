@@ -9,7 +9,7 @@ API 参考见 [Python API](../docs/README.md)。在所选测试虚拟环境安�
 Hypothesis，并在本目录通过 Lisem 启动：
 
 ```sh
-export LISEM_TEST_LPK=/path/to/arcs-mini-v3.0.3.lpk
+export LISEM_TEST_LPK=/path/to/arcs-mini2-v3.0.3.lpk
 lisem python -- smoke.py --lpk "$LISEM_TEST_LPK" --output ./script-result
 lisem python -- -m pytest test_firmware.py -q --basetemp ./pytest-result --junitxml ./result.xml
 lisem python -- -m pytest test_peripherals_firmware.py -q --basetemp ./media-result

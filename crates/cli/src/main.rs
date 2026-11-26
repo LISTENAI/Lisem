@@ -697,8 +697,8 @@ mod tests {
 
     #[test]
     fn uid_override_permission_requires_a_uid() {
-        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini","--allow-unprefixed-uid"]).is_err());
-        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini","--uid","0102a37c102d9e65","--allow-unprefixed-uid"]).is_ok());
+        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini2","--allow-unprefixed-uid"]).is_err());
+        assert!(Args::try_parse_from(["lisem","create","--board","arcs-mini2","--uid","0102a37c102d9e65","--allow-unprefixed-uid"]).is_ok());
     }
 
     #[test]

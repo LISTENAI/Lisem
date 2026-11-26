@@ -52,7 +52,7 @@ def main():
 
         item = None
         try:
-            item = call('create', board='arcs-mini', name='Wi-Fi environment validation',
+            item = call('create', board='arcs-mini2', name='Wi-Fi environment validation',
                         package=str(args.lpk.resolve()))
             device_id = item['id']
             call('wifi_environment', id=device_id, environment=ENVIRONMENT)

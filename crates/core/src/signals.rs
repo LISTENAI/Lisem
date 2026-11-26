@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn typed_values_release_and_board_divider() {
         let board: Value =
-            crate::board::compile(&serde_json::from_str(include_str!("../../../boards/arcs-mini.json")).unwrap()).unwrap();
+            crate::board::compile(&serde_json::from_str(include_str!("../../../boards/arcs-mini2.json")).unwrap()).unwrap();
         let value = change(
             &board,
             &Value::Null,

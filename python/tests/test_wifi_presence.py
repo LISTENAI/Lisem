@@ -6,7 +6,7 @@ from lisem import CompatibilityError, Rejected, StaleRun
 def test_saved_and_live_presence(native_client):
     ap = {'ssid': 'SDK-Presence', 'rssi': -45, 'channel': 1, 'internet': False,
           'security': 'wpa2-psk', 'password': 'test-password'}
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         assert device.wifi.status() == {'configured_present': True, 'runtime': None}
         device.wifi.configure([ap])
         assert device.wifi.set_present(False).status == 'saved'
@@ -53,8 +53,8 @@ def test_saved_and_live_presence(native_client):
 
 
 def test_cross_instance_wifi_observation_rejected(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as first:
-        with native_client.temporary_instance(board='arcs-mini') as second:
+    with native_client.temporary_instance(board='arcs-mini2') as first:
+        with native_client.temporary_instance(board='arcs-mini2') as second:
             with first.start(max_virtual_seconds=20, timeout=40, download=True) as a:
                 with second.start(max_virtual_seconds=20, timeout=40, download=True) as b:
                     with pytest.raises(StaleRun):
@@ -63,7 +63,7 @@ def test_cross_instance_wifi_observation_rejected(native_client):
 
 
 def test_missing_wifi_feature_is_rejected(native_client, monkeypatch):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         assert device.wifi.set_present(False).status == 'saved'
         assert not device.wifi.status()['configured_present']
         with device.start(max_virtual_seconds=20, timeout=40, download=True) as run:

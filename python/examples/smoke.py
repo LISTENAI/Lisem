@@ -9,7 +9,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--lpk", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--board", choices=["arcs-mini", "arcs-mini3"], default="arcs-mini")
+    parser.add_argument("--board", choices=["arcs-mini2", "arcs-mini3"], default="arcs-mini2")
     parser.add_argument("--uid", default="ff00a37c102d9e65")
     args = parser.parse_args()
     with Client(data_dir=args.output / "library") as client:

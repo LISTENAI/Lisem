@@ -94,7 +94,7 @@ fn stale_timed_out_endpoint_allows_worker_restart_after_lease_is_released() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let temp = tempfile::tempdir().unwrap();
     let mut manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
-    let item = manager.catalog.create("arcs-mini", None, Some("stale")).unwrap();
+    let item = manager.catalog.create("arcs-mini2", None, Some("stale")).unwrap();
     let path = Path::new(item["path"].as_str().unwrap());
     let mut listener = Worker::start(path, item["id"].as_str().unwrap());
     listener.paused.store(true, Ordering::Release);
@@ -110,8 +110,8 @@ fn uart_restoration_attempts_other_devices_after_a_busy_worker_times_out() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let temp = tempfile::tempdir().unwrap();
     let mut manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
-    let a = manager.catalog.create("arcs-mini", None, Some("busy")).unwrap();
-    let b = manager.catalog.create("arcs-mini", None, Some("healthy")).unwrap();
+    let a = manager.catalog.create("arcs-mini2", None, Some("busy")).unwrap();
+    let b = manager.catalog.create("arcs-mini2", None, Some("healthy")).unwrap();
     let first = Worker::start(Path::new(a["path"].as_str().unwrap()), a["id"].as_str().unwrap());
     let second = Worker::start(Path::new(b["path"].as_str().unwrap()), b["id"].as_str().unwrap());
     first.paused.store(true, Ordering::Release);
@@ -133,11 +133,11 @@ fn unresponsive_instance_preserves_its_observation_without_blocking_other_instan
     let mut manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
     let a = manager
         .catalog
-        .create("arcs-mini", None, Some("a"))
+        .create("arcs-mini2", None, Some("a"))
         .unwrap();
     let b = manager
         .catalog
-        .create("arcs-mini", None, Some("b"))
+        .create("arcs-mini2", None, Some("b"))
         .unwrap();
     let aid = a["id"].as_str().unwrap();
     let bid = b["id"].as_str().unwrap();
@@ -171,7 +171,7 @@ fn many_unresponsive_instances_use_bounded_fair_observation_rounds() {
     let manager = Manager::new(&root, temp.path(), Path::new("must-not-spawn")).unwrap();
     let mut workers = Vec::new();
     for index in 0..20 {
-        let item = manager.catalog.create("arcs-mini", None, Some(&format!("fixture {index}"))).unwrap();
+        let item = manager.catalog.create("arcs-mini2", None, Some(&format!("fixture {index}"))).unwrap();
         let worker = Worker::start(Path::new(item["path"].as_str().unwrap()), item["id"].as_str().unwrap());
         worker.paused.store(true, Ordering::Release);
         workers.push(worker);

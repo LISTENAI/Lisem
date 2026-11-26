@@ -12,7 +12,7 @@ from lisem import (Client, DeliveryUnknown, HistoryLost, OperationTimeout, Rejec
 def test_identity_validation_and_prepare_cleanup(native_client, tmp_path):
     client = native_client
     uid = "ff00a37c102d9e65"
-    with client.temporary_instance(board="arcs-mini", uid=uid,
+    with client.temporary_instance(board="arcs-mini2", uid=uid,
                                    evidence_dir=tmp_path / "first") as device:
         assert device.uid == uid
         assert (device.path / "otp.bin").read_bytes()[8:16].hex() == uid
@@ -26,10 +26,10 @@ def test_identity_validation_and_prepare_cleanup(native_client, tmp_path):
     for case, options in [("prefix", {"uid": "0102a37c102d9e65"}),
                           ("prepare", {"lpk": tmp_path / "missing.lpk"})]:
         with pytest.raises((Rejected, FileNotFoundError)):
-            with client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / case, **options):
+            with client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / case, **options):
                 pytest.fail("Invalid preparation accepted")
         assert json.loads((tmp_path / case / "context.json").read_text())["resources_removed"]
-    with client.temporary_instance(board="arcs-mini", uid="0102a37c102d9e65",
+    with client.temporary_instance(board="arcs-mini2", uid="0102a37c102d9e65",
              allow_unprefixed_uid=True, evidence_dir=tmp_path / "allowed") as device:
         assert device.uid == "0102a37c102d9e65"
     with client.temporary_instance(board="arcs-mini3", evidence_dir=tmp_path / "default") as device:
@@ -37,7 +37,7 @@ def test_identity_validation_and_prepare_cleanup(native_client, tmp_path):
 
 
 def test_rom_run_identity_edges_cancel_and_overflow(native_client, tmp_path):
-    with native_client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / "evidence") as device:
+    with native_client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / "evidence") as device:
         with device.start(max_virtual_seconds=60, timeout=90, download=True) as run:
             with run.signal_trace(["POWER_KEY"], capacity=32) as trace:
                 outcome = run.button(count=3, hold_ms=13, gap_ms=17)
@@ -77,7 +77,7 @@ def test_rom_run_identity_edges_cancel_and_overflow(native_client, tmp_path):
 
 def test_existing_instance_and_foreign_run_preserved(native_client, tmp_path):
     client = native_client
-    item = client._rpc.call("create", {"board": "arcs-mini"})
+    item = client._rpc.call("create", {"board": "arcs-mini2"})
     instance = client.instance(item["id"])
     assert client.instance(item["id"]) is instance
     with instance.start(max_virtual_seconds=30, timeout=60, download=True) as owned:
@@ -92,7 +92,7 @@ def test_existing_instance_and_foreign_run_preserved(native_client, tmp_path):
 
 def test_assertion_preserved_and_evidence_outside_instance(native_client, tmp_path):
     with pytest.raises(AssertionError, match="real test failure"):
-        with native_client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / "failure") as device:
+        with native_client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / "failure") as device:
             with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
                 assert run.status()["qemu"]["sha256"]
                 raise AssertionError("real test failure")
@@ -116,7 +116,7 @@ def client():
         yield shared
 @pytest.fixture(params=["call", "setup", "teardown", "pass"])
 def device(request, client):
-    with client.temporary_instance(board="arcs-mini", evidence_dir=BASE / (request.param + "-evidence")) as dev:
+    with client.temporary_instance(board="arcs-mini2", evidence_dir=BASE / (request.param + "-evidence")) as dev:
         if request.param == "setup":
             raise RuntimeError("preparation failed after creation")
         dev.fixture_phase = request.param
@@ -142,7 +142,7 @@ def test_failure(device):
 
 def test_backend_refuses_deletion_until_worker_and_storage_exit(native_client, tmp_path):
     client = native_client
-    context = client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / "evidence")
+    context = client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / "evidence")
     with context as device:
         with device.start(max_virtual_seconds=15, timeout=30, download=True):
             with pytest.raises(Rejected, match="ownership mismatch"):
@@ -162,7 +162,7 @@ from pathlib import Path
 from lisem import Client
 base=Path(sys.argv[1])
 with Client(data_dir=base / "library") as client:
- with client.temporary_instance(board="arcs-mini", evidence_dir=base / "evidence") as device:
+ with client.temporary_instance(board="arcs-mini2", evidence_dir=base / "evidence") as device:
   with device.start(max_virtual_seconds=30,timeout=40,download=True) as run:
    (base / "ready.json").write_text(json.dumps({"id":device.id,"run":run.id}))
    time.sleep(60)
@@ -193,14 +193,14 @@ def test_audio_timeout_cancels_and_existing_evidence_is_preserved(native_client,
     expected = b"previous evidence must survive"
     (evidence / "context.json").write_bytes(expected)
     with pytest.raises(ValueError, match="must be empty"):
-        with native_client.temporary_instance(board="arcs-mini", evidence_dir=evidence):
+        with native_client.temporary_instance(board="arcs-mini2", evidence_dir=evidence):
             pytest.fail("Existing evidence was overwritten")
     assert (evidence / "context.json").read_bytes() == expected
     path = tmp_path / "input.wav"
     with wave.open(str(path), "wb") as wav:
         wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
         wav.writeframes(bytes(32000))
-    with native_client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / "audio") as device:
+    with native_client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / "audio") as device:
         with device.start(max_virtual_seconds=20, timeout=30, download=True) as run:
             with pytest.raises(OperationTimeout):
                 run.audio.inject(path, timeout=.05)
@@ -209,7 +209,7 @@ def test_audio_timeout_cancels_and_existing_evidence_is_preserved(native_client,
 
 
 def test_unconfirmed_stop_retains_storage_and_original_assertion(native_client, tmp_path, monkeypatch):
-    context = native_client.temporary_instance(board="arcs-mini", evidence_dir=tmp_path / "retained")
+    context = native_client.temporary_instance(board="arcs-mini2", evidence_dir=tmp_path / "retained")
     with pytest.raises(AssertionError, match="original business assertion") as failure:
         with context as device:
             device.start(max_virtual_seconds=30, timeout=40, download=True)
@@ -233,7 +233,7 @@ def test_unconfirmed_stop_retains_storage_and_original_assertion(native_client, 
 
 
 def test_no_implicit_diagnostic_archive(native_client, tmp_path):
-    with native_client.temporary_instance(board="arcs-mini") as device:
+    with native_client.temporary_instance(board="arcs-mini2") as device:
         with device.start(max_virtual_seconds=5, timeout=10, download=True):
             pass
     assert not device.path.exists()

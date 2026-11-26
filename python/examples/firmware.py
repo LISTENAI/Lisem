@@ -1,4 +1,4 @@
-"""Offline boot, identity and info-page helpers for ARCS Mini 3.0.3."""
+"""Offline boot, identity and info-page helpers for ARCS Mini2 3.0.3."""
 import re
 
 

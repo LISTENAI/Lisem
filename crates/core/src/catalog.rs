@@ -67,6 +67,8 @@ impl Catalog {
                 if path.extension().is_some_and(|s| s == "json") {
                     let value = crate::board::compile(&storage::read_json(&path)?)?;
                     let id = value["id"].as_str().context("Board ID missing")?.to_owned();
+                    ensure!(crate::board::canonical_id(&id) == id,
+                        "Custom board shadows an installed board alias");
                     ensure!(boards.insert(id, value).is_none(), "Custom board shadows an installed board");
                 }
             }
@@ -96,7 +98,8 @@ impl Catalog {
         let raw = storage::read_json(path)?;
         let board = crate::board::compile(&raw)?;
         let id = board["id"].as_str().unwrap();
-        ensure!(!self.root.join("boards").join(format!("{id}.json")).exists(),
+        ensure!(crate::board::canonical_id(id) == id
+            && !self.root.join("boards").join(format!("{id}.json")).exists(),
             "Installed board IDs cannot be replaced; choose a custom board ID");
         ensure!(self.chips.contains_key(board["chip"].as_str().unwrap()), "Unknown chip");
         let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
@@ -121,6 +124,7 @@ impl Catalog {
     }
 
     pub fn layout(&self, board: &str) -> Result<Layout> {
+        let board = crate::board::canonical_id(board);
         let board = self.boards.get(board).context("Unknown board")?;
         let chip = self
             .chips
@@ -294,6 +298,7 @@ impl Catalog {
         &self, board: &str, package: Option<&Path>, name: Option<&str>,
         options: &storage::UidOptions, owner: Option<&str>,
     ) -> Result<Value> {
+        let board = crate::board::canonical_id(board);
         let _index = MetadataLease::acquire(&self.data.join("library.lock"))?;
         let mut entries = self.entries()?;
         let descriptor = self.boards.get(board).context("Unknown board")?;
@@ -404,6 +409,7 @@ impl Catalog {
             let _meta = MetadataLease::acquire(&path.join("device.lock"))?;
             let manifest = storage::read_json(&path.join("instance.json"))?;
             let board = manifest["board"].as_str().context("Board missing")?;
+            let board = crate::board::canonical_id(board);
             let _storage = storage::locked(&path, &self.layout(board)?)?;
             let legacy = entries.iter().find(|v| {
                 v["path"]
@@ -580,7 +586,9 @@ impl Catalog {
             .as_str()
             .context("Missing board")?
             .to_owned();
-        let board = self.boards.get(&id).context("Board not supported")?;
+        let id = crate::board::canonical_id(&id);
+        let board = self.boards.get(id).context("Board not supported")?;
+        saved["board"]["id"] = json!(id);
         let chip = self
             .chips
             .get(board["chip"].as_str().context("Missing chip")?)
@@ -629,11 +637,11 @@ impl Catalog {
             }
         }
         // Older Mini descriptors omitted its physically present camera.
-        if saved["board"]["id"] == "arcs-mini" && saved["board"]["camera"].is_null() {
+        if saved["board"]["id"] == "arcs-mini2" && saved["board"]["camera"].is_null() {
             saved["board"]["camera"] = board["camera"].clone();
         }
         // Older camera descriptors predate the board mounting direction.
-        if saved["board"]["id"] == "arcs-mini" {
+        if saved["board"]["id"] == "arcs-mini2" {
             if let Some(camera) = saved["board"]["camera"].as_object_mut() {
                 camera
                     .entry("rotation_clockwise")

@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "id": "arcs-mini",
-  "name": "Arcs-Mini",
+  "id": "arcs-mini2",
+  "name": "Arcs-Mini2",
   "chip": "ls2684",
   "devices": {
     "lcd": {

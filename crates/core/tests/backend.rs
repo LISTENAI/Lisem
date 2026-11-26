@@ -90,7 +90,7 @@ fn builtin_boards_keep_frontend_controls_with_derived_runtime_routes() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root, temp.path()).unwrap();
-    for board in ["arcs-mini", "arcs-evb"] {
+    for board in ["arcs-mini2", "arcs-evb"] {
         let backend = Backend::from_hardware(
             &json!({"board":catalog.boards[board], "chip":catalog.chips["ls2684"]}),
         )
@@ -100,7 +100,7 @@ fn builtin_boards_keep_frontend_controls_with_derived_runtime_routes() {
             backend.capabilities.audio && backend.capabilities.screen && backend.capabilities.wifi
         );
         assert_eq!(backend.capabilities.uart_channels, [0, 1, 2]);
-        if board == "arcs-mini" {
+        if board == "arcs-mini2" {
             assert_eq!(
                 backend.button("function").unwrap(),
                 "x-lisa-button-0"

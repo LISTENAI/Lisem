@@ -100,7 +100,7 @@ UID 的 OTP 字节和固件身份读数使用隔离实例验证：
 python3 tests/run_uid_firmware.py --binary /path/to/lisem --lpk /path/to/original.lpk --output artifacts/verify-uid
 ```
 
-此项使用 ARCS Mini 固件的 `device get_device_id` 串口命令，覆盖默认、自定义、
+此项使用 ARCS Mini2 固件的 `device get_device_id` 串口命令，覆盖默认、自定义、
 无预设前缀 UID 的单次许可、冷启动与重新导入保留，以及重新生成后的真实读数。
 Arcs-Mini3 使用 `--board arcs-mini3` 并提供匹配的原始 LPK。
 
@@ -278,7 +278,7 @@ python3 tests/run_desktop_network_firmware.py --lpk /path/to/firmware.lpk --outp
 python3 tests/run_desktop_cskburn.py --cskburn /path/to/cskburn --lpk /path/to/firmware.lpk --output artifacts/verify-burn
 ```
 
-Arcs-Mini 固件提供正常模式 ADB shell 和 bootloader RAW 更新接口时，可运行：
+Arcs-Mini2 固件提供正常模式 ADB shell 和 bootloader RAW 更新接口时，可运行：
 
 ```sh
 python3 tests/run_usb_adb_firmware.py \
@@ -316,7 +316,7 @@ python3 tests/run_wifi_disconnect_firmware.py --lpk /path/to/firmware.lpk --outp
 专用工具验证；应用配网由对应固件测试核对实际通知及网络结果。
 
 BLE 原固件验证使用支持开机长按、五击广播及测试所需标准 GATT 属性的
-Arcs-Mini 固件，通过配套 SDK 运行：
+Arcs-Mini2 固件，通过配套 SDK 运行：
 
 ```sh
 lisem python -- tests/run_ble_firmware.py --binary /path/to/lisem --lpk /path/to/firmware.lpk --output artifacts/verify-ble

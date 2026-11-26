@@ -107,7 +107,7 @@ def prepare_cloud(bridge, args, device):
 def run_case(bridge, args, count):
     directory = args.output / str(count)
     directory.mkdir()
-    item = bridge.call('create', board='arcs-mini', name=f'Wi-Fi disconnect {count} clicks',
+    item = bridge.call('create', board='arcs-mini2', name=f'Wi-Fi disconnect {count} clicks',
                        package=str(args.lpk.resolve()))
     device = item['id']
     online = bool(args.product_id) and count == 5

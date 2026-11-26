@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Arcs-Mini firmware shell/logs and its bootloader RAW ADB update path.
+"""Verify Arcs-Mini2 firmware shell/logs and its bootloader RAW ADB update path.
 
 The supplied firmware must implement version, device get_device_id, recovery,
 and the bootloader's UID handshake, info, md5sum and reboot hard commands.
@@ -212,7 +212,7 @@ class Verification:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--lpk', required=True, type=Path, help='Baseline Arcs-Mini LPK')
+    parser.add_argument('--lpk', required=True, type=Path, help='Baseline Arcs-Mini2 LPK')
     parser.add_argument('--update', required=True, type=Path, help='Raw application image for the bootloader RAW path')
     parser.add_argument('--before-version', required=True)
     parser.add_argument('--after-version', required=True)

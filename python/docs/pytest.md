@@ -28,7 +28,7 @@ import pytest
 @pytest.fixture
 def device(lisem_client, tmp_path):
     with lisem_client.temporary_instance(
-        board="arcs-mini", evidence_dir=tmp_path / "evidence",
+        board="arcs-mini2", evidence_dir=tmp_path / "evidence",
     ) as instance:
         yield instance
 

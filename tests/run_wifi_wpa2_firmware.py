@@ -2,7 +2,7 @@
 """Verify correct/wrong WPA2 passwords via an unchanged firmware Wi-Fi shell.
 
 No UART, key, password or packet capture is saved. The firmware must expose the
-Arcs-Mini long-press shell and `wifi connect SSID PASSWORD` command. This is an
+Arcs-Mini2 long-press shell and `wifi connect SSID PASSWORD` command. This is an
 integration gate: a supplicant timeout is a failure, never a wrong-password pass.
 """
 import argparse
@@ -43,7 +43,7 @@ def check(binary, lpk, correct):
             return reply['result']
         device = None
         try:
-            device = call('create', board='arcs-mini', name='WPA2 verification', package=str(lpk))['id']
+            device = call('create', board='arcs-mini2', name='WPA2 verification', package=str(lpk))['id']
             call('wifi_environment', id=device, environment={'access_points': [dict(
                 ssid='SecureLab', rssi=-42, channel=1, internet=True,
                 security='wpa2-psk', password='testing-password')]})

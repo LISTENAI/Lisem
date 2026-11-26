@@ -47,7 +47,7 @@ def main():
             self.directory = args.output / ("attempt-" + uuid.uuid4().hex)
             self.directory.mkdir()
             self.record = {"version": 1, "lpk_sha256": firmware_hash,
-                           "hypothesis": hypothesis_version, "board": "arcs-mini",
+                           "hypothesis": hypothesis_version, "board": "arcs-mini2",
                            "uid": "ff00a37c102d9e65", "demo_failure": args.demo_failure,
                            "steps": [], "failed": False}
             attempts.append(self.record)
@@ -56,7 +56,7 @@ def main():
             try:
                 self.client = self.stack.enter_context(Client(data_dir=args.output / "library"))
                 self.device = self.stack.enter_context(self.client.temporary_instance(
-                    board="arcs-mini", uid=self.record["uid"], lpk=args.lpk,
+                    board="arcs-mini2", uid=self.record["uid"], lpk=args.lpk,
                     evidence_dir=self.directory / "evidence"))
                 self.run = self.stack.enter_context(self.device.start(max_virtual_seconds=90, timeout=120))
                 boot_to_shell(self.run)

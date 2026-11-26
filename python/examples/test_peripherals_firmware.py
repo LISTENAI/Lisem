@@ -1,4 +1,4 @@
-"""Original ARCS Mini 3.0.3 ADB shell and timestamped DAC observation."""
+"""Original ARCS Mini2 3.0.3 ADB shell and timestamped DAC observation."""
 import json
 import os
 import re

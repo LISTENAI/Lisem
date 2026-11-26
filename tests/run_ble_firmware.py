@@ -31,7 +31,7 @@ try:
     with Client(executable=BINARY, root=args.root, data_dir=OUT / 'library') as client:
         result['build'] = client.build
         with client.temporary_instance(
-            board='arcs-mini', lpk=LPK, evidence_dir=OUT / 'evidence'
+            board='arcs-mini2', lpk=LPK, evidence_dir=OUT / 'evidence'
         ) as device:
             with device.start(max_virtual_seconds=180, timeout=180) as run:
                 result['run'] = run.id

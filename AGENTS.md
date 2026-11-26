@@ -3,7 +3,7 @@
 ## 产品边界
 
 - Lisem 是聆思多芯片 emulator，命令为 `lisem`，应用标识为
-  `com.listenai.emulator`；支持 LS2684（ARCS）的 Arcs-Mini / Arcs-EVB、
+  `com.listenai.emulator`；支持 LS2684（ARCS）的 Arcs-Mini2 / Arcs-EVB、
   LS2663（ARCS）的 Arcs-Mini3，以及 CSK7004J8U（VenusA）的 VenusA RD EVB。
   用户管理设备实例；板型以 JSON 的 `devices`、`nets` 和类型化 `links`
   描述器件、连线与数据接口。内置板型和导入板型共用装配路径。

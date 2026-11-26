@@ -10,6 +10,14 @@ use std::collections::{BTreeMap, BTreeSet};
 mod models;
 pub use models::{ModelQuery, query_models, wiring};
 
+/// The original Mini ID remains reserved for existing instances and callers.
+pub(crate) fn canonical_id(id: &str) -> &str {
+    match id {
+        "arcs-mini" => "arcs-mini2",
+        _ => id,
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Board {
@@ -1840,7 +1848,7 @@ mod tests {
     #[test]
     fn builtins_share_assembly_and_extio_ports_are_independent_of_soc() {
         for (raw, machine) in [
-            (include_str!("../../../boards/arcs-mini.json"), "arcs-board"),
+            (include_str!("../../../boards/arcs-mini2.json"), "arcs-board"),
             (
                 include_str!("../../../boards/arcs-mini3.json"),
                 "arcs-board",
@@ -1875,7 +1883,7 @@ mod tests {
         assert_eq!(board["assembly"]["camera"]["pads"]["PWDN"], 94);
         assert_eq!(board["assembly"]["sd"]["detect_endpoint"], 91);
         let mini: Value =
-            serde_json::from_str(include_str!("../../../boards/arcs-mini.json")).unwrap();
+            serde_json::from_str(include_str!("../../../boards/arcs-mini2.json")).unwrap();
         assert_eq!(source(&board)["inputs"], mini["inputs"]);
         let mut conflicting = source(&board).clone();
         conflicting["devices"]["typec"]["parameters"]["address"] = json!(33);

@@ -5,8 +5,8 @@ from lisem import OperationTimeout, Rejected, StaleRun
 
 
 def test_central_timeout_cancel_reset_and_isolation(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as a:
-        with native_client.temporary_instance(board='arcs-mini') as b:
+    with native_client.temporary_instance(board='arcs-mini2') as a:
+        with native_client.temporary_instance(board='arcs-mini2') as b:
             with a.start(max_virtual_seconds=120, timeout=180, download=True) as run:
                 with b.start(
                     max_virtual_seconds=120, timeout=180, download=True

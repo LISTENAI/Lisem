@@ -23,7 +23,7 @@ def main():
     service = NativeService(args.output / 'library', args.binary)
     descriptor = None
     try:
-        item = service.create_device('arcs-mini', args.lpk)
+        item = service.create_device('arcs-mini2', args.lpk)
         service.dispatch('settings', {'id': item['id'], 'sound': False})
         otp = (Path(item['path']) / 'otp.bin').read_bytes()
         path = service.dispatch('serial', {'id': item['id'], 'channel': 0})

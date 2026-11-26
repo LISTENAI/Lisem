@@ -45,7 +45,7 @@ def main():
     service = NativeService(output / 'library', binary, command_prefix=prefix, env=env, cwd=output)
     descriptor = None
     try:
-        item = service.create_device('arcs-mini', output / 'firmware.lpk')
+        item = service.create_device('arcs-mini2', output / 'firmware.lpk')
         (output / 'firmware.lpk').unlink()
         assert 'firmware' not in item
         service.dispatch('settings', {'id': item['id'], 'sound': False})

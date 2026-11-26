@@ -24,8 +24,8 @@ def main():
         assert value.returncode == 0, value.stderr
         return json.loads(value.stdout)
 
-    a = call('create', '--board', 'arcs-mini', '--lpk', str(args.lpk.resolve()))['id']
-    b = call('create', '--board', 'arcs-mini', '--lpk', str(args.lpk.resolve()))['id']
+    a = call('create', '--board', 'arcs-mini2', '--lpk', str(args.lpk.resolve()))['id']
+    b = call('create', '--board', 'arcs-mini2', '--lpk', str(args.lpk.resolve()))['id']
     try:
         # A bounded foreground run cleans up only its own runtime.
         call('start', b, '--seconds', '60', '--timeout', '90')

@@ -5,7 +5,7 @@ from lisem import CompatibilityError, OperationTimeout, Rejected, RunEnded, Stal
 
 
 def test_capture_stop_release_and_identity(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             with run.capture_display(max_frames=8, max_seconds=5) as capture:
                 with pytest.raises(Rejected, match='previous display capture'):
@@ -24,7 +24,7 @@ def test_capture_stop_release_and_identity(native_client):
 
 
 def test_capture_deadline_does_not_stop_device(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             capture = run.capture_display(max_frames=128, max_seconds=.02)
             time.sleep(.08)
@@ -37,7 +37,7 @@ def test_capture_deadline_does_not_stop_device(native_client):
 
 
 def test_capture_external_stop_and_reset_are_not_success(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             capture = run.capture_display()
             run._call('stop')
@@ -58,7 +58,7 @@ def test_capture_external_stop_and_reset_are_not_success(native_client):
 
 
 def test_capture_capability_and_capacity(native_client, monkeypatch):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             with pytest.raises(Rejected, match='64 MiB'):
                 run.capture_display(max_frames=4096)

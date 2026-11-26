@@ -30,7 +30,7 @@ def main():
             device = None
             recording = injection = None
             try:
-                item = bridge.call('create', board='arcs-mini', name='CLI audio',
+                item = bridge.call('create', board='arcs-mini2', name='CLI audio',
                                    **({'package': str(args.lpk.resolve())} if args.lpk else {}))
                 device = item['id']
                 if args.flash:

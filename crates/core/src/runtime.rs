@@ -2985,7 +2985,7 @@ mod tests {
         let catalog = Catalog::open(&root, temp.path()).unwrap();
         let owner = Uuid::new_v4().simple().to_string();
         let item = catalog
-            .create_temporary("arcs-mini", None, None, &Default::default(), &owner)
+            .create_temporary("arcs-mini2", None, None, &Default::default(), &owner)
             .unwrap();
         let id = item["id"].as_str().unwrap().to_owned();
         let path = PathBuf::from(item["path"].as_str().unwrap());
@@ -3299,7 +3299,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let catalog = Catalog::open(&root, &temp.path().join("library")).unwrap();
-        let item = catalog.create("arcs-mini", None, Some("test")).unwrap();
+        let item = catalog.create("arcs-mini2", None, Some("test")).unwrap();
         let id = item["id"].as_str().unwrap();
         let old = temp.path().join("old.png");
         let new = temp.path().join("new.png");
@@ -3374,7 +3374,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let catalog = Catalog::open(&root, &temp.path().join("library")).unwrap();
-        let item = catalog.create("arcs-mini", None, Some("test")).unwrap();
+        let item = catalog.create("arcs-mini2", None, Some("test")).unwrap();
         let id = item["id"].as_str().unwrap();
         let path = Path::new(item["path"].as_str().unwrap());
         catalog

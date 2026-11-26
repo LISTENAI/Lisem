@@ -359,12 +359,17 @@ impl Backend {
     pub fn from_hardware(hardware: &Value) -> Result<Self> {
         let board = &hardware["board"];
         let chip = &hardware["chip"];
+        // QEMU's legacy machine and control names predate the public board ID.
+        let legacy_board_id = match board["id"].as_str() {
+            Some("arcs-mini2") => Some("arcs-mini"),
+            id => id,
+        };
         let legacy = chip["id"] == "ls2684"
-            && matches!(board["id"].as_str(), Some("arcs-mini" | "arcs-evb"));
+            && matches!(legacy_board_id, Some("arcs-mini" | "arcs-evb"));
         let runtime = &board["runtime"];
         let machine = runtime["machine"]
             .as_str()
-            .or_else(|| legacy.then(|| board["id"].as_str()).flatten())
+            .or_else(|| legacy.then_some(legacy_board_id).flatten())
             .context("No runtime backend registered for this chip and board")?
             .to_owned();
         ensure!(
@@ -395,7 +400,7 @@ impl Backend {
                 wifi: legacy,
                 sd: legacy,
                 usb_adb: legacy,
-                download: board["id"] == "arcs-mini",
+                download: legacy_board_id == Some("arcs-mini"),
                 signals: legacy,
                 events: legacy,
                 button_sequence: legacy,
@@ -430,7 +435,7 @@ impl Backend {
                     if !legacy {
                         return None;
                     }
-                    match (board["id"].as_str(), id) {
+                    match (legacy_board_id, id) {
                         (Some("arcs-mini"), "function") => Some("x-lisa-function-pressed".into()),
                         (Some("arcs-evb"), "k1" | "k2" | "k3") => {
                             Some(format!("x-lisa-evb-{id}-pressed"))

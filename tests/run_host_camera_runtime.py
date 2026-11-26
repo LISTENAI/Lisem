@@ -99,7 +99,7 @@ def main():
             assert result.returncode == 0, result.stderr
             return json.loads(result.stdout)
 
-        item = cli('create', '--board', 'arcs-mini')
+        item = cli('create', '--board', 'arcs-mini2')
         identifier = item['id']
         device = Path(item['path'])
         otp = (device / 'otp.bin').read_bytes()

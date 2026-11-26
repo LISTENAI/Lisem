@@ -19,7 +19,7 @@ def main():
         observer = uart = None
         item = None
         try:
-            item = service.create_device('arcs-mini')
+            item = service.create_device('arcs-mini2')
             identifier = item['id']
             endpoint = service.dispatch('serial', {'id': identifier, 'channel': 0})
             uart = NativeUart(endpoint)

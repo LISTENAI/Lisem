@@ -15,7 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--lpk', type=Path, required=True)
-    parser.add_argument('--board', choices=('arcs-mini', 'arcs-mini3'), default='arcs-mini')
+    parser.add_argument('--board', choices=('arcs-mini2', 'arcs-mini3'), default='arcs-mini2')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     args.binary, args.lpk, args.output = args.binary.resolve(), args.lpk.resolve(), args.output.resolve()

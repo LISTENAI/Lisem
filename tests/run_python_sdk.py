@@ -49,7 +49,7 @@ assert lisem.source_info()['bundled']
 assert lisem.__version__ == importlib.metadata.version('lisem-sdk')
 assert not any(p.name.endswith('.egg-link') for p in location.parent.parent.glob('*'))
 with lisem.Client(executable=sys.argv[2],data_dir='identity-library') as client:
- with client.temporary_instance(board='arcs-mini') as device:
+ with client.temporary_instance(board='arcs-mini2') as device:
   with device.start(max_virtual_seconds=10,timeout=30,download=True) as run:
    data={'sdk_version':lisem.__version__,'module':str(location),'sdk':lisem.source_info(),'build':client.build,'qemu':run.status()['qemu']}
 pathlib.Path('identity.json').write_text(json.dumps(data,indent=2)+'\\n')

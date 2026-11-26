@@ -28,7 +28,7 @@ def main():
     library = output / 'library'
     service = NativeService(library, args.binary)
     try:
-        item = service.create_device('arcs-mini')
+        item = service.create_device('arcs-mini2')
         service.dispatch('settings', {'id': item['id'], 'online': False, 'sound': False})
         service.dispatch('serial', {'id': item['id'], 'channel': 0})
     finally:

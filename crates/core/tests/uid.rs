@@ -39,7 +39,7 @@ fn uid_policy_is_shared_and_request_scoped() {
         json!({"uid":"bad", "allow_unprefixed_uid":true}),
     ] {
         let mut request = request;
-        request["board"] = json!("arcs-mini");
+        request["board"] = json!("arcs-mini2");
         assert!(
             manager.call("create", request.clone()).is_err(),
             "{request}"
@@ -49,12 +49,12 @@ fn uid_policy_is_shared_and_request_scoped() {
     let custom = manager
         .call(
             "create",
-            json!({"board":"arcs-mini","uid":"FF00A37C102D9E65"}),
+            json!({"board":"arcs-mini2","uid":"FF00A37C102D9E65"}),
         )
         .unwrap();
     assert_eq!(custom["uid"], "ff00a37c102d9e65");
     assert_ne!(custom["id"], custom["uid"]);
-    for board in ["arcs-mini", "arcs-mini3", "venusa-rd-evb"] {
+    for board in ["arcs-mini2", "arcs-mini3", "venusa-rd-evb"] {
         assert!(
             manager
                 .call(
@@ -75,16 +75,16 @@ fn uid_policy_is_shared_and_request_scoped() {
         manager
             .call(
                 "create",
-                json!({"board":"arcs-mini","uid":"0102a37c102d9e66"})
+                json!({"board":"arcs-mini2","uid":"0102a37c102d9e66"})
             )
             .is_err()
     );
     let automatic = manager
-        .call("create", json!({"board":"arcs-mini"}))
+        .call("create", json!({"board":"arcs-mini2"}))
         .unwrap();
     assert!(automatic["uid"].as_str().unwrap().starts_with("ff00"));
     let path = Path::new(custom["path"].as_str().unwrap());
-    let layout = manager.catalog.layout("arcs-mini").unwrap();
+    let layout = manager.catalog.layout("arcs-mini2").unwrap();
     let lease = storage::locked(path, &layout).unwrap();
     assert!(
         manager
@@ -125,7 +125,7 @@ fn current_chip_layouts_preserve_non_uid_storage() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root(), temp.path()).unwrap();
     for (board, offset, otp_bytes) in [
-        ("arcs-mini", 8, 512),
+        ("arcs-mini2", 8, 512),
         ("arcs-mini3", 8, 512),
         ("venusa-rd-evb", 0, 64),
     ] {
@@ -186,7 +186,7 @@ fn legacy_identity_is_unchanged_and_failed_creation_leaves_no_instance() {
     let temp = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root(), temp.path()).unwrap();
     let item = catalog
-        .create_with_uid("arcs-mini", None, None, &options("0102a37c102d9e65", true))
+        .create_with_uid("arcs-mini2", None, None, &options("0102a37c102d9e65", true))
         .unwrap();
     let path = Path::new(item["path"].as_str().unwrap());
     let before = ["flash.bin", "otp.bin", "instance.json", "device.json"]
@@ -206,7 +206,7 @@ fn legacy_identity_is_unchanged_and_failed_creation_leaves_no_instance() {
     assert!(
         catalog
             .create_with_uid(
-                "arcs-mini",
+                "arcs-mini2",
                 Some(&temp.path().join("missing.lpk")),
                 None,
                 &options("ff00a37c102d9e65", false)
@@ -221,7 +221,7 @@ fn legacy_identity_is_unchanged_and_failed_creation_leaves_no_instance() {
     // A failed request does not reserve the requested identity.
     assert!(
         catalog
-            .create_with_uid("arcs-mini", None, None, &options("ff00a37c102d9e65", false))
+            .create_with_uid("arcs-mini2", None, None, &options("ff00a37c102d9e65", false))
             .is_ok()
     );
 }

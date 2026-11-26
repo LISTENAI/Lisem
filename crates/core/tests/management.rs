@@ -16,11 +16,11 @@ fn management_preserves_storage_and_rejects_busy_mutations() {
     )
     .unwrap();
     let item = manager
-        .call("create", json!({"board":"arcs-mini"}))
+        .call("create", json!({"board":"arcs-mini2"}))
         .unwrap();
     let path = Path::new(item["path"].as_str().unwrap());
     let before = ["flash.bin", "otp.bin"].map(|name| fs::read(path.join(name)).unwrap());
-    let layout = manager.catalog.layout("arcs-mini").unwrap();
+    let layout = manager.catalog.layout("arcs-mini2").unwrap();
     let lease = storage::locked(path, &layout).unwrap();
     assert!(
         manager
@@ -82,7 +82,7 @@ fn attached_libraries_observe_worker_build_without_replacing_it() {
         Path::new("must-not-spawn"),
     )
     .unwrap();
-    let item = first.call("create", json!({"board":"arcs-mini"})).unwrap();
+    let item = first.call("create", json!({"board":"arcs-mini2"})).unwrap();
     let path = Path::new(item["path"].as_str().unwrap());
     let mut second = Manager::new(
         &root,
@@ -165,7 +165,7 @@ fn camera_input_selection_is_validated_persisted_and_explicitly_cleared() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let data = temp.path().join("library");
     let catalog = Catalog::open(&root, &data).unwrap();
-    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let item = catalog.create("arcs-mini2", None, None).unwrap();
     let id = item["id"].as_str().unwrap().to_owned();
     let mut runtime = Runtime::new(Catalog::open(&root, &data).unwrap(), id.clone()).unwrap();
     let image_path = temp.path().join("camera.png");
@@ -240,7 +240,7 @@ fn microphone_selection_is_persisted_without_starting_a_worker() {
     let data = temp.path().join("library");
     let mut manager = Manager::new(&root, &data, Path::new("must-not-spawn")).unwrap();
     let item = manager
-        .call("create", json!({"board":"arcs-mini"}))
+        .call("create", json!({"board":"arcs-mini2"}))
         .unwrap();
     let result = manager
         .call("microphone", json!({"id":item["id"],"enabled":true}))
@@ -295,7 +295,7 @@ fn wifi_environment_preserves_other_environments_and_storage_and_rejects_busy_ch
     )
     .unwrap();
     let item = manager
-        .call("create", json!({"board":"arcs-mini"}))
+        .call("create", json!({"board":"arcs-mini2"}))
         .unwrap();
     assert_eq!(
         item["environment"]["wifi"]["access_points"][0]["ssid"],
@@ -310,7 +310,7 @@ fn wifi_environment_preserves_other_environments_and_storage_and_rejects_busy_ch
         {"ssid":"Lisem","rssi":-60,"channel":6,"internet":false},
         {"ssid":"Other","rssi":-35,"channel":11,"internet":true}]});
     let request = json!({"id":item["id"],"environment":environment});
-    let layout = manager.catalog.layout("arcs-mini").unwrap();
+    let layout = manager.catalog.layout("arcs-mini2").unwrap();
     let lease = storage::locked(path, &layout).unwrap();
     assert!(manager.call("wifi_environment", request.clone()).is_err());
     assert!(

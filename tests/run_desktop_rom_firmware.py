@@ -27,7 +27,7 @@ def main():
     fd = None
     received, sent, frames, outputs = bytearray(), bytearray(), [], []
     try:
-        item = service.create_device('arcs-mini', args.lpk)
+        item = service.create_device('arcs-mini2', args.lpk)
         service.dispatch('settings', {'id': item['id'], 'online': False, 'sound': False})
         identity = describe(item['path'])
         port = service.dispatch('serial', {'id': item['id'], 'channel': 0})

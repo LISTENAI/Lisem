@@ -236,6 +236,6 @@ lisem signals DEVICE --set '{"usb_det":null}'
 继续查询并核对 `change.request`，直到 `applied`、`rejected` 或 `unknown`；
 后两者及 `error` 均须检查，不能当作完成。
 
-Arcs-Mini 的 `usb_det` 连接 PB0；高低电平含义由固件
+Arcs-Mini2 的 `usb_det` 连接 PB0；高低电平含义由固件
 解释。`battery_voltage` 经 2/5 分压接入 PB5/VIN3，固件从 ADC 读取电压。
 输入已应用表示外部信号已送达，固件的滤波、轮询和业务响应需要另外观察。

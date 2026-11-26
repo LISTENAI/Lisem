@@ -3,7 +3,7 @@ import pytest
 from lisem import CompatibilityError, StaleRun
 
 
-@pytest.mark.parametrize('board', ['arcs-mini', 'arcs-mini3', 'arcs-evb', 'venusa-rd-evb'])
+@pytest.mark.parametrize('board', ['arcs-mini2', 'arcs-mini3', 'arcs-evb', 'venusa-rd-evb'])
 def test_display_identity_and_unavailable_device(native_client, board):
     with native_client.temporary_instance(board=board) as device:
         download = device.info['capabilities']['download']
@@ -39,8 +39,8 @@ def test_display_identity_and_unavailable_device(native_client, board):
 
 
 def test_cross_instance_display_rejected(native_client):
-    with native_client.temporary_instance(board='arcs-mini') as first:
-        with native_client.temporary_instance(board='arcs-mini') as second:
+    with native_client.temporary_instance(board='arcs-mini2') as first:
+        with native_client.temporary_instance(board='arcs-mini2') as second:
             with first.start(max_virtual_seconds=20, timeout=40, download=True) as a:
                 with second.start(max_virtual_seconds=20, timeout=40, download=True) as b:
                     with pytest.raises(StaleRun):
@@ -50,7 +50,7 @@ def test_cross_instance_display_rejected(native_client):
 
 
 def test_missing_display_feature_is_rejected(native_client, monkeypatch):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         with device.start(max_virtual_seconds=20, timeout=40, download=True) as run:
             # Simulate the negotiated capability set of an endpoint without this observation.
             monkeypatch.setattr(device.worker, 'features',

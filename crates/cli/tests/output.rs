@@ -22,7 +22,7 @@ fn default_is_readable_and_json_remains_scriptable() {
             "--json",
             "create",
             "--board",
-            "arcs-mini",
+            "arcs-mini2",
             "--name",
             "Test Mini",
         ],
@@ -58,4 +58,21 @@ fn default_is_readable_and_json_remains_scriptable() {
             .status
             .success()
     );
+}
+
+#[test]
+fn legacy_board_id_resolves_to_mini2() {
+    let directory = tempfile::tempdir().unwrap();
+    let created = cli(
+        directory.path(),
+        &["--json", "create", "--board", "arcs-mini"],
+    );
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let item: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    assert_eq!(item["board"], "arcs-mini2");
+    assert_eq!(item["hardware"]["board"]["name"], "Arcs-Mini2");
 }

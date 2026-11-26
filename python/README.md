@@ -28,7 +28,7 @@ from lisem import Client, source_info
 
 print(source_info())
 with Client(data_dir="test-output/library") as client:
-    with client.temporary_instance(board="arcs-mini") as device:
+    with client.temporary_instance(board="arcs-mini2") as device:
         with device.start(max_virtual_seconds=10, timeout=30, download=True) as run:
             print(run.status())
 ```

@@ -19,8 +19,8 @@ agent 经 MCP 控制设备、读取串口和截图。同一套固件也可以在
 [AI 接入](docs/agents.md)
 
 <p align="center">
-  <img src="docs/images/arcs-mini.png" width="640"
-       alt="Lisem 的 Arcs-Mini 设备窗口，显示固件画面、功能键和外设入口">
+  <img src="docs/images/arcs-mini2.png" width="640"
+       alt="Lisem 的 Arcs-Mini2 设备窗口，显示固件画面、功能键和外设入口">
 </p>
 
 ## 快速开始
@@ -45,7 +45,7 @@ sudo xattr -dr com.apple.quarantine /Applications/Lisem.app
 
 | 芯片 | 平台 | 内置板型 |
 | --- | --- | --- |
-| LS2684 | Arcs | Arcs-Mini、Arcs-EVB |
+| LS2684 | Arcs | Arcs-Mini2、Arcs-EVB |
 | LS2663 | Arcs | Arcs-Mini3 |
 | CSK7004J8U | VenusA | VenusA RD EVB |
 
@@ -67,7 +67,7 @@ sudo xattr -dr com.apple.quarantine /Applications/Lisem.app
 from lisem import Client
 
 with Client(data_dir="test-output/library") as client:
-    with client.temporary_instance(board="arcs-mini") as device:
+    with client.temporary_instance(board="arcs-mini2") as device:
         with device.start(max_virtual_seconds=10, timeout=30, download=True) as run:
             result = run.button(hold_ms=1000)
             print(result.status)

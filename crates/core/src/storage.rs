@@ -271,7 +271,19 @@ fn legacy_manifest(layout: &Layout) -> Value {
 }
 
 fn is_single_flash_manifest(saved: &Value, layout: &Layout) -> bool {
-    layout.flashes().len() == 1 && *saved == legacy_manifest(layout)
+    layout.flashes().len() == 1 && matching_manifest(saved, legacy_manifest(layout))
+}
+
+// Resolve only the board alias; every storage and chip field must still match.
+// Validation does not rewrite existing version-2 manifests.
+fn matching_manifest(saved: &Value, mut expected: Value) -> bool {
+    let mut saved = saved.clone();
+    for value in [&mut saved, &mut expected] {
+        if let Some(id) = value["board"].as_str() {
+            value["board"] = json!(crate::board::canonical_id(id));
+        }
+    }
+    saved == expected
 }
 
 fn write_flash_images(path: &Path, layout: &Layout, bytes: &[u8]) -> Result<()> {
@@ -315,7 +327,7 @@ pub fn validate(path: &Path, layout: &Layout) -> Result<()> {
         ensure!(fs::metadata(path.join("flash.bin"))?.len() == layout.flash_bytes as u64,
                 "Legacy Flash size mismatch");
     } else {
-        ensure!(saved == manifest(layout), "Unsupported instance manifest");
+        ensure!(matching_manifest(&saved, manifest(layout)), "Unsupported instance manifest");
         for flash in layout.flashes() {
             ensure!(fs::metadata(path.join(&flash.file))?.len() == flash.capacity_bytes as u64,
                     "Instance Flash size mismatch: {}", flash.id);

@@ -47,7 +47,7 @@ UID 可自行填写，留空时自动生成。
 先创建目标板型的空白实例，再按发布布局写入镜像：
 
 ```sh
-lisem create --board arcs-mini --name Test
+lisem create --board arcs-mini2 --name Test
 lisem write INSTANCE_ID firmware.bin
 ```
 
@@ -161,7 +161,7 @@ Python 的采集接口见[数字信号](../python/docs/observations.md#数字信
 `Contents/MacOS/lisem`，Windows/Linux 为包根目录的 `lisem.exe` / `lisem`。
 
 ```sh
-lisem create --board arcs-mini --name Mini --lpk firmware.lpk
+lisem create --board arcs-mini2 --name Mini --lpk firmware.lpk
 lisem list
 lisem run INSTANCE_ID --seconds 30 --timeout 120
 ```

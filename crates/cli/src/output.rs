@@ -149,7 +149,7 @@ fn session(value: &Value) -> String {
 }
 fn table(devices: &Value, sessions: &Value) -> String {
     let Some(devices) = devices.as_array().filter(|v| !v.is_empty()) else {
-        return "No instances. Create one with: lisem create --board arcs-mini".into();
+        return "No instances. Create one with: lisem create --board arcs-mini2".into();
     };
     let show_state = sessions.is_object();
     let mut out = if show_state {
@@ -180,7 +180,7 @@ mod tests {
     use serde_json::json;
     #[test]
     fn human_output_preserves_identity_and_explains_failure_without_internal_dump() {
-        let item = json!({"id":"full-instance-id", "name":"Mini", "board":"arcs-mini", "uid":"0123456789abcdef", "path":"/device"});
+        let item = json!({"id":"full-instance-id", "name":"Mini", "board":"arcs-mini2", "uid":"0123456789abcdef", "path":"/device"});
         let result = Output::Status.render(&json!({"device":item,"runtime":{"session":{"finished":true,"error":"UART closed","seconds":2.5,"report":{"internal":42}},"serial":{"0":"tcp://127.0.0.1:9000"}}}));
         assert!(result.contains("UID:   0123456789abcdef"));
         assert!(result.contains("Power: Failed\nGuest time: 2.50 s"));

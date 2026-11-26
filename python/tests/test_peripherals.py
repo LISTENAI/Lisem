@@ -26,7 +26,7 @@ def test_saved_and_live_peripherals(native_client, tmp_path):
     picture = image(tmp_path / "camera.png")
     ap = {"ssid": "SDK isolated AP", "rssi": -45, "channel": 1, "internet": False,
           "security": "wpa2-psk", "password": "test-password"}
-    with native_client.temporary_instance(board="arcs-mini") as device:
+    with native_client.temporary_instance(board="arcs-mini2") as device:
         assert device.wifi.configure([ap]).status == "saved"
         assert device.wifi.configuration()["access_points"] == [ap]
         assert device.sd.mount(card).status == "saved"
@@ -76,8 +76,8 @@ def test_sd_exclusive_live_medium(native_client, tmp_path):
     card = tmp_path / "exclusive.raw"
     with card.open("xb") as stream:
         stream.truncate(8 * 1024 * 1024)
-    with native_client.temporary_instance(board="arcs-mini") as first:
-        with native_client.temporary_instance(board="arcs-mini") as second:
+    with native_client.temporary_instance(board="arcs-mini2") as first:
+        with native_client.temporary_instance(board="arcs-mini2") as second:
             first.sd.mount(card)
             with first.start(max_virtual_seconds=30, timeout=60, download=True):
                 with second.start(max_virtual_seconds=30, timeout=60, download=True) as run:
@@ -88,7 +88,7 @@ def test_sd_exclusive_live_medium(native_client, tmp_path):
 
 @pytest.mark.parametrize("max_seconds", [5, 1800])
 def test_recording_lifecycle_and_deadline(native_client, tmp_path, max_seconds):
-    with native_client.temporary_instance(board="arcs-mini") as device:
+    with native_client.temporary_instance(board="arcs-mini2") as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             recording = run.audio.record(tmp_path / "empty.wav", max_seconds=max_seconds)
             with pytest.raises(Rejected, match="Previous audio recording"):
@@ -124,7 +124,7 @@ def test_recording_lifecycle_and_deadline(native_client, tmp_path, max_seconds):
 
 
 def test_recording_client_lease_failure_is_visible(native_client, tmp_path, monkeypatch):
-    with native_client.temporary_instance(board="arcs-mini") as device:
+    with native_client.temporary_instance(board="arcs-mini2") as device:
         with device.start(max_virtual_seconds=30, timeout=60, download=True) as run:
             call = run._call
 

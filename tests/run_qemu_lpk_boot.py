@@ -27,7 +27,7 @@ def main():
         directory = args.output / str(index)
         service = NativeService(directory / 'library', args.binary.resolve())
         try:
-            instance = Path(service.create_device('arcs-mini', lpk)['path'])
+            instance = Path(service.create_device('arcs-mini2', lpk)['path'])
         finally:
             service.close()
         otp = (instance / 'otp.bin').read_bytes()

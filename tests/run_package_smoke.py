@@ -105,7 +105,7 @@ def main():
         service = NativeService(directory / 'library', binary, env=env, cwd=directory, capture=False)
         uart = None
         try:
-            item = service.create_device('arcs-mini')
+            item = service.create_device('arcs-mini2')
             device = Path(item['path'])
             otp = (device / 'otp.bin').read_bytes()
             initial_flash = hashlib.sha256((device / 'flash.bin').read_bytes()).hexdigest()

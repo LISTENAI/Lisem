@@ -11,7 +11,8 @@ fn legacy_index_migration_preserves_storage_and_instance_identity() {
     let temporary = tempfile::tempdir().unwrap();
     let data = temporary.path().join("library");
     let catalog = Catalog::open(&root(), &data).unwrap();
-    let layout = catalog.layout("arcs-mini").unwrap();
+    let mut layout = catalog.layout("arcs-mini2").unwrap();
+    layout.board = "arcs-mini".into();
     let path = temporary.path().join("device");
     storage::create(&path, &layout, None).unwrap();
     let before: Vec<_> = ["flash.bin", "otp.bin", "instance.json"]
@@ -30,6 +31,7 @@ fn legacy_index_migration_preserves_storage_and_instance_identity() {
     let item = reopened.device(id).unwrap();
     assert_eq!(item["id"], id);
     assert_eq!(item["name"], "Existing device");
+    assert_eq!(item["board"], "arcs-mini2");
     assert!(item.get("firmware").is_none());
     for (name, expected) in ["flash.bin", "otp.bin", "instance.json"].iter().zip(before) {
         assert_eq!(fs::read(path.join(name)).unwrap(), expected);
@@ -44,10 +46,129 @@ fn legacy_index_migration_preserves_storage_and_instance_identity() {
 }
 
 #[test]
+fn mini_alias_creates_canonical_instances_without_duplicate_catalog_entries() {
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    assert!(catalog.boards.contains_key("arcs-mini2"));
+    assert!(!catalog.boards.contains_key("arcs-mini"));
+    for id in ["arcs-mini", "arcs-mini2"] {
+        let item = catalog.create(id, None, None).unwrap();
+        assert_eq!(item["board"], "arcs-mini2");
+        assert_eq!(item["hardware"]["board"]["name"], "Arcs-Mini2");
+        let path = PathBuf::from(item["path"].as_str().unwrap());
+        assert_eq!(
+            storage::read_json(&path.join("instance.json")).unwrap()["board"],
+            "arcs-mini2"
+        );
+        assert_eq!(
+            catalog.metadata(&path).unwrap()["hardware"]["board"]["id"],
+            "arcs-mini2"
+        );
+    }
+    assert!(catalog.create("arcs-mini-unknown", None, None).is_err());
+}
+
+#[test]
+fn mini_alias_reopens_saved_instances_without_rewriting_storage() {
+    let temporary = tempfile::tempdir().unwrap();
+    let catalog = Catalog::open(&root(), temporary.path()).unwrap();
+    // Both raw board definitions and older compiled metadata remain readable.
+    for compiled in [false, true] {
+        let item = catalog
+            .create("arcs-mini2", None, Some("My device"))
+            .unwrap();
+        let path = PathBuf::from(item["path"].as_str().unwrap());
+        let mut metadata = catalog.metadata(&path).unwrap();
+        if compiled {
+            metadata["hardware"]["board"] = item["hardware"]["board"].clone();
+            metadata["hardware"]["board"]["definition"]["id"] = json!("arcs-mini");
+            metadata["hardware"]["board"]["definition"]["name"] = json!("Arcs-Mini");
+        }
+        metadata["hardware"]["board"]["id"] = json!("arcs-mini");
+        metadata["hardware"]["board"]["name"] = json!("Arcs-Mini");
+        storage::write_json(&path.join("device.json"), &metadata).unwrap();
+        let mut manifest = storage::read_json(&path.join("instance.json")).unwrap();
+        manifest["board"] = json!("arcs-mini");
+        storage::write_json(&path.join("instance.json"), &manifest).unwrap();
+        let files = ["flash.bin", "otp.bin", "instance.json", "device.json"];
+        let before = files.map(|name| fs::read(path.join(name)).unwrap());
+        let reopened = Catalog::open(&root(), temporary.path()).unwrap();
+        let restored = reopened.attach(&path).unwrap();
+        assert_eq!(restored["board"], "arcs-mini2");
+        assert_eq!(restored["uid"], item["uid"]);
+        assert_eq!(restored["id"], item["id"]);
+        assert_eq!(restored["name"], "My device");
+        assert_eq!(
+            restored["hardware"]["board"]["runtime"]["machine"],
+            "arcs-board"
+        );
+        let layout = reopened.layout("arcs-mini2").unwrap();
+        drop(storage::locked(&path, &layout).unwrap());
+        for (name, expected) in files.into_iter().zip(before) {
+            assert_eq!(fs::read(path.join(name)).unwrap(), expected, "{name}");
+        }
+        // Alias resolution must not relax any other manifest field.
+        for (field, value) in [
+            ("board", json!("arcs-mini3")),
+            ("chip", json!("venusa")),
+            ("otp_bytes", json!(1024)),
+        ] {
+            let mut invalid = manifest.clone();
+            invalid[field] = value;
+            storage::write_json(&path.join("instance.json"), &invalid).unwrap();
+            assert!(storage::validate(&path, &layout).is_err());
+        }
+        storage::write_json(&path.join("instance.json"), &manifest).unwrap();
+    }
+}
+
+#[test]
+fn mini_alias_supports_single_flash_manifests_and_rejects_custom_shadowing() {
+    let temporary = tempfile::tempdir().unwrap();
+    let mut catalog = Catalog::open(&root(), &temporary.path().join("library")).unwrap();
+    let layout = catalog.layout("arcs-mini2").unwrap();
+    let path = temporary.path().join("old-device");
+    storage::create(&path, &layout, None).unwrap();
+    storage::write_json(
+        &path.join("instance.json"),
+        &json!({
+            "version":1, "chip":"arcs", "board":"arcs-mini",
+            "flash_bytes":layout.flash_bytes, "otp_bytes":layout.otp_bytes,
+        }),
+    )
+    .unwrap();
+    let before = ["flash.bin", "otp.bin"].map(|name| fs::read(path.join(name)).unwrap());
+    assert_eq!(catalog.attach(&path).unwrap()["board"], "arcs-mini2");
+    for (name, expected) in ["flash.bin", "otp.bin"].into_iter().zip(before) {
+        assert_eq!(fs::read(path.join(name)).unwrap(), expected);
+    }
+    let mut custom = storage::read_json(&root().join("boards/arcs-mini2.json")).unwrap();
+    custom["id"] = json!("arcs-mini");
+    let source = temporary.path().join("custom.json");
+    storage::write_json(&source, &custom).unwrap();
+    assert!(
+        catalog
+            .import_board(&source)
+            .unwrap_err()
+            .to_string()
+            .contains("Installed board IDs")
+    );
+    fs::create_dir_all(catalog.data.join("boards")).unwrap();
+    storage::write_json(&catalog.data.join("boards/custom.json"), &custom).unwrap();
+    assert!(
+        catalog
+            .reload_hardware()
+            .unwrap_err()
+            .to_string()
+            .contains("shadows")
+    );
+}
+
+#[test]
 fn presentation_does_not_change_hardware_identity() {
     let temporary = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root(), temporary.path()).unwrap();
-    let expected = json!({"board": catalog.boards["arcs-mini"], "chip": catalog.chips["ls2684"]});
+    let expected = json!({"board": catalog.boards["arcs-mini2"], "chip": catalog.chips["ls2684"]});
     let mut renamed = expected.clone();
     for pointer in [
         "/board/name",
@@ -94,7 +215,7 @@ fn presentation_does_not_change_hardware_identity() {
 fn camera_descriptor_enriches_existing_mini_without_changing_storage() {
     let temporary = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root(), temporary.path()).unwrap();
-    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let item = catalog.create("arcs-mini2", None, None).unwrap();
     let path = PathBuf::from(item["path"].as_str().unwrap());
     let flash_hash = storage::sha256(&path.join("flash.bin")).unwrap();
     let otp_hash = storage::sha256(&path.join("otp.bin")).unwrap();
@@ -163,7 +284,7 @@ fn evb_touch_mount_enriches_saved_descriptor() {
 fn board_inputs_enrich_existing_instances_and_validate_persisted_values() {
     let temporary = tempfile::tempdir().unwrap();
     let catalog = Catalog::open(&root(), temporary.path()).unwrap();
-    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let item = catalog.create("arcs-mini2", None, None).unwrap();
     let path = PathBuf::from(item["path"].as_str().unwrap());
     let before = [storage::sha256(&path.join("flash.bin")).unwrap(),
         storage::sha256(&path.join("otp.bin")).unwrap()];
@@ -188,12 +309,12 @@ fn board_inputs_enrich_existing_instances_and_validate_persisted_values() {
 fn runtime_metadata_updates_preserve_instances_and_current_availability() {
     let temporary = tempfile::tempdir().unwrap();
     let mut catalog = Catalog::open(&root(), temporary.path()).unwrap();
-    let item = catalog.create("arcs-mini", None, None).unwrap();
+    let item = catalog.create("arcs-mini2", None, None).unwrap();
     let path = PathBuf::from(item["path"].as_str().unwrap());
     let before = ["flash.bin", "otp.bin", "device.json"].map(|file| {
         storage::sha256(&path.join(file)).unwrap()
     });
-    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"] = json!({
+    catalog.boards.get_mut("arcs-mini2").unwrap()["runtime"] = json!({
         "machine":"arcs-mini", "available":false,
         "unavailable_reason":"Runtime validation pending",
         "capabilities":{"snapshot":false}
@@ -208,8 +329,8 @@ fn runtime_metadata_updates_preserve_instances_and_current_availability() {
     assert_eq!(current["hardware"]["chip"]["runtime"]["clock_quantum_ns"], 20000);
     let error = lisem_core::assets::Backend::for_device(&catalog, &current).err().unwrap();
     assert_eq!(error.to_string(), "Runtime validation pending");
-    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"]["available"] = json!(true);
-    catalog.boards.get_mut("arcs-mini").unwrap()["runtime"]["capabilities"]["snapshot"] = json!(true);
+    catalog.boards.get_mut("arcs-mini2").unwrap()["runtime"]["available"] = json!(true);
+    catalog.boards.get_mut("arcs-mini2").unwrap()["runtime"]["capabilities"]["snapshot"] = json!(true);
     let current = catalog.describe(&path).unwrap();
     assert!(lisem_core::assets::Backend::for_device(&catalog, &current).unwrap().capabilities.snapshot);
     for (file, hash) in ["flash.bin", "otp.bin", "device.json"].into_iter().zip(before) {

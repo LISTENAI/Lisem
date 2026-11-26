@@ -9,6 +9,9 @@
 
 ## 导入和使用
 
+Arcs-Mini2 的内置板型 ID 为 `arcs-mini2`；旧 ID `arcs-mini` 是其兼容别名，
+可用于已有脚本和实例。自定义板型不能使用内置 ID 或其别名。
+
 为板型设置唯一的 `id` 和便于识别的 `name`，保存为 JSON 文件。在桌面的
 「新建实例」中点击「导入板型…」，选择文件，再选择该板型创建实例。
 
@@ -211,7 +214,7 @@ UART2 由模组占用，不提供宿主串口连接或字节注入。内置板�
 
 内置板型位于 `boards/`，可用于查阅具体的器件选择和连接方式：
 
-- [Arcs-Mini](../boards/arcs-mini.json)：显示控制器、面板、背光及摄像头的组合。
+- [Arcs-Mini2](../boards/arcs-mini2.json)：显示控制器、面板、背光及摄像头的组合。
 - [Arcs-Mini3](../boards/arcs-mini3.json)：GPIO 扩展器、USB-C 角色控制器及外设连接。
 - [Arcs-EVB](../boards/arcs-evb.json)：触摸面板与电阻按键。
 - [VenusA RD EVB](../boards/venusa-rd-evb.json)：GC0328 摄像头、串口、SD 卡及芯片引脚配置。

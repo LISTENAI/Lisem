@@ -22,7 +22,7 @@ def main():
         service = NativeService(root / 'library', args.binary.resolve(), capture=False)
         uart = None
         try:
-            item = service.create_device('arcs-mini', args.lpk)
+            item = service.create_device('arcs-mini2', args.lpk)
             device = Path(item['path'])
             otp = (device / 'otp.bin').read_bytes()
             uart = NativeUart(service.dispatch('serial', {'id': item['id'], 'channel': 0}))

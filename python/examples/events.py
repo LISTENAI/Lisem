@@ -11,7 +11,7 @@ def main():
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     with Client(data_dir=args.output / 'library') as client:
-        with client.temporary_instance(board='arcs-mini',
+        with client.temporary_instance(board='arcs-mini2',
                                        evidence_dir=args.output / 'evidence') as device:
             with device.start(max_virtual_seconds=10, timeout=30, download=True) as run:
                 task = run.events({

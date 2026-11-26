@@ -7,7 +7,7 @@ def values(state):
     return {row['id']: row['value'] for row in state['inputs']}
 
 
-@pytest.mark.parametrize('board', ['arcs-mini', 'arcs-mini3'])
+@pytest.mark.parametrize('board', ['arcs-mini2', 'arcs-mini3'])
 def test_saved_inputs_boot_restart_and_active_refusal(native_client, board):
     with native_client.temporary_instance(board=board) as device:
         defaults = values(device.inputs())
@@ -39,7 +39,7 @@ def test_saved_inputs_boot_restart_and_active_refusal(native_client, board):
     {'usb_det': False, 'unknown': True},
 ])
 def test_invalid_inputs_are_atomic(native_client, changes):
-    with native_client.temporary_instance(board='arcs-mini') as device:
+    with native_client.temporary_instance(board='arcs-mini2') as device:
         before = (device.path / 'device.json').read_bytes()
         state = values(device.inputs())
         with pytest.raises(Rejected):
