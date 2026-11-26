@@ -38,7 +38,9 @@ static void shared_transport(void)
     lisa_mapping_close(&reader);
     lisa_mapping_close(&late_reader);
 #ifndef _WIN32
-    char posix[32]; snprintf(posix, sizeof(posix), "/%s", name + 4);
+    char posix[sizeof(name)];
+    int length = snprintf(posix, sizeof(posix), "/%s", name + 4);
+    assert(length > 0 && (size_t)length < sizeof(posix));
     assert(!shm_unlink(posix));
 #endif
     assert(!lisa_named_mapping(name, size, false, &reader));
