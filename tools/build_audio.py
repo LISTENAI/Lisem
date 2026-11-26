@@ -8,13 +8,14 @@ import plistlib
 import shlex
 import subprocess
 import sys
+from native_build import path_flags
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.tools/audio'
 BINARY = OUT / ('lisa-audio.exe' if os.name == 'nt' else 'lisa-audio')
 SOURCE = ROOT / 'native/audio' / ('coreaudio.m' if sys.platform == 'darwin' else 'endpoint.c')
 INPUTS = [SOURCE, ROOT / 'qemu/include/audio/lisa_stream.h', ROOT / 'qemu/include/qemu/lisa-mapping.h',
-          ROOT / 'native/audio/playback.h', Path(__file__)]
+          ROOT / 'native/audio/playback.h', Path(__file__), ROOT / 'tools/native_build.py']
 if sys.platform != 'darwin':
     INPUTS += [ROOT / 'native/audio/endpoint.h',
                ROOT / 'native/audio' / ('wasapi.c' if os.name == 'nt' else 'pulse.c')]
@@ -29,7 +30,8 @@ def current_build():
     if not stamp.is_file() or not BINARY.is_file():
         return False
     data = json.loads(stamp.read_text())
-    return data['inputs'] == hashes() and data['binary_sha256'] == hashlib.sha256(BINARY.read_bytes()).hexdigest()
+    return (data['inputs'] == hashes() and data.get('path_flags') == path_flags(ROOT)
+            and data['binary_sha256'] == hashlib.sha256(BINARY.read_bytes()).hexdigest())
 
 
 def build():
@@ -38,7 +40,7 @@ def build():
         flags = shlex.split(subprocess.check_output(
             ['pkg-config', '--cflags', '--libs', 'portaudio-2.0' if os.name == 'nt' else 'libpulse'], text=True))
         subprocess.run([os.environ.get('CC', 'cc'), '-O2', '-Wall', '-Wextra', '-Werror',
-            '-ffile-prefix-map=' + str(Path.home()) + '=/build',
+            *path_flags(ROOT),
             '-I' + str(ROOT / 'qemu/include'), str(SOURCE), str(INPUTS[-1]), '-o', str(BINARY),
             *flags, '-lm', *(['-municode'] if os.name == 'nt' else [])], check=True, timeout=60)
         save_manifest()
@@ -49,7 +51,7 @@ def build():
         'CFBundleVersion': '1', 'NSMicrophoneUsageDescription': '将麦克风声音输入模拟设备。'}))
     temporary = OUT / 'lisa-audio.build'
     subprocess.run([os.environ.get('CC', 'cc'), '-O2', '-Wall', '-Wextra', '-Werror',
-        '-ffile-prefix-map=' + str(Path.home()) + '=/build', '-mmacosx-version-min=15.0',
+        *path_flags(ROOT), '-mmacosx-version-min=15.0',
         '-fobjc-arc', '-I' + str(ROOT / 'qemu/include'), str(INPUTS[0]),
         '-framework', 'AVFoundation', '-framework', 'AudioToolbox', '-framework', 'Foundation',
         '-Wl,-sectcreate,__TEXT,__info_plist,' + str(info), '-o', str(temporary)], check=True, timeout=60)
@@ -61,7 +63,7 @@ def build():
 
 
 def save_manifest():
-    (OUT / 'build.json').write_text(json.dumps({'inputs': hashes(),
+    (OUT / 'build.json').write_text(json.dumps({'inputs': hashes(), 'path_flags': path_flags(ROOT),
         'binary_sha256': hashlib.sha256(BINARY.read_bytes()).hexdigest()}, indent=2) + '\n')
 
 

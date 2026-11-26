@@ -6,9 +6,11 @@ import json
 import os
 import platform
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
+from native_build import path_flags
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = '10.1.0'
@@ -37,6 +39,13 @@ def host_cflags():
     if sys.platform == 'darwin' and platform.machine() == 'arm64':
         return '-O3 -mcpu=apple-m1'
     return '-O3'
+
+
+def compiler_cflags():
+    flags = host_cflags() + ' ' + shlex.join(path_flags(ROOT))
+    if sys.platform == 'darwin':
+        flags += ' -mmacosx-version-min=15.0'
+    return flags
 
 
 def chip_roms(chip="arcs"):
@@ -105,7 +114,7 @@ def source_state():
 
 
 def build_inputs():
-    paths = [ROOT / 'tools/build_qemu.py'] + sorted(
+    paths = [ROOT / 'tools/build_qemu.py', ROOT / 'tools/native_build.py'] + sorted(
         path for path in (ROOT / 'assets').rglob('*') if path.is_file())
     return {path.relative_to(ROOT).as_posix(): sha256(path) for path in paths}
 
@@ -120,7 +129,7 @@ def current_build():
         state = source_state()
         return (all(manifest.get(key) == value for key, value in state.items()) and
                 manifest.get('qemu_version') == VERSION and
-                manifest.get('host_cflags') == host_cflags() and
+                manifest.get('host_cflags') == compiler_cflags() and
                 manifest.get('lto') == (sys.platform == 'darwin' and platform.machine() == 'arm64') and
                 manifest.get('binary_sha256') == sha256(BINARY) and
                 manifest.get('inputs_sha256') == build_inputs())
@@ -169,9 +178,7 @@ def main():
     if args.prepare_only:
         return
     BUILD.mkdir(parents=True, exist_ok=True)
-    cflags = host_cflags() + ' -ffile-prefix-map=' + str(Path.home()) + '=/build'
-    if sys.platform == 'darwin':
-        cflags += ' -mmacosx-version-min=15.0'
+    cflags = compiler_cflags()
     configuration = ([shutil.which('bash'), str(SOURCE / 'configure')] if os.name == 'nt'
                      else [str(SOURCE / 'configure')]) + ['--python=' + sys.executable,
                      '--target-list=riscv32-softmmu', '--disable-docs',
@@ -206,7 +213,7 @@ def main():
                     BINARY.name], check=True, timeout=1800)
     binary = BINARY
     manifest = {**state, 'qemu_version': VERSION,
-                'host_cflags': host_cflags(), 'lto': args.lto,
+                'host_cflags': cflags, 'lto': args.lto,
                 'binary_sha256': sha256(binary), 'inputs_sha256': inputs}
     (BUILD / 'arcs-build.json').write_text(json.dumps(manifest, indent=2) + '\n')
     print('Built QEMU ListenAI runtime:', binary)

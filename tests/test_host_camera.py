@@ -36,10 +36,13 @@ class CameraBuild(unittest.TestCase):
             binary.write_bytes(b'binary')
             with patch.multiple(build_camera, ROOT=root, OUT=root, BINARY=binary, INPUTS=[source]):
                 manifest = {'inputs': build_camera.hashes(),
+                            'path_flags': build_camera.path_flags(root, msvc=os.name == 'nt'),
                             'binary_sha256': hashlib.sha256(binary.read_bytes()).hexdigest()}
                 stamp = root / 'build.json'
                 stamp.write_text(json.dumps(manifest))
                 self.assertTrue(build_camera.current_build())
+                with patch.object(build_camera, 'path_flags', return_value=['changed maps']):
+                    self.assertFalse(build_camera.current_build())
                 source.write_bytes(b'changed source')
                 self.assertFalse(build_camera.current_build())
                 source.write_bytes(b'source')

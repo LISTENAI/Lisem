@@ -8,13 +8,14 @@ import plistlib
 import shlex
 import subprocess
 import sys
+from native_build import path_flags
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / '.tools/camera'
 BINARY = OUT / ('lisa-camera.exe' if os.name == 'nt' else 'lisa-camera')
 INPUTS = [ROOT / 'native/camera' / ('mediafoundation.cpp' if os.name == 'nt' else
                                     'v4l2.cpp' if sys.platform == 'linux' else 'avfoundation.m'),
-          Path(__file__)]
+          Path(__file__), ROOT / 'tools/native_build.py']
 
 
 def hashes():
@@ -31,6 +32,7 @@ def current_build():
     try:
         data = json.loads(stamp.read_text())
         return (data['inputs'] == hashes()
+                and data.get('path_flags') == path_flags(ROOT, msvc=os.name == 'nt')
                 and data['binary_sha256'] == hashlib.sha256(BINARY.read_bytes()).hexdigest())
     except (ValueError, KeyError):
         return False
@@ -48,7 +50,7 @@ def build():
         temporary = OUT / 'lisa-camera.build.exe'
         subprocess.run([str(compiler), '/nologo', '/O2', '/W4', '/WX', '/std:c++17', '/EHsc', '/MD',
             '/experimental:deterministic',
-            '/pathmap:' + str(Path.home()) + '=/build', str(INPUTS[0]),
+            *path_flags(ROOT, msvc=True), str(INPUTS[0]),
             '/Fo' + str(OUT / 'camera.obj'), '/Fe' + str(temporary),
             '/link', 'mf.lib', 'mfplat.lib', 'mfreadwrite.lib', 'mfuuid.lib', 'ole32.lib'],
             check=True, timeout=60)
@@ -59,7 +61,7 @@ def build():
         OUT.mkdir(parents=True, exist_ok=True)
         temporary = OUT / 'lisa-camera.build'
         subprocess.run([*shlex.split(os.environ.get('CXX', 'c++')), '-std=c++17', '-O2',
-            '-Wall', '-Wextra', '-Werror', '-ffile-prefix-map=' + str(Path.home()) + '=/build',
+            '-Wall', '-Wextra', '-Werror', *path_flags(ROOT),
             str(INPUTS[0]), '-o', str(temporary)], check=True, timeout=60)
         temporary.replace(BINARY)
         save_manifest()
@@ -76,7 +78,7 @@ def build():
     }))
     temporary = OUT / 'lisa-camera.build'
     subprocess.run([*shlex.split(os.environ.get('CC', 'cc')), '-O2', '-Wall', '-Wextra', '-Werror',
-        '-ffile-prefix-map=' + str(Path.home()) + '=/build', '-mmacosx-version-min=15.0',
+        *path_flags(ROOT), '-mmacosx-version-min=15.0',
         '-fobjc-arc', str(INPUTS[0]), '-framework', 'AVFoundation', '-framework', 'CoreMedia',
         '-framework', 'CoreVideo', '-framework', 'Foundation',
         '-Wl,-sectcreate,__TEXT,__info_plist,' + str(info), '-o', str(temporary)],
@@ -89,7 +91,7 @@ def build():
 
 
 def save_manifest():
-    (OUT / 'build.json').write_text(json.dumps({'inputs': hashes(),
+    (OUT / 'build.json').write_text(json.dumps({'inputs': hashes(), 'path_flags': path_flags(ROOT, msvc=os.name == 'nt'),
         'binary_sha256': hashlib.sha256(BINARY.read_bytes()).hexdigest()}, indent=2) + '\n')
 
 

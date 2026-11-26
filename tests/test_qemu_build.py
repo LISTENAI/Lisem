@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import build_qemu
+import json
 
 
 class RuntimePreparation(unittest.TestCase):
@@ -38,6 +39,29 @@ class RuntimePreparation(unittest.TestCase):
                 build_qemu.main()
             self.assertTrue(binary.is_file())
             self.assertTrue((build / 'arcs-build.json').is_file())
+
+    def test_complete_compiler_flags_invalidate_cached_runtime(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / 'source outside home'
+            root.mkdir()
+            binary = root / 'runtime'
+            binary.write_bytes(b'compiled runtime')
+            with patch.multiple(build_qemu, ROOT=root, BUILD=root, BINARY=binary), \
+                    patch.object(build_qemu, 'source_state', return_value={}), \
+                    patch.object(build_qemu, 'build_inputs', return_value={}):
+                manifest = {'qemu_version': build_qemu.VERSION,
+                            'host_cflags': build_qemu.compiler_cflags(),
+                            'lto': sys.platform == 'darwin' and build_qemu.platform.machine() == 'arm64',
+                            'binary_sha256': build_qemu.sha256(binary), 'inputs_sha256': {}}
+                (root / 'arcs-build.json').write_text(json.dumps(manifest))
+                self.assertIn('-ffile-prefix-map=' + str(root) + '=/build/lisem',
+                              shlex.split(manifest['host_cflags']))
+                self.assertTrue(build_qemu.current_build())
+                with patch.object(build_qemu, 'compiler_cflags', return_value='different flags'):
+                    self.assertFalse(build_qemu.current_build())
+                manifest['host_cflags'] = build_qemu.host_cflags()
+                (root / 'arcs-build.json').write_text(json.dumps(manifest))
+                self.assertFalse(build_qemu.current_build())
 
     @unittest.skipUnless(shutil.which('ninja'), 'Ninja is required')
     def test_replaced_assets_rebuild_with_older_mtime_and_reject_stale_binary(self):

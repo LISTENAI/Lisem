@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Build the optional, patched libslirp uplink without changing system libraries."""
 import hashlib
+import json
 import os
 from pathlib import Path
 import shlex
 import shutil
 import subprocess
 import sys
+from native_build import path_flags
 import tarfile
 import urllib.request
 
@@ -55,10 +57,17 @@ def patched_slirp():
         subprocess.run(['patch', '-p1', '-i', str(patch)], cwd=source, check=True, timeout=30)
         stamp.write_text(digest)
     output = source / 'build'
-    if not (output / 'build.ninja').exists():
-        subprocess.run([meson, 'setup', str(output), str(source), '--default-library=static',
-                        '--buildtype=release', '-Dversion_suffix=-arcs-buffered-reset1'],
+    c_args = shlex.split(os.environ.get('CFLAGS', '')) + path_flags(ROOT)
+    configure_stamp = output / 'lisem-cflags.json'
+    configured = (output / 'build.ninja').exists()
+    if (not configured or not configure_stamp.exists()
+            or json.loads(configure_stamp.read_text()) != c_args):
+        subprocess.run([meson, 'setup', *(['--reconfigure'] if configured else []),
+                        str(output), str(source), '--default-library=static',
+                        '--buildtype=release', '-Dversion_suffix=-arcs-buffered-reset1',
+                        '-Dc_args=' + json.dumps(c_args)],
                        check=True, timeout=120)
+        configure_stamp.write_text(json.dumps(c_args) + '\n')
     subprocess.run([meson, 'compile', '-C', str(output)], check=True, timeout=180)
     flags = shlex.split(subprocess.check_output(
         ['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True, timeout=10))
@@ -74,7 +83,7 @@ def build():
     target = out / ('arcs_slirp.dll' if os.name == 'nt' else 'libarcs_slirp.' + suffix)
     flags = patched_slirp()
     subprocess.run([os.environ.get('CC', 'cc'), '-std=c11', '-Wall', '-Wextra', '-Werror',
-                    '-O2', '-fPIC', '-ffile-prefix-map=' + str(Path.home()) + '=/build', '-dynamiclib' if sys.platform == 'darwin' else '-shared',
+                    '-O2', '-fPIC', *path_flags(ROOT), '-dynamiclib' if sys.platform == 'darwin' else '-shared',
                     str(ROOT / 'native/network/slirp_bridge.c'),
                     *(['-mmacosx-version-min=15.0', '-Wl,-headerpad_max_install_names',
                        '-Wl,-install_name,@rpath/libarcs_slirp.dylib'] if sys.platform == 'darwin' else []),
