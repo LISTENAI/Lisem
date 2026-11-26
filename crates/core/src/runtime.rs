@@ -33,7 +33,14 @@ fn qemu_failure(errors: &str) -> Option<String> {
     });
     let failure: String = diagnostics
         .clone()
-        .find(|line| line.contains("ARCS") || line.contains("VenusA unsupported "))?
+        .find(|line| {
+            line.contains("ARCS")
+                || line.contains("VenusA unsupported ")
+                || line.starts_with("qemu-system-riscv32: LUNA ")
+                || line.starts_with("qemu-system-riscv32: JPEG codec completion rejected:")
+                || line.starts_with("qemu-system-riscv32: Unsupported GC0328 ")
+                || line.starts_with("qemu-system-riscv32: unsupported GC0328 ")
+        })?
         .chars()
         .take(2048)
         .collect();
@@ -850,7 +857,8 @@ impl Session {
                     self.state["error"] = json!(diagnostic);
                 }
             } else if !self.stopped && self.state["error"].is_null() {
-                self.state["error"] = json!("QEMU exited without a readable report");
+                self.state["error"] = json!(qemu_failure(&errors)
+                    .unwrap_or_else(|| "QEMU exited without a readable report".to_owned()));
             }
             if !status.success() && !self.stopped && self.state["error"].is_null() {
                 self.state["error"] = json!(format!("QEMU exited with {status}"));
@@ -2974,6 +2982,24 @@ mod tests {
             super::qemu_failure(&format!("{fault}\n{warning}\n")).as_deref(),
             Some(fault)
         );
+    }
+
+    #[test]
+    fn qemu_component_failure_preserves_bounded_model_diagnostic() {
+        let fault = "qemu-system-riscv32: LUNA invalid memory range (api=0x20001000 param=0x38002000 completed=0)";
+        let jpeg = "qemu-system-riscv32: JPEG codec completion rejected: mode=encode reason=invalid tables";
+        let camera = "qemu-system-riscv32: Unsupported GC0328 format, binning, subsampling or test pattern (format=0x06 analog=0x0e subsample=0x22 mode=0x03 debug=0x00)";
+        let timing = "qemu-system-riscv32: unsupported GC0328 digital line/frame timing";
+        for reason in [fault, jpeg, camera, timing] {
+            assert_eq!(
+                super::qemu_failure(&format!("private guest output\n{reason}\n")),
+                Some(reason.to_owned())
+            );
+        }
+        assert_eq!(super::qemu_failure("guest says LUNA private text"), None);
+        assert_eq!(super::qemu_failure("qemu-system-riscv32: warning: LUNA warning"), None);
+        let long = format!("qemu-system-riscv32: LUNA {}", "x".repeat(3000));
+        assert_eq!(super::qemu_failure(&long).unwrap().chars().count(), 2048);
     }
 
     use super::*;
