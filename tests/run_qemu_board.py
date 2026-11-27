@@ -258,12 +258,12 @@ def venusa_screen(optional_controls=False):
         m.close()
 
 
-def venusa_camera(subsample=False):
+def venusa_camera(subsample=False, mode=0x33, step=2):
     p = {'version': 1, 'chip': 'venusa', 'buttons': [], 'indicators': [],
          'camera': {'pads': dict(zip(
              ['SCL','SDA','MCLK','PCLK','HSYNC','VSYNC', *['D%d' % i for i in range(8)]],
              [34,33,35,23,21,22,24,25,26,27,28,29,30,31]))}}
-    m = CameraMachine(OUTPUT / ('venusa-camera-half' if subsample else 'venusa-camera'),
+    m = CameraMachine(OUTPUT / ('venusa-camera-%02x-%d' % (mode, step) if subsample else 'venusa-camera'),
                 board='venusa-board', assembly=p, desktop=True)
     bus, dvp = 0x43c00000, 0x42000800
     try:
@@ -280,18 +280,22 @@ def venusa_camera(subsample=False):
             m.write(bus + 0x28, 1); m.command('clock_step 1000000')
             assert m.read(bus + 0x18) & 0x600 == 0x600
         reg(0xf2,0); reg(0x44,6); reg(0x46,2)
-        size = 8 if subsample else 4
+        size = 4 * step if subsample else 4
         for address, value in [(0x50,1),(0x55,0),(0x56,size),(0x57,0),(0x58,size)]: reg(address,value)
-        if subsample: reg(0x59,0x22); reg(0x5a,0x33)
+        if subsample:
+            reg(0x59, step * 0x11); reg(0x5a, mode)
+            if mode == 3:
+                for address in range(0x5b, 0x63): reg(address, 0)
         m.camera_frame(bytes([0,255,0]) * (640*480))
         m.write(dvp,4); m.write(dvp+4,4); m.write(dvp+0x10,8); m.write(dvp+0x18,12)
         m.write(dvp+0x1c,1); reg(0xf2,1)
-        m.command('clock_step 30000000')
+        # Wait through lead plus all four source rows at the configured MCLK.
+        m.command('clock_step 60000000')
         assert [m.read(0x42001000) for _ in range(8)] == [0xe007e007] * 8
         state = json.loads(m.qmp_command('qom-get', {'path':'/machine','property':'x-lisa-snapshot'}))
         assert state['camera_input']['receiver_enabled']
         print('VenusA shared GC0328%s: SCCB, optical input, DVP clock/pixels and FIFO: PASS' %
-              (' 2x2 subsampling' if subsample else ''))
+              (' %dx subsampling mode %02x' % (step, mode) if subsample else ''))
     finally:
         m.close()
 
@@ -382,4 +386,6 @@ if __name__ == '__main__':
     venusa_keypad()
     venusa_camera()
     venusa_camera(subsample=True)
+    venusa_camera(subsample=True, mode=3, step=2)
+    venusa_camera(subsample=True, mode=3, step=4)
     analog_keypad()
