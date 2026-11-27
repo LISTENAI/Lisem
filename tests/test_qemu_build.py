@@ -59,7 +59,7 @@ class RuntimePreparation(unittest.TestCase):
                             'lto': sys.platform == 'darwin' and build_qemu.platform.machine() == 'arm64',
                             'binary_sha256': build_qemu.sha256(binary), 'inputs_sha256': {}}
                 (root / 'arcs-build.json').write_text(json.dumps(manifest))
-                self.assertIn('-ffile-prefix-map=' + str(root) + '=/build/lisem',
+                self.assertIn('-ffile-prefix-map=' + root.as_posix() + '=/build/lisem',
                               shlex.split(manifest['host_cflags']))
                 self.assertTrue(build_qemu.current_build())
                 with patch.object(build_qemu, 'compiler_cflags', return_value='different flags'):
