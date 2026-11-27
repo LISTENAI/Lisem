@@ -1,8 +1,8 @@
 {
-  "version": "0.7.0",
+  "version": "0.7.1",
   "abi": 1,
   "target": "darwin-x86_64",
   "file": "liblisem-luna.a",
-  "sha256": "4708114ee3e4c9156e52593fdb9da65ee32137447237c4e796f011cf97d9033d",
+  "sha256": "eee4e2800289eaa0f481630783c21d6164bf319e4441b861372ea3f4440236f5",
   "api_sha256": "1ea08406a70e2906fa3da7c7a07bc8594c22b840176ad30a329dcaedb2522cea"
 }
