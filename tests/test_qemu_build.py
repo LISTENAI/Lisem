@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import build_qemu
 import json
+import ast
 
 
 class RuntimePreparation(unittest.TestCase):
@@ -28,6 +29,10 @@ class RuntimePreparation(unittest.TestCase):
                     binary.write_bytes(b'compiled runtime')
                 else:
                     self.assertEqual(kwargs['cwd'], build)
+                    option = next(arg for arg in command if arg.startswith('-Dc_args='))
+                    self.assertEqual(ast.literal_eval(option.split('=', 1)[1]),
+                                     shlex.split(build_qemu.compiler_cflags()))
+                    self.assertNotIn('-ffile-prefix-map=', kwargs['env']['CFLAGS'])
 
             with patch.multiple(build_qemu, ROOT=root, SOURCE=source,
                                 BUILD=build, BINARY=binary), \

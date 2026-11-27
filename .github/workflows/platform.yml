@@ -91,6 +91,17 @@ jobs:
           if-no-files-found: error
           compression-level: 1
           retention-days: 1
+      - name: Upload native build diagnostics
+        if: failure() && matrix.phase == 'native'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-build-diagnostics-${{ inputs.target }}
+          path: |
+            artifacts/ci/qemu-build.log
+            .tools/qemu-build/config.log
+            .tools/qemu-build/meson-logs/meson-log.txt
+          if-no-files-found: ignore
+          retention-days: 7
   tests:
     name: Debug and Python tests
     runs-on: ${{ inputs.runner }}

@@ -181,6 +181,7 @@ def main():
     cflags = compiler_cflags()
     configuration = ([shutil.which('bash'), str(SOURCE / 'configure')] if os.name == 'nt'
                      else [str(SOURCE / 'configure')]) + ['--python=' + sys.executable,
+                     '-Dc_args=' + repr(shlex.split(cflags)),
                      '--target-list=riscv32-softmmu', '--disable-docs',
                      '--extra-ldflags=-Wl,-headerpad_max_install_names' if sys.platform == 'darwin' else '--extra-ldflags=',
                      '--disable-werror', '--disable-gtk', '--disable-sdl',
@@ -203,7 +204,12 @@ def main():
         BUILD.mkdir()
     if not config_stamp.exists() or json.loads(config_stamp.read_text()) != configure_stamp:
         configure_environment = os.environ.copy()
-        configure_environment['CFLAGS'] = cflags
+        # Configure word-splits CFLAGS without interpreting shell quotes.
+        # Pass path maps as a Meson array so backslashes and spaces survive;
+        # its compiler probes and linker still use the host/platform flags.
+        configure_environment['CFLAGS'] = host_cflags()
+        if sys.platform == 'darwin':
+            configure_environment['CFLAGS'] += ' -mmacosx-version-min=15.0'
         subprocess.run(configuration, cwd=BUILD, env=configure_environment,
                        check=True, timeout=600)
         config_stamp.write_text(json.dumps(configure_stamp) + '\n')
