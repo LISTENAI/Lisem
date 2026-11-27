@@ -29,6 +29,15 @@ class NativePathFlagsTest(unittest.TestCase):
                 '-ffile-prefix-map=/home/builder/source=/build/lisem',
             ])
 
+    def test_posix_toolchain_on_windows(self):
+        with patch.object(native_build.os, 'name', 'nt'), patch.object(
+                native_build.Path, 'home', return_value=PureWindowsPath('C:/Users/builder')):
+            self.assertEqual(native_build.path_flags(
+                PureWindowsPath('D:/source/Lisem'), posix_paths=True), [
+                    '-ffile-prefix-map=C:/Users/builder=/build',
+                    '-ffile-prefix-map=D:/source/Lisem=/build/lisem',
+                ])
+
 
 if __name__ == '__main__':
     unittest.main()

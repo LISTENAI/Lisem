@@ -42,7 +42,10 @@ def host_cflags():
 
 
 def compiler_cflags():
-    flags = host_cflags() + ' ' + shlex.join(path_flags(ROOT))
+    # QEMU configures through a POSIX shell, including MSYS2 on Windows.
+    # Its source paths use forward slashes; native MSVC path maps belong to
+    # the directly compiled host components, not this shell command line.
+    flags = host_cflags() + ' ' + shlex.join(path_flags(ROOT, posix_paths=True))
     if sys.platform == 'darwin':
         flags += ' -mmacosx-version-min=15.0'
     return flags
