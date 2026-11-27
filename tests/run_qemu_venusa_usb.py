@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify VenusA MUSB routing, clocks and isolation from SPI reset domains."""
 from run_qemu_usb_lab import USB, enumerate_device, failures
+from qemu_test import read_bytes, write_bytes
 
 BOARD = 'venusa-rd-evb'
 CLOCK = 0x43100034
@@ -68,6 +69,32 @@ def main():
     enumerate_device(board=BOARD)
     enumerate_device(direct=True, board=BOARD)
     failures(board=BOARD)
+    software_reset()
+
+
+def software_reset():
+    u = USB('aon-software-reset', board=BOARD)
+    try:
+        u.write(0, 37)
+        u.write(1, 0x60)
+        u.m.write(0x45000040, 0x3f)
+        u.m.write(0x43e00010, 0x700)
+        marker = b'RAM retained across software reset'
+        write_bytes(u.m, 0x20010000, marker)
+        u.m.write(0x45000050, 0xcafe000a)
+        u.m.qmp_command('query-status')
+        assert u.m.command('readl 0x4500004c') == 2
+        assert u.m.command('readl 0x45000040') == 0
+        assert u.m.command('readl 0x43e00010') == 0
+        assert not u.status()['clock_enabled']
+        assert read_bytes(u.m, 0x20010000, len(marker)) == marker
+        u.m.write(CLOCK, 4)
+        assert u.read(0) == u.read(1) == 0
+        u.m.write(0x4500004c, 2)
+        assert u.m.command('readl 0x4500004c') == 0
+    finally:
+        u.close()
+    print('VenusA AON software reset, status, peripherals and RAM retention: PASS')
 
 
 if __name__ == '__main__':

@@ -150,8 +150,42 @@ def failures():
     print('CDC incompatible descriptors / EP0 stall / deadline: PASS')
 
 
+def disconnect_packet(board, packet):
+    u = CDC('disconnect-packet-' + str(packet), board, packet)
+    try:
+        u.connect(); u.enumerate()
+        payload = bytes(range(256)) * 4
+        u.socket.sendall(payload)
+        u.wait(u.rx_ready)
+        u.write(14, u.out_ep)
+        assert u.read(0x18, 'w') == packet
+        fifo = 0x20 + 4 * u.out_ep
+        received = bytearray(u.read(fifo, 'l').to_bytes(4, 'little'))
+        # A driver may already have sampled RXCOUNT when the host leaves.
+        # Cancel host queues, but do not retract a packet delivered to PIO.
+        u.socket.close(); u.socket = None
+        u.wait(lambda: not u.adb()['connected'], advance=False)
+        assert not u.adb()['ready']
+        assert u.adb()['pending_to_device'] == 0
+        assert u.read(10) & 0x20
+        while len(received) < packet:
+            received.extend(u.read(fifo, 'l').to_bytes(4, 'little'))
+        assert received == payload[:packet]
+        u.write(0x16, 0)
+        u.step(1_000_000)
+        assert not u.rx_ready()
+        u.connect(); u.enumerate()
+        assert not u.rx_ready()
+        u.socket.sendall(b'new-session')
+        assert u.receive_packet() == b'new-session'
+        print(board, packet, 'CDC disconnect preserves delivered PIO packet: PASS')
+    finally:
+        u.close()
+
+
 if __name__ == '__main__':
     for board in ('arcs-mini', 'venusa-rd-evb'):
         for packet in (64, 512):
             transport(board, packet)
+            disconnect_packet(board, packet)
     failures()
